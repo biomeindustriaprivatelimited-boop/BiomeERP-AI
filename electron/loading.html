@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body {
+        margin: 0;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background: #0b1210;
+        color: #e8f6ef;
+        font-family: -apple-system, "Segoe UI", Arial, sans-serif;
+        -webkit-app-region: drag;
+      }
+      img { width: 56px; height: 56px; margin-bottom: 14px; border-radius: 12px; }
+      p { font-size: 13px; opacity: 0.7; margin-top: 10px; }
+      .ring {
+        width: 22px; height: 22px; border-radius: 50%;
+        border: 2px solid rgba(62,213,152,0.25);
+        border-top-color: #3ed598;
+        animation: spin 0.9s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+  </head>
+  <body>
+    <img src="icon.png" alt="Biome Industria" />
+    <div class="ring"></div>
+    <p>Starting Biome Industria Platform…</p>
+  </body>
+</html>

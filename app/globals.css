@@ -1,0 +1,116 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --biome-leaf: #7cb342;
+  --biome-sky: #5b9bd5;
+  --biome-bolt: #fde047;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: #0a0f1a;
+  color: #e8edf5;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* Manual "Reduce motion" toggle in Settings — same effect as the OS-level
+   media query above, for people who want it off without changing OS prefs. */
+html.reduce-motion *,
+html.reduce-motion *::before,
+html.reduce-motion *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+}
+
+/* Focus visibility for keyboard nav */
+:focus-visible {
+  outline: 2px solid var(--biome-leaf);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* Glassmorphism surface */
+.glass {
+  background: linear-gradient(160deg, rgba(17, 26, 46, 0.72) 0%, rgba(14, 21, 36, 0.62) 100%);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1px solid rgba(140, 170, 210, 0.14);
+}
+
+/* Signature element: Energy Pulse Border — a slow-travelling gradient
+   line (leaf -> bolt -> sky) that traces a card's edge, referencing
+   Biome's own story of converting biomass into energy. Used sparingly:
+   only on the hero panel and on hover for interactive cards. */
+.energy-pulse-border {
+  position: relative;
+  isolation: isolate;
+}
+.energy-pulse-border::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(
+    115deg,
+    var(--biome-leaf) 0%,
+    var(--biome-bolt) 35%,
+    var(--biome-sky) 65%,
+    var(--biome-leaf) 100%
+  );
+  background-size: 220% 220%;
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  opacity: 0;
+  transition: opacity 0.4s ease;
+  animation: pulseBorder 4s ease infinite;
+  z-index: -1;
+}
+.energy-pulse-border:hover::before,
+.energy-pulse-border.is-active::before {
+  opacity: 1;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(140, 170, 210, 0.25); border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(140, 170, 210, 0.4); }
+
+/* PremiumButton ripple */
+@keyframes premium-ripple {
+  from { transform: scale(0); opacity: 0.55; }
+  to { transform: scale(1); opacity: 0; }
+}
+
+/* Skeleton shimmer */
+@keyframes skeleton-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.skeleton-shimmer {
+  background: linear-gradient(
+    100deg,
+    rgba(140, 170, 210, 0.08) 30%,
+    rgba(140, 170, 210, 0.18) 50%,
+    rgba(140, 170, 210, 0.08) 70%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.6s ease-in-out infinite;
+}

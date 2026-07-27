@@ -1,0 +1,69 @@
+{
+  "name": "biome-industria-platform",
+  "version": "0.1.0",
+  "private": true,
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "electron:dev": "electron .",
+    "dist:win": "next build && electron-builder --win --x64",
+    "dist:win:dir": "next build && electron-builder --win --x64 --dir"
+  },
+  "dependencies": {
+    "@mlc-ai/web-llm": "^0.2.79",
+    "exceljs": "^4.4.0",
+    "framer-motion": "^11.3.19",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.8",
+    "lucide-react": "^0.417.0",
+    "next": "14.2.35",
+    "pdfjs-dist": "^6.1.200",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tesseract.js": "^7.0.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.13",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "autoprefixer": "^10.4.19",
+    "electron": "^31.3.0",
+    "electron-builder": "^24.13.3",
+    "postcss": "^8.4.40",
+    "tailwindcss": "^3.4.7",
+    "typescript": "^5.5.4"
+  },
+  "build": {
+    "appId": "com.biomeindustria.platform",
+    "productName": "Biome",
+    "asar": false,
+    "files": [
+      "electron/**",
+      ".next/**",
+      "public/**",
+      "node_modules/**",
+      "package.json",
+      "next.config.js"
+    ],
+    "extraResources": [],
+    "directories": {
+      "buildResources": "build",
+      "output": "release"
+    },
+    "win": {
+      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Biome"
+    }
+  }
+}
