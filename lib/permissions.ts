@@ -16,7 +16,7 @@
  * account that decides what everyone else may do, and it does not appear
  * in the user list for anybody but itself.
  */
-export type Role = "developer" | "admin" | "accounts" | "coordinator" | "plant_manager";
+export type Role = "developer" | "admin" | "accounts" | "coordinator" | "plant_manager" | "procurement";
 
 export const ROLES: { id: Role; label: string; description: string }[] = [
   { id: "developer", label: "Developer", description: "Everything, plus access control and feature switches" },
@@ -24,6 +24,7 @@ export const ROLES: { id: Role; label: string; description: string }[] = [
   { id: "accounts", label: "Accounts", description: "Finance, Tally, approvals — no app settings" },
   { id: "coordinator", label: "Coordinator", description: "Supply coordination, documents, WhatsApp" },
   { id: "plant_manager", label: "Plant Manager", description: "Plant entries only — no Tally, no WhatsApp, no coordination" },
+  { id: "procurement", label: "Procurement", description: "Plant stock & spare parts for every plant, spare-part vendors, stock reports" },
 ];
 
 /**
@@ -65,6 +66,12 @@ export type Permission =
   | "attendance.entry"
   | "attendance.approve"
   | "reports"
+  // Plant stock — spare parts, consumables, machines. `stock` receives,
+  // issues to machines and reads balances (a plant manager: own plant
+  // only). `stock.manage` also adjusts, cancels, edits the item and
+  // machine masters and works across every plant.
+  | "stock"
+  | "stock.manage"
   | "support"         // raise a ticket; approvers also answer them
   | "work"            // the Work Engine: planner, autopilot, decisions
   | "support.manage"  // see and answer everyone's tickets
@@ -109,6 +116,8 @@ const ALL: Permission[] = [
   "attendance.entry",
   "attendance.approve",
   "reports",
+  "stock",
+  "stock.manage",
   "work",
   "support",
   "support.manage",
@@ -167,6 +176,8 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "attendance.entry",
     "attendance.approve",
     "reports",
+    "stock",
+    "stock.manage",
     "support",
     "work",
     "support.manage",
@@ -212,6 +223,27 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "employee.view",
     "employee.add",
     "employee.docs",
+    // Receive spare parts, issue them to a machine, see own plant's stock.
+    "stock",
+    // Own plant's operational reports (plant sheets, stock, imprest).
+    "reports",
+    "support",
+    "work",
+    "release.read",
+  ],
+
+  // Spare parts and stores for every plant. Registers the vendors it buys
+  // from (manufacturing side), runs the stock, reads stock reports. No
+  // money, no Tally, no coordination.
+  procurement: [
+    "stock",
+    "stock.manage",
+    "partners",
+    "documents",
+    "reports",
+    "imprest.entry",
+    "imprest.view",
+    "attendance.entry",
     "support",
     "work",
     "release.read",
@@ -270,10 +302,12 @@ export const ROUTE_PERMISSIONS: { prefix: string; permission: Permission }[] = [
   { prefix: "/api/memory", permission: "settings" },
   { prefix: "/api/onboarding", permission: "developer" },
   { prefix: "/api/vault", permission: "developer" },
-  { prefix: "/api/reports-builder", permission: "developer" },
+  { prefix: "/api/reports-builder", permission: "reports" },
   { prefix: "/api/twin", permission: "developer" },
   { prefix: "/api/backup", permission: "settings" },
   { prefix: "/api/plants-master", permission: "operations" },
+  { prefix: "/api/stock", permission: "stock" },
+  { prefix: "/api/plant-match", permission: "operations" },
   { prefix: "/api/plant-verify", permission: "operations" },
   { prefix: "/api/plant-upload", permission: "operations" },
   { prefix: "/api/plant-sheet", permission: "operations" },
@@ -331,13 +365,14 @@ export const ROUTE_PERMISSIONS: { prefix: string; permission: Permission }[] = [
   { prefix: "/operations", permission: "developer" },
   { prefix: "/inbox", permission: "settings" },
   { prefix: "/po", permission: "operations" },
+  { prefix: "/stock", permission: "stock" },
   { prefix: "/command", permission: "work" },
   { prefix: "/decisions", permission: "developer" },
   { prefix: "/entity", permission: "work" },
   { prefix: "/contracts", permission: "developer" },
   { prefix: "/onboarding", permission: "developer" },
   { prefix: "/vault", permission: "developer" },
-  { prefix: "/report-builder", permission: "developer" },
+  { prefix: "/report-builder", permission: "reports" },
   { prefix: "/twin", permission: "developer" },
   { prefix: "/vendors", permission: "vendors" },
   { prefix: "/customers", permission: "customers" },
@@ -448,6 +483,8 @@ export function landingPathFor(role: Role | null | undefined): string {
       return "/plants";
     case "coordinator":
       return "/documents";
+    case "procurement":
+      return "/stock";
     default:
       return "/";
   }
@@ -473,7 +510,9 @@ export const PERMISSION_INFO: Record<string, { label: string; what: string; why:
   "employee.view": { label: "Employees", what: "Employee master and KYC files.", why: "HR/accounts and plant managers.", risk: "high" },
   "attendance.entry": { label: "Attendance & Leave", what: "Mark attendance, decide leave, send holiday notices.", why: "Plant managers and accounts.", risk: "medium" },
   payroll: { label: "Payroll", what: "Salary runs, payslips, PF/ESIC, organisation lists.", why: "Accounts only.", risk: "high" },
-  reports: { label: "Reports & Analytics", what: "Live Tally reports, analytics, Excel exports.", why: "Management and accounts.", risk: "medium" },
+  reports: { label: "Reports & Report Builder", what: "Module reports (imprest, coordination, transport, biomass, stock, vendors…) as PDF and Excel — only over data the person can already see.", why: "Management, accounts, and each team for its own data.", risk: "medium" },
+  stock: { label: "Plant stock", what: "See spare-part stock, receive parts (GRN), issue parts to machines. Plant managers: own plant.", why: "Plant managers, stores, procurement.", risk: "medium" },
+  "stock.manage": { label: "Plant stock — manage", what: "Item & machine masters, adjustments, cancellations, transfers, all plants.", why: "Procurement / stores in-charge.", risk: "medium" },
   company: { label: "Company", what: "Company profile and company documents.", why: "Admin/accounts.", risk: "medium" },
   settings: { label: "Settings", what: "Appearance, mail, backup, Drive, PO policy, SLA, memory.", why: "Admin. Changes affect everyone.", risk: "high" },
   users: { label: "Users & Audit", what: "Create users, set roles, read the audit log.", why: "Admin only.", risk: "high" },

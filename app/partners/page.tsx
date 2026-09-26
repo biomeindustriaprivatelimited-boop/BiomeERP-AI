@@ -112,6 +112,7 @@ export default function PartnersPage() {
       ...blank,
       category: data?.myRole === "coordinator" ? "trading" : "raw_material",
       plants: data?.myRole === "plant_manager" && data?.myPlant ? [data.myPlant] : [],
+      supplies: data?.myRole === "procurement" ? ["spare_parts"] : blank.supplies,
     });
     setQueued([]);
     setNotice(null);
@@ -201,7 +202,8 @@ export default function PartnersPage() {
   const s = data?.summary;
   const myRole: string = data?.myRole || "";
   const isCoordinator = myRole === "coordinator";
-  const isPlantManager = myRole === "plant_manager";
+  // Procurement registers manufacturing-side vendors too (spare parts, stores).
+  const isPlantManager = myRole === "plant_manager" || myRole === "procurement";
   const docTypes = (data?.documentTypes || []).filter(
     (t: any) => t.kinds.length === 0 || t.kinds.includes(form.kind)
   );
@@ -485,7 +487,7 @@ export default function PartnersPage() {
             <Shape value={form.pan} ok={/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(form.pan || "")} what="PAN" />
           </F>
           <F label="Serves which plants">
-            <select multiple value={form.plants} disabled={isPlantManager}
+            <select multiple value={form.plants} disabled={myRole === "plant_manager"}
               onChange={(e) => setForm({ ...form, plants: Array.from(e.target.selectedOptions).map((o) => o.value) })}
               className={`${inputCls} h-[76px]`}>
               {(data?.plants || []).map((p: any) => <option key={p.code} value={p.code}>{p.label}</option>)}

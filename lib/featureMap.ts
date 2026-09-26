@@ -59,13 +59,14 @@ export const FEATURE_MAP: FeatureCategory[] = [
       { id: "po", label: "PO Control", href: "/po", icon: "Package", perm: "operations", what: "Vendor and client purchase orders with balances computed live from linked supplies; exhaustion alerts and accounts email." },
       { id: "transport", label: "Transport", href: "/transport", icon: "Truck", perm: "operations", what: "Transporters, vehicles and trips." },
       { id: "plants", label: "Plants", href: "/plants", icon: "Factory", perm: "operations", what: "Rewari and Gangakhed — codes, allowances, contacts." },
+      { id: "stock", label: "Plant Stock · Spare parts", href: "/stock", icon: "Package", perm: "stock", what: "Spare parts in (GRN from registered vendors), on hand, issued to which machine; re-order alerts; Excel." },
       { id: "operations", label: "Operations Board", href: "/operations", icon: "Map", perm: "developer", what: "Every load in motion and what is late." },
     ],
   },
   {
     id: "partners", label: "Partners", tagline: "Who you buy from and who you supply.", icon: "Handshake", tone: "from-lime-500/25 to-emerald-400/10",
     features: [
-      { id: "vendors", label: "Vendors & Transporters", href: "/partners", icon: "Handshake", perm: "partners", what: "The single register with KYC. Plant managers: own plant. Coordinators: trading vendors. Accounts/admin: all." },
+      { id: "vendors", label: "Vendor & Client Registration", href: "/partners", icon: "Handshake", perm: "partners", what: "One register with KYC upload and Submit & freeze. Coordinators: trading. Plant managers: manufacturing (own plant). Accounts/admin/developer: all + unlock." },
       { id: "clients", label: "Clients", href: "/clients", icon: "Users", perm: "customers", what: "The power plants you supply and the papers each one insists on." },
       { id: "contracts", label: "Contracts", href: "/contracts", icon: "FileSignature", perm: "developer", what: "Agreements, renewal dates, obligations and commitments." },
     ],
@@ -98,7 +99,7 @@ export const FEATURE_MAP: FeatureCategory[] = [
     features: [
       { id: "reports", label: "Reports", href: "/reports", icon: "BarChart3", perm: "reports", what: "Canned live-from-Tally reports with Excel export." },
       { id: "analytics", label: "Analytics", href: "/analytics", icon: "Activity", perm: "reports", what: "Trends by month and by party for the current FY." },
-      { id: "report-builder", label: "Report Builder", href: "/report-builder", icon: "BarChart3", perm: "developer", what: "No-code and plain-language reports across modules." },
+      { id: "report-builder", label: "Report Builder", href: "/report-builder", icon: "BarChart3", perm: "reports", what: "Imprest, coordination, transport, biomass, stock, vendors… by category, person, place, plant or user — PDF and Excel." },
     ],
   },
   {

@@ -52,6 +52,10 @@ function visibleTo(partners: Partner[], role: string, plant: string | null): Par
   if (role === "coordinator") {
     return partners.filter((p) => p.category === "trading");
   }
+  if (role === "procurement") {
+    // Buys spare parts and stores for every plant — manufacturing side only.
+    return partners.filter((p) => p.category !== "trading");
+  }
   if (role === "plant_manager") {
     return partners.filter(
       (p) =>
@@ -170,7 +174,7 @@ export async function POST(req: NextRequest) {
   // Ownership is decided by role, not by what the form sent: trading is
   // the coordinator's register, manufacturing the plant manager's.
   if (user.role === "coordinator") category = "trading";
-  if (user.role === "plant_manager") category = "raw_material";
+  if (user.role === "plant_manager" || user.role === "procurement") category = "raw_material";
 
   // Two records for one company means two sets of papers, two agreements,
   // and a payment made against whichever one someone opened first.
