@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { motion } from "framer-motion";
 import {
   ScanLine,
@@ -9,6 +10,7 @@ import {
   FileText,
   Download,
   Sparkles,
+  Table2,
   X,
   Info,
 } from "lucide-react";
@@ -65,6 +67,7 @@ export default function OcrScannerPage() {
   const [docs, setDocs] = useState<QueuedDoc[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [lang, setLang] = useState<OcrLanguage>("eng");
+  const [mode, setMode] = useState<"best" | "offline">("best");
   const [exportingPdf, setExportingPdf] = useState(false);
   const { notify } = useNotifications();
   const [exportingExcel, setExportingExcel] = useState(false);
@@ -151,7 +154,7 @@ export default function OcrScannerPage() {
         let table: PdfTable | null = null;
         let labReport: LabReportData | null = null;
 
-        if (aiAvailable !== false) {
+        if (mode === "best" && aiAvailable !== false) {
           setProgress(doc.id, "Reading with AI (Claude vision)…");
           try {
             const ai = await extractDocumentWithAI(images.slice(0, 6));
@@ -275,7 +278,7 @@ export default function OcrScannerPage() {
         });
       }
     }
-  }, [docs, lang, aiAvailable]);
+  }, [docs, lang, aiAvailable, mode]);
 
   const activeDoc = docs.find((d) => d.id === activeId) ?? null;
   const doneDocs = docs.filter((d) => d.status === "done");
@@ -289,6 +292,39 @@ export default function OcrScannerPage() {
       table: d.table ?? null,
       rawText: d.result?.text ?? "",
     }));
+  }
+
+  /**
+   * The classified export.
+   *
+   * The old one put every field found anywhere in the batch as a column on
+   * every row, and the whole recognised text in a cell — so a hundred mixed
+   * documents produced a sheet that was mostly empty and impossible to
+   * read. This sorts the batch by document type first and gives each type
+   * its own sheet with only its own columns.
+   */
+  async function exportClassifiedExcel() {
+    setExportingExcel(true);
+    try {
+      const { downloadClassifiedExcel } = await import("@/lib/ocrExport");
+      // Processed results, not the raw upload queue — the queue has no
+      // fileName/rawText, so the sorter found nothing and the export died.
+      const plan = await downloadClassifiedExcel(summaries() as any, "biome-documents-sorted.xlsx");
+      const summary = Object.entries(plan.counts)
+        .map(([name, n]) => `${n} ${name.toLowerCase()}`)
+        .join(", ");
+      notify({
+        kind: "success",
+        title: "Sorted export ready",
+        detail: summary
+          ? `${summary}${plan.unreadable.length ? ` · ${plan.unreadable.length} could not be read` : ""}`
+          : "biome-documents-sorted.xlsx",
+      });
+    } catch (err) {
+      notify({ kind: "error", title: "Export failed", detail: (err as Error).message });
+    } finally {
+      setExportingExcel(false);
+    }
   }
 
   async function exportExcel() {
@@ -312,16 +348,27 @@ export default function OcrScannerPage() {
     notify({ kind: "success", title: "CSV export ready", detail: "biome-ocr-results.csv" });
   }
 
+  /**
+   * The PDF now follows the same plan as the Excel export: a contents
+   * page, then one section per document type, then whatever could not be
+   * read. A mixed batch of a hundred files comes back sorted rather than
+   * as one flat table nobody can use.
+   */
   async function exportPdf() {
     setExportingPdf(true);
     try {
       const docs = summaries();
-      await downloadOcrPdfReport(docs, "biome-ocr-report.pdf");
+      const { downloadClassifiedPdf } = await import("@/lib/ocrExport");
+      const plan = await downloadClassifiedPdf(docs as any, "biome-documents-sorted.pdf");
       notify({
         kind: "success",
         title: "PDF report ready",
-        detail: `${docs.length} document${docs.length === 1 ? "" : "s"} exported to biome-ocr-report.pdf`,
+        detail:
+          `${plan.sheets.length} document type${plan.sheets.length === 1 ? "" : "s"} across ${docs.length} file${docs.length === 1 ? "" : "s"}` +
+          (plan.unreadable.length ? ` · ${plan.unreadable.length} could not be read` : ""),
       });
+    } catch (err) {
+      notify({ kind: "error", title: "Export failed", detail: (err as Error).message });
     } finally {
       setExportingPdf(false);
     }
@@ -340,6 +387,10 @@ export default function OcrScannerPage() {
               <span className="flex items-center gap-1 rounded-full bg-biome-leaf/12 px-2.5 py-1 text-xs font-medium text-biome-leafBright">
                 <Sparkles size={12} /> AI-Powered Reading
               </span>
+              <Link href="/ocr/sheets"
+                className="bmx-chip flex items-center gap-1 rounded-full border border-biome-leaf/30 bg-biome-leaf/[.06] px-2.5 py-1 text-xs font-semibold text-biome-leaf transition-colors hover:bg-biome-leaf/12">
+                <Table2 size={12} /> Smart Sheets — batch to Excel
+              </Link>
             </h1>
             <p className="mt-1 max-w-2xl text-sm text-biome-muted">
               Upload any document or photo — invoices, receipts, ID cards, certificates, forms,
@@ -378,7 +429,7 @@ export default function OcrScannerPage() {
             <select
               value={lang}
               onChange={(e) => setLang(e.target.value as OcrLanguage)}
-              className="rounded-lg border border-biome-line bg-white/5 px-2 py-1 text-xs text-biome-text outline-none focus:border-biome-leaf"
+              className="rounded-lg border border-biome-line bg-biome-hover px-2 py-1 text-xs text-biome-text outline-none focus:border-biome-leaf"
             >
               <option value="eng" className="bg-biome-bgSoft">
                 English
@@ -388,10 +439,24 @@ export default function OcrScannerPage() {
               </option>
             </select>
           </label>
+          <label className="flex items-center gap-2 text-xs text-biome-muted">
+            <Sparkles size={14} />
+            Processing mode
+            <select
+              value={mode}
+              onChange={(e) => setMode(e.target.value as "best" | "offline")}
+              className="rounded-lg border border-biome-line bg-biome-hover px-2 py-1 text-xs text-biome-text outline-none focus:border-biome-leaf"
+            >
+              <option value="best" className="bg-biome-bgSoft">Best accuracy (AI + offline fallback)</option>
+              <option value="offline" className="bg-biome-bgSoft">Offline only (no cloud reading)</option>
+            </select>
+          </label>
           <p className="text-[11px] text-biome-muted/70">
-            {aiAvailable === false
-              ? "Currently running offline OCR — 6 passes per document (2 enhancement levels × 3 layout modes)."
-              : "AI reading is used by default. Offline OCR only runs if AI reading is unavailable for a document."}
+            {mode === "offline"
+              ? "Offline-only mode: documents stay on this machine and use the multi-pass local OCR engine."
+              : aiAvailable === false
+                ? "AI is unavailable, so the scanner is using the local multi-pass OCR engine."
+                : "Best-accuracy mode tries vision AI first and automatically falls back to local OCR."}
           </p>
         </div>
       </GlassCard>
@@ -427,8 +492,14 @@ export default function OcrScannerPage() {
             <PremiumButton onClick={exportCsv} variant="ghost">
               <Download size={14} /> CSV
             </PremiumButton>
-            <PremiumButton onClick={exportExcel} disabled={exportingExcel} variant="secondary">
-              <FileSpreadsheet size={14} /> {exportingExcel ? "Building…" : "Excel Report"}
+            {/* The primary export: sorted by document type, one sheet each.
+                The old flat "Excel Report" is kept as a secondary because a
+                single-type batch reads fine that way. */}
+            <PremiumButton onClick={exportClassifiedExcel} disabled={exportingExcel} variant="primary">
+              <FileSpreadsheet size={14} /> {exportingExcel ? "Sorting…" : "Excel — sorted by type"}
+            </PremiumButton>
+            <PremiumButton onClick={exportExcel} disabled={exportingExcel} variant="ghost">
+              <FileSpreadsheet size={14} /> Flat sheet
             </PremiumButton>
             <PremiumButton onClick={exportPdf} disabled={exportingPdf} variant="secondary">
               <FileText size={14} /> {exportingPdf ? "Building PDF…" : "PDF Report"}

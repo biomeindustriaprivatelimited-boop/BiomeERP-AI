@@ -1,0 +1,22 @@
+BIOME ERP - IMPLEMENTATION PASS 3
+
+Actual changes in this pass:
+
+1. REVIEW QUEUE
+- Review Queue now has a real "Review & File" action.
+- It opens the existing ManualClassify workflow instead of sending the user back to WhatsApp.
+- User can verify document type, supply reference, client, date, vehicle and document number.
+- On successful filing, the queue refreshes automatically.
+
+2. OFFLINE OCR MODE
+- OCR Scanner now has an explicit Processing Mode selector:
+  * Best accuracy (AI + offline fallback)
+  * Offline only (no cloud reading)
+- Offline-only mode skips the cloud vision request and uses the local multi-pass OCR engine.
+- Existing PDF/image extraction and Excel/PDF exports are preserved.
+
+3. VALIDATION
+- WhatsApp agent JS files were syntax checked after the changes.
+- Full Next.js build could not be executed in this environment because node_modules are not installed in the supplied source workspace. Run npm install before build testing on the Windows machine.
+
+This is an implementation pass, not a claim that all external integrations are production-certified.

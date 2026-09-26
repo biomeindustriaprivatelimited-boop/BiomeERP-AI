@@ -1,0 +1,393 @@
+[#Part: BiomeVersionInfo]
+
+;; =====================================================================
+;;  BIOME AI OS — Tally Data Bridge
+;;  ---------------------------------------------------------------
+;;  Load this once in Tally and the app can pull EVERYTHING it needs
+;;  through five purpose-built reports, the same way ClearTax, Computax
+;;  and Saral do it.
+;;
+;;  WHY A TDL AT ALL
+;;  Tally's stock XML exports give you a fraction of what's on screen —
+;;  no GST registration type, no full address, no bill-by-bill breakup,
+;;  no ledger-level voucher entries. A TDL declares exactly the fields
+;;  we want and Tally hands them over in one request instead of ten.
+;;
+;;  HOW TO INSTALL
+;;    1. Save this file somewhere permanent, e.g.
+;;         C:\Tally\BiomeBridge.tdl
+;;    2. In Tally: F1 (Help) → TDL & Add-On → F4 (Manage Local TDL)
+;;    3. Set "Loading TDLs on startup" to Yes
+;;    4. Put the full file path under "List of TDL files to preload"
+;;    5. Accept, then restart Tally
+;;    6. Gateway of Tally → F1 → Advanced Configuration
+;;         Client/Server configuration = Both
+;;         Port = 9000
+;;
+;;  VERIFYING IT LOADED
+;;  In the app: Settings → Tally → Test Connection. It asks for
+;;  BiomeVersionInfo below; if that answers, the TDL is live.
+;;
+;;  SAFETY
+;;  Every report here is READ-ONLY. This file declares Collections and
+;;  Reports; it contains no Alter, no Set, and no voucher creation, so
+;;  it cannot modify your books. Loading it changes nothing in Tally's
+;;  own screens either — the reports are only reachable over XML.
+;; =====================================================================
+
+;; ---------------------------------------------------------------------
+;;  0. Version probe — lets the app confirm the TDL is loaded
+;; ---------------------------------------------------------------------
+[Report: BiomeVersionInfo]
+    Form        : BiomeVersionInfo
+
+[Form: BiomeVersionInfo]
+    Part        : BiomeVersionInfo
+
+[Part: BiomeVersionInfo]
+    Line        : BiomeVersionInfo
+
+[Line: BiomeVersionInfo]
+    Field       : BiomeBridgeName, BiomeBridgeVersion, BiomeCompanyName
+
+[Field: BiomeBridgeName]
+    Set as      : "BIOME_AI_OS_BRIDGE"
+    XMLTag      : "BRIDGE"
+
+[Field: BiomeBridgeVersion]
+    Set as      : "1.0.0"
+    XMLTag      : "VERSION"
+
+[Field: BiomeCompanyName]
+    Set as      : ##SVCurrentCompany
+    XMLTag      : "COMPANY"
+
+
+;; ---------------------------------------------------------------------
+;;  1. LEDGER MASTERS — every ledger with its full identity
+;;     Covers both GST-registered and unregistered parties, which is why
+;;     the GST fields are optional rather than filtered on.
+;; ---------------------------------------------------------------------
+[Collection: BiomeLedgerColl]
+    Type            : Ledger
+    Fetch           : Name, Parent, OpeningBalance, ClosingBalance
+    Fetch           : PartyGSTIN, GSTRegistrationType, LedgerStateName
+    Fetch           : LedgerPhone, LedgerMobile, LedgerContact, Email
+    Fetch           : Address, PinCode, CountryName, IncomeTaxNumber
+    Fetch           : BillCreditPeriod, CreditLimit
+    Fetch           : IsBillWiseOn, IsCostCentresOn, AffectsStock
+    Fetch           : BankAccountNumber, IFSCode, BankName
+    Fetch           : GSTDutyHead, TaxType, RateOfTaxCalculation
+
+[Report: BiomeLedgerMasters]
+    Form            : BiomeLedgerMasters
+
+[Form: BiomeLedgerMasters]
+    Part            : BiomeLedgerMasters
+    XMLTag          : "LEDGERS"
+
+[Part: BiomeLedgerMasters]
+    Lines           : BiomeLedgerRow
+    Repeat          : BiomeLedgerRow : BiomeLedgerColl
+    Scrolled        : Vertical
+
+[Line: BiomeLedgerRow]
+    Fields          : BLName, BLParent, BLOpening, BLClosing
+    Right Fields    : BLGSTIN, BLRegType, BLState, BLPhone, BLEmail
+    Right Fields    : BLAddress, BLPin, BLPAN, BLCreditDays, BLCreditLimit
+    Right Fields    : BLBillWise, BLBankAcc, BLIFSC, BLBankName
+    XMLTag          : "LEDGER"
+
+[Field: BLName]
+    Set as          : $Name
+    XMLTag          : "NAME"
+[Field: BLParent]
+    Set as          : $Parent
+    XMLTag          : "GROUP"
+[Field: BLOpening]
+    Set as          : $OpeningBalance
+    XMLTag          : "OPENINGBALANCE"
+[Field: BLClosing]
+    Set as          : $ClosingBalance
+    XMLTag          : "CLOSINGBALANCE"
+[Field: BLGSTIN]
+    Set as          : $PartyGSTIN
+    XMLTag          : "GSTIN"
+[Field: BLRegType]
+    Set as          : $GSTRegistrationType
+    XMLTag          : "GSTREGISTRATIONTYPE"
+[Field: BLState]
+    Set as          : $LedgerStateName
+    XMLTag          : "STATE"
+[Field: BLPhone]
+    ;; Mobile is more reliably filled than the landline field.
+    Set as          : if $$IsEmpty:$LedgerMobile then $LedgerPhone else $LedgerMobile
+    XMLTag          : "PHONE"
+[Field: BLEmail]
+    Set as          : $Email
+    XMLTag          : "EMAIL"
+[Field: BLAddress]
+    ;; Address is a multi-line list in Tally; flatten it to one string.
+    Set as          : $$FullList:Address
+    XMLTag          : "ADDRESS"
+[Field: BLPin]
+    Set as          : $PinCode
+    XMLTag          : "PINCODE"
+[Field: BLPAN]
+    Set as          : $IncomeTaxNumber
+    XMLTag          : "PAN"
+[Field: BLCreditDays]
+    Set as          : $BillCreditPeriod
+    XMLTag          : "CREDITDAYS"
+[Field: BLCreditLimit]
+    Set as          : $CreditLimit
+    XMLTag          : "CREDITLIMIT"
+[Field: BLBillWise]
+    Set as          : $IsBillWiseOn
+    XMLTag          : "BILLWISE"
+[Field: BLBankAcc]
+    Set as          : $BankAccountNumber
+    XMLTag          : "BANKACCOUNT"
+[Field: BLIFSC]
+    Set as          : $IFSCode
+    XMLTag          : "IFSC"
+[Field: BLBankName]
+    Set as          : $BankName
+    XMLTag          : "BANKNAME"
+
+
+;; ---------------------------------------------------------------------
+;;  2. VOUCHERS — every transaction, with its ledger entries
+;;     The date range comes from SVFromDate/SVToDate, which the app sets
+;;     in the request envelope.
+;; ---------------------------------------------------------------------
+[Collection: BiomeVoucherColl]
+    Type            : Voucher
+    Fetch           : Date, VoucherTypeName, VoucherNumber, Reference
+    Fetch           : ReferenceDate, PartyLedgerName, Narration
+    Fetch           : Amount, IsCancelled, IsOptional, GUID
+    Fetch           : PersistedView, EffectiveDate
+    Fetch           : AllLedgerEntries.*, InventoryEntries.*
+    ;; Cancelled and optional vouchers aren't real transactions and would
+    ;; inflate every total if included.
+    Filter          : BiomeRealVouchers
+
+[System: Formula]
+    BiomeRealVouchers : NOT $IsCancelled AND NOT $IsOptional
+
+[Report: BiomeVouchers]
+    Form            : BiomeVouchers
+
+[Form: BiomeVouchers]
+    Part            : BiomeVouchers
+    XMLTag          : "VOUCHERS"
+
+[Part: BiomeVouchers]
+    Lines           : BiomeVoucherRow
+    Repeat          : BiomeVoucherRow : BiomeVoucherColl
+    Scrolled        : Vertical
+
+[Line: BiomeVoucherRow]
+    Fields          : BVDate, BVType, BVNumber, BVParty
+    Right Fields    : BVReference, BVRefDate, BVNarration, BVAmount, BVGuid
+    Explode         : BiomeVoucherEntries : YES
+    XMLTag          : "VOUCHER"
+
+[Field: BVDate]
+    Set as          : $Date
+    XMLTag          : "DATE"
+[Field: BVType]
+    Set as          : $VoucherTypeName
+    XMLTag          : "VOUCHERTYPE"
+[Field: BVNumber]
+    Set as          : $VoucherNumber
+    XMLTag          : "VOUCHERNUMBER"
+[Field: BVParty]
+    Set as          : $PartyLedgerName
+    XMLTag          : "PARTY"
+[Field: BVReference]
+    Set as          : $Reference
+    XMLTag          : "REFERENCE"
+[Field: BVRefDate]
+    Set as          : $ReferenceDate
+    XMLTag          : "REFERENCEDATE"
+[Field: BVNarration]
+    Set as          : $Narration
+    XMLTag          : "NARRATION"
+[Field: BVAmount]
+    Set as          : $Amount
+    XMLTag          : "AMOUNT"
+[Field: BVGuid]
+    ;; Stable across edits — this is what the app dedupes on.
+    Set as          : $GUID
+    XMLTag          : "GUID"
+
+;; Each voucher's debit/credit lines, which is what makes reconciliation
+;; possible at all.
+[Part: BiomeVoucherEntries]
+    Lines           : BiomeEntryRow
+    Repeat          : BiomeEntryRow : AllLedgerEntries
+    Scrolled        : Vertical
+
+[Line: BiomeEntryRow]
+    Fields          : BEledger, BEamount, BEisDeemed, BEbillAlloc
+    XMLTag          : "ENTRY"
+
+[Field: BEledger]
+    Set as          : $LedgerName
+    XMLTag          : "LEDGER"
+[Field: BEamount]
+    Set as          : $Amount
+    XMLTag          : "AMOUNT"
+[Field: BEisDeemed]
+    Set as          : $IsDeemedPositive
+    XMLTag          : "ISDEBIT"
+[Field: BEbillAlloc]
+    ;; Bill-by-bill references — how a payment ties to an invoice.
+    Set as          : $$FullList:BillAllocations:$Name
+    XMLTag          : "BILLREFS"
+
+
+;; ---------------------------------------------------------------------
+;;  3. BALANCE SHEET — group-wise, with closing balances
+;; ---------------------------------------------------------------------
+[Collection: BiomeBalanceSheetColl]
+    Type            : Group
+    Fetch           : Name, Parent, ClosingBalance, OpeningBalance
+    Fetch           : IsRevenue, IsDeemedPositive, IsSubLedger
+    ;; Revenue groups belong to the P&L, not the balance sheet.
+    Filter          : BiomeIsBalanceSheetGroup
+
+[System: Formula]
+    BiomeIsBalanceSheetGroup : NOT $IsRevenue
+
+[Report: BiomeBalanceSheet]
+    Form            : BiomeBalanceSheet
+
+[Form: BiomeBalanceSheet]
+    Part            : BiomeBalanceSheet
+    XMLTag          : "BALANCESHEET"
+
+[Part: BiomeBalanceSheet]
+    Lines           : BiomeBSRow
+    Repeat          : BiomeBSRow : BiomeBalanceSheetColl
+    Scrolled        : Vertical
+
+[Line: BiomeBSRow]
+    Fields          : BBName, BBParent, BBOpening, BBClosing, BBNature
+    XMLTag          : "GROUP"
+
+[Field: BBName]
+    Set as          : $Name
+    XMLTag          : "NAME"
+[Field: BBParent]
+    Set as          : $Parent
+    XMLTag          : "PARENT"
+[Field: BBOpening]
+    Set as          : $OpeningBalance
+    XMLTag          : "OPENINGBALANCE"
+[Field: BBClosing]
+    Set as          : $ClosingBalance
+    XMLTag          : "CLOSINGBALANCE"
+[Field: BBNature]
+    ;; Tells the app which side of the sheet this belongs on without it
+    ;; having to guess from the sign.
+    Set as          : if $IsDeemedPositive then "ASSET" else "LIABILITY"
+    XMLTag          : "NATURE"
+
+
+;; ---------------------------------------------------------------------
+;;  4. PROFIT & LOSS — revenue and expense groups
+;; ---------------------------------------------------------------------
+[Collection: BiomeProfitLossColl]
+    Type            : Group
+    Fetch           : Name, Parent, ClosingBalance, OpeningBalance
+    Fetch           : IsRevenue, IsDeemedPositive
+    Filter          : BiomeIsRevenueGroup
+
+[System: Formula]
+    BiomeIsRevenueGroup : $IsRevenue
+
+[Report: BiomeProfitLoss]
+    Form            : BiomeProfitLoss
+
+[Form: BiomeProfitLoss]
+    Part            : BiomeProfitLoss
+    XMLTag          : "PROFITLOSS"
+
+[Part: BiomeProfitLoss]
+    Lines           : BiomePLRow
+    Repeat          : BiomePLRow : BiomeProfitLossColl
+    Scrolled        : Vertical
+
+[Line: BiomePLRow]
+    Fields          : BPName, BPParent, BPOpening, BPClosing, BPNature
+    XMLTag          : "GROUP"
+
+[Field: BPName]
+    Set as          : $Name
+    XMLTag          : "NAME"
+[Field: BPParent]
+    Set as          : $Parent
+    XMLTag          : "PARENT"
+[Field: BPOpening]
+    Set as          : $OpeningBalance
+    XMLTag          : "OPENINGBALANCE"
+[Field: BPClosing]
+    Set as          : $ClosingBalance
+    XMLTag          : "CLOSINGBALANCE"
+[Field: BPNature]
+    Set as          : if $IsDeemedPositive then "EXPENSE" else "INCOME"
+    XMLTag          : "NATURE"
+
+
+;; ---------------------------------------------------------------------
+;;  5. STOCK ITEMS — inventory, for supply reconciliation
+;; ---------------------------------------------------------------------
+[Collection: BiomeStockColl]
+    Type            : StockItem
+    Fetch           : Name, Parent, BaseUnits, ClosingBalance
+    Fetch           : ClosingValue, ClosingRate, GSTApplicable
+    Fetch           : HSNCode, GSTTypeOfSupply
+
+[Report: BiomeStockItems]
+    Form            : BiomeStockItems
+
+[Form: BiomeStockItems]
+    Part            : BiomeStockItems
+    XMLTag          : "STOCKITEMS"
+
+[Part: BiomeStockItems]
+    Lines           : BiomeStockRow
+    Repeat          : BiomeStockRow : BiomeStockColl
+    Scrolled        : Vertical
+
+[Line: BiomeStockRow]
+    Fields          : BSName, BSParent, BSUnits, BSQty, BSValue, BSRate, BSHSN
+    XMLTag          : "STOCKITEM"
+
+[Field: BSName]
+    Set as          : $Name
+    XMLTag          : "NAME"
+[Field: BSParent]
+    Set as          : $Parent
+    XMLTag          : "GROUP"
+[Field: BSUnits]
+    Set as          : $BaseUnits
+    XMLTag          : "UNITS"
+[Field: BSQty]
+    Set as          : $ClosingBalance
+    XMLTag          : "CLOSINGQTY"
+[Field: BSValue]
+    Set as          : $ClosingValue
+    XMLTag          : "CLOSINGVALUE"
+[Field: BSRate]
+    Set as          : $ClosingRate
+    XMLTag          : "CLOSINGRATE"
+[Field: BSHSN]
+    Set as          : $HSNCode
+    XMLTag          : "HSN"
+
+;; =====================================================================
+;;  End of BIOME AI OS Tally Bridge
+;; =====================================================================

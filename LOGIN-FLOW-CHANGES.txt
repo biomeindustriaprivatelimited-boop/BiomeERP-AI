@@ -1,0 +1,34 @@
+BIOME ERP LOGIN FLOW CHANGES
+============================
+
+New application flow:
+1. App opens.
+2. BIOME INDUSTRIA company splash/interface is shown.
+3. Splash finishes.
+4. User is taken to the standalone Login screen.
+5. Login is outside the application sidebar/navbar/features.
+6. User enters any User ID/password during testing and clicks Sign in.
+7. Temporary session flag allows entry to the main application.
+8. Main application shell (sidebar/navbar/dashboard/features) is then shown.
+
+Important:
+- No real User ID/password has been configured.
+- Testing authentication remains intentionally open.
+- Existing application features and routes are preserved.
+- Login has been removed from the feature/sidebar navigation.
+- Unauthenticated direct navigation to application routes is redirected to /login.
+- Authenticated navigation to /login is redirected to the dashboard.
+- The actual BIOME INDUSTRIA logo is now used on the company splash and login screen.
+
+Files changed:
+- components/AppGate.tsx (new)
+- app/layout.tsx
+- app/login/page.tsx
+- components/Sidebar.tsx
+- components/brand/SplashScreen.tsx
+
+Build note:
+The uploaded project did not include node_modules in the ZIP, and this environment
+could not complete npm dependency installation, so a full Next.js production build
+could not be executed here. Run `npm ci` followed by `npm run build` on the development
+machine before packaging the Windows application.

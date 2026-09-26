@@ -1,0 +1,6 @@
+{
+  "agentPort": 8420,
+  "tallyHost": "localhost",
+  "tallyPort": 9000,
+  "apiKey": "CHANGE-ME-TO-A-LONG-RANDOM-VALUE"
+}

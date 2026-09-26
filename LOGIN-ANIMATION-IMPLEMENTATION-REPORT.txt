@@ -1,0 +1,64 @@
+BIOME ERP — LOGIN CINEMATIC ANIMATION FIX
+==========================================
+
+Scope
+-----
+Only the /login interface was changed for this animation task. ERP dashboard,
+WhatsApp, OCR, GST, Tally, reconciliation and reports were not intentionally
+modified by this pass.
+
+What was fixed
+--------------
+1. The supplied reference MP4 is now the source of truth for the character's
+   exact animation/timing instead of the previous broken transparent GIF.
+2. The old character GIF had UI fragments in its transparent extraction; it is
+   no longer used by the login scene.
+3. The supplied reference video is stored as:
+      public/login/login-reference.mp4
+4. The baked-in login panel from the reference video is masked on the right.
+5. The real interactive login form is hidden at first.
+6. The login form is revealed after the character's main action at 4.45 seconds.
+7. The login form enters with a smooth right-to-left fade/scale animation.
+8. If autoplay is blocked, the form has a safety fallback reveal after 0.9s.
+9. If the video errors or ends, the form is still revealed.
+10. Existing testing-mode authentication behavior is preserved.
+11. Existing User ID, Password, show/hide password and login routing are preserved.
+12. Login-only CSS is scoped under .biome-login-* classes.
+
+Reference video validation
+--------------------------
+- Duration: approximately 7.66 seconds (7.60s video stream)
+- Resolution: 1914 x 916
+- Frame rate: 30 fps
+- Character is visibly present in sampled frames.
+- Character action is visible around the middle of the animation.
+
+Source validation performed
+---------------------------
+- app/login/page.tsx transpile check: PASS
+- components/brand/BiomassLoginScene.tsx transpile check: PASS
+- reference MP4 ffprobe validation: PASS
+- login-reference.mp4 exists in public/login: PASS
+- existing WhatsApp agent JS syntax check: PASS
+
+Not certified in this environment
+----------------------------------
+A full `npm run build` could not be completed in this execution environment
+because project npm dependencies are not installed/available here. Therefore
+this package is NOT claimed to be a fully production-certified build.
+
+Windows test
+------------
+From the project directory:
+  npm install
+  npm run build
+  npm run dev:next-only
+Then open:
+  http://localhost:3000/login
+
+Expected login sequence
+-----------------------
+0.00s  Reference cinematic begins; interactive login is hidden.
+~4.45s Character has completed the main action; interactive login begins reveal.
+~5.30s Login card is fully visible and usable.
+~7.60s Reference video reaches its end; login remains usable.

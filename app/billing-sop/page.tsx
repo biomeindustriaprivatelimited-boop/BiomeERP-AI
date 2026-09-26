@@ -255,7 +255,7 @@ export default function BillingSopPage() {
           initial={{ opacity: 0, scale: 0.85 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ duration: 0.5, ease: "easeOut" }}
-          className="mx-auto mb-4 h-16 w-16 overflow-hidden rounded-2xl bg-white/95 p-2"
+          className="mx-auto mb-4 h-16 w-16 overflow-hidden rounded-2xl bg-biome-hover p-2"
         >
           <Image
             src="/assets/logo.png"
@@ -277,7 +277,7 @@ export default function BillingSopPage() {
           all major clients of BIOME Industria Private Limited.
         </p>
 
-        <div className="mx-auto mt-6 grid max-w-3xl grid-cols-2 gap-x-6 gap-y-2 rounded-xl border border-biome-line bg-white/[0.02] p-4 text-left sm:grid-cols-3">
+        <div className="mx-auto mt-6 grid max-w-3xl grid-cols-2 gap-x-6 gap-y-2 rounded-xl border border-biome-line bg-biome-hover p-4 text-left sm:grid-cols-3">
           {DOC_CONTROL.map((d, i) => (
             <motion.div
               key={d.label}
@@ -409,7 +409,7 @@ export default function BillingSopPage() {
                               return (
                                 <div
                                   key={d}
-                                  className="flex items-center gap-2 rounded-lg border border-biome-line bg-white/[0.02] px-3 py-2"
+                                  className="flex items-center gap-2 rounded-lg border border-biome-line bg-biome-hover px-3 py-2"
                                 >
                                   <Icon size={14} className="shrink-0 text-biome-leafBright" />
                                   <span className="text-xs text-biome-text">{d}</span>

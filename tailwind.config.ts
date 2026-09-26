@@ -6,28 +6,41 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
+        // Every colour reads a CSS variable holding SPACE-SEPARATED RGB
+        // channels, e.g. --c-leaf: 124 179 66. That form is what lets
+        // Tailwind keep working with opacity modifiers (bg-biome-leaf/10)
+        // while the actual hue is swappable at runtime from Settings.
+        //
+        // These used to be hard-coded hex, which is why the theme switch
+        // appeared to do nothing: `text-biome-leafBright` compiled to a
+        // literal colour and ignored the variables entirely.
         biome: {
-          bg: "#0A0F1A",
-          bgSoft: "#0E1524",
-          surface: "#111A2E",
-          leaf: "#7CB342",
-          leafBright: "#9CCC65",
-          sky: "#4A7A9C",
-          skyBright: "#5B9BD5",
-          bolt: "#FDE047",
-          boltDeep: "#F4C430",
-          text: "#E8EDF5",
-          muted: "#8FA3C4",
-          line: "rgba(140, 170, 210, 0.14)",
+          bg: "rgb(var(--c-bg) / <alpha-value>)",
+          bgSoft: "rgb(var(--c-bg-soft) / <alpha-value>)",
+          surface: "rgb(var(--c-surface) / <alpha-value>)",
+          leaf: "rgb(var(--c-leaf) / <alpha-value>)",
+          leafBright: "rgb(var(--c-leaf-bright) / <alpha-value>)",
+          sky: "rgb(var(--c-sky) / <alpha-value>)",
+          skyBright: "rgb(var(--c-sky-bright) / <alpha-value>)",
+          bolt: "rgb(var(--c-bolt) / <alpha-value>)",
+          boltDeep: "rgb(var(--c-bolt-deep) / <alpha-value>)",
+          text: "rgb(var(--c-text) / <alpha-value>)",
+          muted: "rgb(var(--c-muted) / <alpha-value>)",
+          line: "rgb(var(--c-line) / <alpha-value>)",
+          // Hover/fill wash. White-on-dark only reads on dark themes,
+          // so this is a token the theme sets rather than a literal.
+          // A WASH, not a colour: bare `bg-biome-hover` is ~6% of the theme's
+          // ink (the old bg-white/5 … /10), and an explicit /50 scales that.
+          hover: "rgb(var(--c-hover) / calc(<alpha-value> * 0.06))",
         },
       },
       fontFamily: {
-        display: ["var(--font-space-grotesk)", "sans-serif"],
-        body: ["var(--font-inter)", "sans-serif"],
+        display: ["var(--font-display-active, var(--font-space-grotesk))", "sans-serif"],
+        body: ["var(--font-body-active, var(--font-inter))", "sans-serif"],
         mono: ["var(--font-plex-mono)", "monospace"],
       },
       boxShadow: {
-        glow: "0 0 40px -8px rgba(124, 179, 66, 0.35)",
+        glow: "0 0 34px -10px rgba(159, 232, 112, 0.5)",
         boltGlow: "0 0 30px -6px rgba(253, 224, 71, 0.45)",
       },
       backgroundImage: {

@@ -33,10 +33,10 @@ export default function DocumentQueue({
             className={`group flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-colors ${
               active
                 ? "border-biome-leaf/40 bg-biome-leaf/10"
-                : "border-transparent hover:bg-white/[0.04]"
+                : "border-transparent hover:bg-biome-hover"
             }`}
           >
-            <div className="h-10 w-10 shrink-0 overflow-hidden rounded-lg bg-white/5">
+            <div className="h-10 w-10 shrink-0 overflow-hidden rounded-lg bg-biome-hover">
               {doc.previewUrl ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img src={doc.previewUrl} alt="" className="h-full w-full object-cover" />

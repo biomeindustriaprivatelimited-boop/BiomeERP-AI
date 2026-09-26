@@ -1,18 +1,37 @@
+import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+import { requirePermission } from "@/lib/authServer";
+import { diagnoseKeys, verifyGeminiKey } from "@/lib/aiProvider";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-/** Lets the Settings UI show the real, current AI-OCR key status instead
- *  of the user having to guess why the OCR Scanner isn't reading anything.
- *  Never returns the key itself — only whether one is present. */
-export async function GET() {
-  const hasGemini = Boolean(process.env.GEMINI_API_KEY);
-  const hasAnthropic = Boolean(process.env.ANTHROPIC_API_KEY);
+/**
+ * Tells the UI the real, current AI status — including WHY it isn't
+ * working when a key is present but malformed (the exact case that used
+ * to fail silently). Never returns a key itself.
+ */
+export async function GET(req: NextRequest) {
+  const auth = await requirePermission(req, "release.read");
+  if ("response" in auth) return auth.response;
 
-  return NextResponse.json({
-    hasGemini,
-    hasAnthropic,
-    configured: hasGemini || hasAnthropic,
-    activeProvider: hasGemini ? "Gemini" : hasAnthropic ? "Anthropic" : null,
+  const d = diagnoseKeys();
+    // A shape check can only say "this doesn't look right", and that
+  // judgement was wrong once. Ask Google for the real verdict.
+  let geminiLive: { ok: boolean; message: string } | null = null;
+  const geminiKey = (process.env.GEMINI_API_KEY || "").trim();
+  if (geminiKey) {
+    geminiLive = await verifyGeminiKey(geminiKey);
+  }
+
+return NextResponse.json({
+    geminiLive,
+    configured: d.configured,
+    activeProvider: d.activeProvider,
+    hasGemini: d.hasGeminiValue,
+    hasAnthropic: d.hasAnthropicValue,
+    geminiUsable: d.geminiUsable,
+    anthropicUsable: d.anthropicUsable,
+    problem: d.problem,
   });
 }

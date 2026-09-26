@@ -4,33 +4,58 @@
   "private": true,
   "main": "electron/main.js",
   "scripts": {
-    "dev": "next dev",
+    "dev": "concurrently -n next,whatsapp -c green,cyan \"next dev\" \"node whatsapp-agent/agent.js\"",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "check": "node tools/check-coordination.mjs",
     "electron:dev": "electron .",
     "dist:win": "next build && electron-builder --win --x64",
-    "dist:win:dir": "next build && electron-builder --win --x64 --dir"
+    "dist:win:dir": "next build && electron-builder --win --x64 --dir",
+    "whatsapp:agent": "node whatsapp-agent/agent.js",
+    "dev:all": "concurrently -n next,whatsapp -c green,cyan \"next dev\" \"node whatsapp-agent/agent.js\"",
+    "dev:next-only": "next dev",
+    "whatsapp:doctor": "node whatsapp-agent/doctor.js"
   },
   "dependencies": {
+    "@fontsource/ibm-plex-mono": "^5.3.0",
+    "@fontsource/ibm-plex-sans": "^5.3.0",
+    "@fontsource/inter": "^5.3.0",
+    "@fontsource/manrope": "^5.3.0",
+    "@fontsource/plus-jakarta-sans": "^5.3.0",
+    "@fontsource/sora": "^5.3.0",
+    "@fontsource/space-grotesk": "^5.3.0",
     "@mlc-ai/web-llm": "^0.2.79",
+    "@tsparticles/react": "^4.4.0",
+    "@tsparticles/slim": "^4.4.0",
+    "@types/three": "^0.186.0",
+    "@whiskeysockets/baileys": "^6.7.18",
     "exceljs": "^4.4.0",
     "framer-motion": "^11.3.19",
+    "imapflow": "^1.7.8",
     "jspdf": "^4.2.1",
     "jspdf-autotable": "^5.0.8",
+    "jszip": "^3.10.1",
     "lucide-react": "^0.417.0",
+    "mupdf": "^1.28.1",
     "next": "14.2.35",
+    "nodemailer": "^6.9.14",
     "pdfjs-dist": "^6.1.200",
+    "pino": "^9.6.0",
+    "qrcode": "^1.5.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tesseract.js": "^7.0.0",
+    "three": "^0.186.0",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@types/node": "^20.14.13",
+    "@types/qrcode": "^1.5.5",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "autoprefixer": "^10.4.19",
+    "concurrently": "^9.1.2",
     "electron": "^31.3.0",
     "electron-builder": "^24.13.3",
     "postcss": "^8.4.40",
@@ -45,6 +70,7 @@
       "electron/**",
       ".next/**",
       "public/**",
+      "whatsapp-agent/**",
       "node_modules/**",
       "package.json",
       "next.config.js"
@@ -55,7 +81,14 @@
       "output": "release"
     },
     "win": {
-      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
       "icon": "build/icon.png"
     },
     "nsis": {

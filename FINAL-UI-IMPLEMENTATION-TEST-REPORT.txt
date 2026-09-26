@@ -1,0 +1,35 @@
+BIOME ERP — FINAL UI IMPLEMENTATION TEST REPORT
+Date: 2026-08-09
+
+SCOPE
+1. Splash screen: premium BIOME Industria experience, 8-second duration, animated leaves, globe, birds, energy/glow layers, module reveal.
+2. Login interface: premium sky-blue biomass/green-energy scene, biomass plant, animated worker, solar panels, wind turbine, falling leaves, clouds, animated login-card reveal.
+3. No ERP dashboard/business module changes were made as part of this UI pass.
+
+SOURCE-LEVEL TESTS
+PASS — package.json contains a build script: next build.
+PASS — no MessageSquareLock references remain in app/components/lib source.
+PASS — all TS/TSX files were parsed with the installed global TypeScript parser; no TS100x/TS1109/TS1128/TS1161 syntax diagnostics were found.
+PASS — LoginPage source parse check completed.
+PASS — BiomassLoginScene source parse check completed.
+PASS — SplashScreen source parse check completed.
+PASS — BrandBackdrop source parse check completed.
+PASS — login assets reference existing /public/assets/logo.png.
+PASS — splash duration is configured to 8000ms.
+PASS — login card reveal is synchronized to the scene at 3300ms.
+PASS — reduced-motion selectors are present for new animations.
+PASS — orange is not used as the dominant login background; the login scene uses sky-blue/cyan/green tones.
+
+RUNTIME BUILD TEST
+NOT PASSABLE IN THIS EXECUTION ENVIRONMENT — `npm run build` was invoked and returned `next: not found` because node_modules is not installed/usable in this sandbox. The source package contains package.json/package-lock.json and the user can install dependencies with `npm install` on Windows.
+
+WINDOWS FINAL BUILD COMMAND
+npm install
+npm run build
+npm run dev
+
+EXPECTED
+`npm run build` should run Next.js 14.2.35 from package.json after dependencies are installed.
+
+IMPORTANT
+This report does not claim a successful production build where the runtime dependency is unavailable. The UI source changes have been statically checked; full Next.js compilation must be performed in an environment with installed dependencies.

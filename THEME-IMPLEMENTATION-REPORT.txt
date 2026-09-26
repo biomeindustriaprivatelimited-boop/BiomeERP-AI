@@ -1,0 +1,55 @@
+BIOME ERP — BIOME COMMAND THEME IMPLEMENTATION REPORT
+Date: 2026-08-09
+
+SCOPE
+- Added a third application theme: BIOME Command.
+- Existing Light and Dark themes remain available.
+- Existing ERP modules/pages/features were not deleted or intentionally revised.
+- Theme is global, so all existing dashboard pages inherit the new visual language without duplicating page logic.
+
+VISUAL LANGUAGE
+- Deep teal / cyan industrial canvas inspired by the premium BIOME INDUSTRIA splash/login.
+- Emerald sustainability accents.
+- Cyan telemetry/energy accents.
+- Glass command panels with layered lighting and restrained depth.
+- Subtle technical grid and atmospheric glow.
+- Animated hover light sweep on glass panels.
+- Industrial command-center typography treatment.
+- Refined inputs, focus states, navigation active state and scrollbars.
+- Reduced-motion support retained.
+
+THEME CONTROLS
+- Settings > Appearance > Colour mode now contains:
+  1. Light
+  2. Dark
+  3. BIOME Command
+- Top navigation theme button cycles Light -> Dark -> BIOME Command -> Light.
+- Saved selection is restored on reload before first paint.
+
+FEATURE SAFETY
+- No sidebar item was removed.
+- No dashboard route was removed.
+- No business workflow was deleted.
+- No existing Light/Dark theme option was removed.
+- No database, OCR, WhatsApp, GST, Tally, reconciliation, reporting or finance logic was changed by this theme pass.
+- The new theme itself is an additive feature.
+
+STATIC TESTS PERFORMED
+PASS: package.json contains a build script: next build
+PASS: 22 app/page.tsx routes remain present after the change
+PASS: no MessageSquareLock reference remains in app/components/lib source
+PASS: ColorMode type includes light, dark and command
+PASS: saved theme bootstrap recognizes command
+PASS: Navbar cycles all three themes
+PASS: Settings exposes BIOME Command
+PASS: command theme CSS is present and scoped to html[data-theme="command"]
+PASS: AnimatedBackground is hidden only in BIOME Command so the old forest canvas does not conflict with the new command atmosphere
+PASS: reduced-motion rules remain present
+PASS: no feature files were deleted during this theme pass
+
+BUILD VERIFICATION LIMITATION
+- A full Next.js production build could not be executed in this isolated environment because project dependencies were not installed/available here. Source/static checks above were completed instead.
+- Run on the Windows development machine after extracting the ZIP:
+    npm install
+    npm run build
+    npm run dev

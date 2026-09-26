@@ -48,7 +48,7 @@ export default function ModuleComingSoon({
               key={i}
               className="flex items-start gap-3 text-sm text-biome-muted"
             >
-              <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/5 font-mono text-[11px] text-biome-leafBright">
+              <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-biome-hover font-mono text-[11px] text-biome-leafBright">
                 {i + 1}
               </span>
               {s}

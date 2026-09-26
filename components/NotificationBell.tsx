@@ -2,14 +2,18 @@
 
 import { useState, useRef, useEffect } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Bell, CheckCheck, Trash2, FileCheck2, Sparkles, AlertTriangle } from "lucide-react";
+import { Bell, CheckCheck, Trash2, FileCheck2, Sparkles, AlertTriangle, AlertCircle } from "lucide-react";
 import { useNotifications } from "@/lib/notifications";
 
-const KIND_ICON = { success: FileCheck2, info: Sparkles, warning: AlertTriangle } as const;
+// Every kind the notification type allows must appear in both maps, or
+// `KIND_ICON[n.kind]` is undefined and the whole bell throws while
+// rendering — one missing key takes down the header, not just the row.
+const KIND_ICON = { success: FileCheck2, info: Sparkles, warning: AlertTriangle, error: AlertCircle } as const;
 const KIND_COLOR = {
   success: "text-biome-leafBright",
   info: "text-biome-skyBright",
   warning: "text-amber-400",
+  error: "text-rose-400",
 } as const;
 
 function timeAgo(d: Date): string {
@@ -51,7 +55,7 @@ export default function NotificationBell() {
           setOpen((o) => !o);
           if (!open) markAllRead();
         }}
-        className="relative rounded-lg p-2 text-biome-muted transition-colors hover:bg-white/5 hover:text-biome-text"
+        className="relative rounded-lg p-2 text-biome-muted transition-colors hover:bg-biome-hover hover:text-biome-text"
         aria-label="Notifications"
       >
         <motion.span
@@ -114,7 +118,7 @@ export default function NotificationBell() {
                       initial={{ opacity: 0, x: 8 }}
                       animate={{ opacity: 1, x: 0 }}
                       transition={{ delay: i * 0.02 }}
-                      className="flex items-start gap-2.5 border-b border-biome-line/60 px-3.5 py-2.5 last:border-0 hover:bg-white/[0.03]"
+                      className="flex items-start gap-2.5 border-b border-biome-line/60 px-3.5 py-2.5 last:border-0 hover:bg-biome-hover"
                     >
                       <Icon size={14} className={`mt-0.5 shrink-0 ${KIND_COLOR[n.kind]}`} />
                       <div className="min-w-0 flex-1">

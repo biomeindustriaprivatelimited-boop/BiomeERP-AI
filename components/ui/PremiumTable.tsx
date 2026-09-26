@@ -93,15 +93,17 @@ export default function PremiumTable<T>({
       const a = document.createElement("a");
       a.href = url;
       a.download = "table-export.csv";
+      document.body.appendChild(a);
       a.click();
-      URL.revokeObjectURL(url);
+      window.setTimeout(() => a.remove(), 4000);
+      window.setTimeout(() => URL.revokeObjectURL(url), 4000);
     }
   }
 
   return (
     <div className="overflow-hidden rounded-2xl border border-biome-line">
-      <div className="flex flex-wrap items-center gap-2 border-b border-biome-line bg-white/[0.02] px-3 py-2.5">
-        <div className="flex min-w-[160px] flex-1 items-center gap-1.5 rounded-lg border border-biome-line bg-white/5 px-2.5 py-1.5 text-xs text-biome-muted">
+      <div className="flex flex-wrap items-center gap-2 border-b border-biome-line bg-biome-hover px-3 py-2.5">
+        <div className="flex min-w-[160px] flex-1 items-center gap-1.5 rounded-lg border border-biome-line bg-biome-hover px-2.5 py-1.5 text-xs text-biome-muted">
           <Search size={13} />
           <input
             value={query}
@@ -110,7 +112,7 @@ export default function PremiumTable<T>({
             className="w-full bg-transparent text-biome-text outline-none placeholder:text-biome-muted"
           />
         </div>
-        <div className="flex items-center gap-1.5 rounded-lg border border-biome-line bg-white/5 px-2 py-1.5 text-xs text-biome-muted">
+        <div className="flex items-center gap-1.5 rounded-lg border border-biome-line bg-biome-hover px-2 py-1.5 text-xs text-biome-muted">
           <Filter size={12} />
           <select
             value={filterCol}

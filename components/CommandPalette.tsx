@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import Portal from "@/components/Portal";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -127,7 +128,7 @@ export default function CommandPalette() {
     <>
       <button
         onClick={() => setOpen(true)}
-        className="hidden max-w-sm flex-1 items-center gap-2 rounded-xl border border-biome-line bg-white/5 px-3 py-2 text-left text-sm text-biome-muted transition-colors hover:border-biome-leaf/30 hover:text-biome-text md:flex"
+        className="hidden max-w-sm flex-1 items-center gap-2 rounded-xl border border-biome-line bg-biome-hover px-3 py-2 text-left text-sm text-biome-muted transition-colors hover:border-biome-leaf/30 hover:text-biome-text md:flex"
       >
         <Search size={16} />
         <span className="flex-1">Search invoices, clients, documents…</span>
@@ -136,7 +137,7 @@ export default function CommandPalette() {
         </span>
       </button>
 
-      <AnimatePresence>
+      <Portal><AnimatePresence>
         {open && (
           <motion.div
             initial={{ opacity: 0 }}
@@ -186,7 +187,7 @@ export default function CommandPalette() {
                       onMouseEnter={() => setActive(i)}
                       onClick={() => go(item.href)}
                       className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition-colors ${
-                        isActive ? "bg-biome-leaf/12 text-biome-leafBright" : "text-biome-text hover:bg-white/5"
+                        isActive ? "bg-biome-leaf/12 text-biome-leafBright" : "text-biome-text hover:bg-biome-hover"
                       }`}
                     >
                       <Icon size={16} className="shrink-0" />
@@ -202,7 +203,7 @@ export default function CommandPalette() {
             </motion.div>
           </motion.div>
         )}
-      </AnimatePresence>
+      </AnimatePresence></Portal>
     </>
   );
 }

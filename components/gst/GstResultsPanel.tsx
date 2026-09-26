@@ -86,7 +86,7 @@ export default function GstResultsPanel({
               >
                 <Icon size={13} className={active ? t.color : ""} />
                 {t.label}
-                <span className="rounded-full bg-white/10 px-1.5 py-0.5 text-[10px]">{t.count}</span>
+                <span className="rounded-full bg-biome-hover px-1.5 py-0.5 text-[10px]">{t.count}</span>
               </button>
             );
           })}

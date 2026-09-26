@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Biome" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="colorPrimary">#1E4E08</item>
+        <item name="colorPrimaryDark">#14300A</item>
+        <item name="colorAccent">#9FE870</item>
+        <item name="android:statusBarColor">#14300A</item>
+        <item name="android:navigationBarColor">#0B1D04</item>
+        <item name="android:windowBackground">@android:color/white</item>
+    </style>
+</resources>

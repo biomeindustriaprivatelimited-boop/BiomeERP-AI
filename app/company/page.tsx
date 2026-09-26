@@ -56,13 +56,13 @@ const TEAM = [
   {
     name: "Tanesh Singh Dod",
     role: "Executive Director",
-    photo: "https://biomeindustria.com/_next/image?url=%2Ftsdcircle.jpg&w=1080&q=75",
+    photo: "/team/tanesh-singh-dod.webp",
     linkedin: "https://www.linkedin.com/in/tanesh-singh-dod-6a1174167/",
   },
   {
     name: "Shubham Goel",
     role: "Executive Director",
-    photo: "https://biomeindustria.com/_next/image?url=%2Fsg.jpeg&w=1080&q=75",
+    photo: "/team/shubham-goel.webp",
     linkedin: "https://www.linkedin.com/in/shubham-goel-a39141136/",
   },
 ];
@@ -75,7 +75,7 @@ export default function CompanyProfilePage() {
         <motion.div
           initial={{ opacity: 0, scale: 0.9 }}
           animate={{ opacity: 1, scale: 1 }}
-          className="mx-auto mb-4 h-16 w-16 overflow-hidden rounded-2xl bg-white/95 p-2"
+          className="mx-auto mb-4 h-16 w-16 overflow-hidden rounded-2xl bg-biome-hover p-2"
         >
           <Image
             src="/assets/logo.png"

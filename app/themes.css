@@ -1,0 +1,253 @@
+/* ==================================================================
+   BIOME AI ERP — THEMES (final authority; imported after globals.css)
+   ------------------------------------------------------------------
+   Five complete themes. Every theme defines EVERY token, so no rule
+   from an older pass can leak through. Light is rebuilt from scratch:
+   ink text on paper, real card edges, a lime accent that reads on white.
+
+   light     Paper    — office daylight
+   dark      Moss     — the forest floor (default at the plant)
+   command   Teal     — control-room sky
+   midnight  Neon     — obsidian blue with electric lime (game HUD)
+   sunrise   Ember    — warm ivory with amber/coral accents
+   ================================================================== */
+
+html[data-theme="light"] {
+  --c-hover: 20 26 20;        /* ink wash on paper */
+  color-scheme: light;
+  --c-bg: 247 249 245;         /* paper with a breath of green */
+  --c-bg-soft: 255 255 255;    /* cards */
+  --c-surface: 238 242 235;    /* inputs, wells */
+  --c-text: 20 26 20;          /* ink */
+  --c-muted: 84 92 84;
+  --c-line: 208 215 202;
+  --c-leaf: 30 78 8;           /* forest fill for buttons (white text ok) */
+  --c-leaf-bright: 24 92 32;   /* accent TEXT on paper */
+  --c-volt: 121 200 60;        /* lime, darkened to read on white */
+  --c-sky: 22 110 190; --c-sky-bright: 34 140 220; --c-bolt: 160 122 10; --c-bolt-deep: 130 96 8;
+  --hero-a: 159 232 112; --hero-b: 22 51 0;
+  --glow: 0 10px 30px -14px rgb(30 78 8 / .45);
+}
+html[data-theme="dark"] {
+  --c-hover: 255 255 255;     /* light wash on moss */
+  color-scheme: dark;
+  --c-bg: 12 16 10; --c-bg-soft: 21 27 17; --c-surface: 30 39 24;
+  --c-text: 238 244 234; --c-muted: 176 186 168; --c-line: 56 68 48;
+  --c-leaf: 82 130 40; --c-leaf-bright: 159 232 112; --c-volt: 159 232 112;
+  --c-sky: 69 201 236; --c-sky-bright: 103 232 249; --c-bolt: 224 245 180; --c-bolt-deep: 166 216 108;
+  --hero-a: 159 232 112; --hero-b: 20 48 10;
+  --glow: 0 12px 34px -14px rgb(159 232 112 / .55);
+}
+html[data-theme="command"] {
+  --c-hover: 255 255 255;
+  color-scheme: dark;
+  --c-bg: 5 18 28; --c-bg-soft: 8 28 40; --c-surface: 12 38 52;
+  --c-text: 232 250 250; --c-muted: 150 186 194; --c-line: 38 82 96;
+  --c-leaf: 42 180 130; --c-leaf-bright: 110 231 183; --c-volt: 103 232 249;
+  --c-sky: 69 201 236; --c-sky-bright: 103 232 249; --c-bolt: 224 245 180; --c-bolt-deep: 166 216 108;
+  --hero-a: 103 232 249; --hero-b: 5 40 60;
+  --glow: 0 12px 34px -14px rgb(103 232 249 / .55);
+}
+html[data-theme="midnight"] {
+  --c-hover: 255 255 255;
+  color-scheme: dark;
+  --c-bg: 7 9 18; --c-bg-soft: 13 17 30; --c-surface: 20 26 44;
+  --c-text: 236 240 255; --c-muted: 158 168 200; --c-line: 46 56 90;
+  --c-leaf: 96 92 220; --c-leaf-bright: 190 255 90; --c-volt: 190 255 90;
+  --c-sky: 90 160 255; --c-sky-bright: 130 190 255; --c-bolt: 255 220 120; --c-bolt-deep: 240 180 60;
+  --hero-a: 190 255 90; --hero-b: 40 30 120;
+  --glow: 0 12px 40px -12px rgb(190 255 90 / .6);
+}
+html[data-theme="sunrise"] {
+  --c-hover: 40 28 18;        /* ink wash on ivory */
+  color-scheme: light;
+  --c-bg: 252 248 240; --c-bg-soft: 255 253 248; --c-surface: 246 238 224;
+  --c-text: 40 28 18; --c-muted: 120 100 84; --c-line: 226 212 190;
+  --c-leaf: 176 74 30; --c-leaf-bright: 172 96 20; --c-volt: 255 176 60;
+  --c-sky: 30 120 170; --c-sky-bright: 40 150 200; --c-bolt: 196 140 20; --c-bolt-deep: 160 110 10;
+  --hero-a: 255 176 60; --hero-b: 120 40 20;
+  --glow: 0 12px 34px -14px rgb(255 176 60 / .55);
+}
+
+/* Derived — the same for every theme */
+html[data-theme] {
+  --app-bg: rgb(var(--c-bg)); --app-text: rgb(var(--c-text));
+  --glass-border: rgb(var(--c-line));
+  --biome-leaf: rgb(var(--c-leaf)); --biome-sky: rgb(var(--c-sky)); --biome-bolt: rgb(var(--c-bolt));
+}
+html[data-theme] body { background: rgb(var(--c-bg)); color: rgb(var(--c-text)); }
+
+/* Surfaces, per theme, with the gradient hairline */
+html[data-theme] .glass, html[data-theme] .bmx-card {
+  border: 1px solid transparent !important;
+  background: linear-gradient(rgb(var(--c-bg-soft)), rgb(var(--c-bg-soft))) padding-box,
+              linear-gradient(135deg, rgb(var(--c-line)) 0%, rgb(var(--c-volt) / .55) 55%, rgb(var(--c-line)) 100%) border-box !important;
+  box-shadow: 0 1px 2px rgb(0 0 0 / .18) !important;
+}
+html[data-theme="light"] .glass, html[data-theme="light"] .bmx-card,
+html[data-theme="sunrise"] .glass, html[data-theme="sunrise"] .bmx-card { box-shadow: 0 1px 3px rgb(20 26 20 / .08), 0 10px 30px -24px rgb(20 26 20 / .25) !important; }
+
+/* Fields: one step off the surface, always legible */
+html[data-theme] input.bmx-input, html[data-theme] select.bmx-input, html[data-theme] textarea.bmx-input, html[data-theme] select {
+  background-color: rgb(var(--c-surface)) !important; color: rgb(var(--c-text)) !important; border-color: rgb(var(--c-line)) !important;
+}
+html[data-theme] select option { background: rgb(var(--c-bg-soft)); color: rgb(var(--c-text)); }
+html[data-theme] .bmx-input::placeholder { color: rgb(var(--c-muted) / .7); }
+
+/* Light-family: anything that hard-coded white text on a transparent surface */
+/* text-white override handled below with explicit exceptions */
+html[data-theme="light"] .bg-white\/5, html[data-theme="light"] .bg-white\/10, html[data-theme="light"] .bg-white\/\[0\.03\], html[data-theme="light"] .bg-white\/\[0\.02\],
+html[data-theme="sunrise"] .bg-white\/5, html[data-theme="sunrise"] .bg-white\/10 { background-color: rgb(20 26 20 / .05); }
+
+/* App background: quiet gradient + the theme's hero light */
+html[data-theme]:not([data-theme="light"]):not([data-theme="sunrise"]) [data-app-background="animated"] { background: radial-gradient(70% 50% at 10% 0%, rgb(var(--hero-a) / .12) 0%, transparent 55%), radial-gradient(50% 40% at 100% 100%, rgb(var(--hero-b) / .22) 0%, transparent 60%), rgb(var(--c-bg)) !important; }
+
+/* Game-HUD accents on the darker themes */
+html[data-theme="midnight"] .rail-item.is-active, html[data-theme="command"] .rail-item.is-active { background: rgb(var(--c-volt)); color: rgb(var(--c-bg)); box-shadow: 0 0 0 1px rgb(var(--c-volt) / .8), 0 0 28px rgb(var(--c-volt) / .6); }
+html[data-theme="midnight"] .rail-item.is-active svg, html[data-theme="command"] .rail-item.is-active svg { color: rgb(var(--c-bg)) !important; }
+html[data-theme="midnight"] main::before { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0; background: repeating-linear-gradient(0deg, rgb(255 255 255 / .018) 0 1px, transparent 1px 3px); }
+
+
+/* ==================================================================
+   SURFACES — derived from the tokens above, so every theme is covered
+   by one rule instead of a per-theme patch. The source markup is now
+   theme-aware (pass 26 rewrote 45 files), so these are thin.
+   ================================================================== */
+
+/* THE SIDEBAR follows the theme.
+   Dark themes keep the forest slab — the brand's anchor. The light themes
+   get a light rail: a green sidebar beside a white page read as two apps
+   stitched together, and that was asked to be fixed. */
+aside.forest-rail { background: linear-gradient(180deg, #14300a 0%, #0e2405 60%, #0b1d04 100%); }
+html[data-theme="midnight"] aside.forest-rail { background: linear-gradient(180deg, #0f1230 0%, #0a0d24 60%, #07091a 100%); }
+html[data-theme="command"] aside.forest-rail { background: linear-gradient(180deg, #06263a 0%, #041a2a 60%, #03121e 100%); }
+
+/* On the dark rails every label is light. */
+html:not([data-theme="light"]):not([data-theme="sunrise"]) .forest-rail,
+html:not([data-theme="light"]):not([data-theme="sunrise"]) .forest-rail * { color: #e2f6d5; }
+html:not([data-theme="light"]):not([data-theme="sunrise"]) .forest-rail .rail-label { color: rgb(159 232 112 / .55); }
+
+/* ---- Light rail (Light · Paper and Sunrise · Ember) ---- */
+html[data-theme="light"] aside.forest-rail {
+  background: linear-gradient(180deg, #ffffff 0%, #f6f9f3 100%);
+  border-right: 1px solid rgb(var(--c-line));
+  box-shadow: 1px 0 0 rgb(20 26 20 / .02), 8px 0 30px -24px rgb(20 26 20 / .25);
+}
+html[data-theme="sunrise"] aside.forest-rail {
+  background: linear-gradient(180deg, #fffdf8 0%, #fbf4e8 100%);
+  border-right: 1px solid rgb(var(--c-line));
+}
+html[data-theme="light"] .forest-rail::before, html[data-theme="sunrise"] .forest-rail::before {
+  background: radial-gradient(90% 30% at 50% 0%, rgb(var(--c-volt) / .10) 0%, transparent 70%);
+}
+html[data-theme="light"] .forest-rail, html[data-theme="light"] .forest-rail *,
+html[data-theme="sunrise"] .forest-rail, html[data-theme="sunrise"] .forest-rail * { color: rgb(var(--c-text)); }
+html[data-theme="light"] .forest-rail .rail-label, html[data-theme="sunrise"] .forest-rail .rail-label,
+html[data-theme="light"] .forest-rail [class*="text-[#e2f6d5]"], html[data-theme="sunrise"] .forest-rail [class*="text-[#e2f6d5]"] { color: rgb(var(--c-muted)); }
+html[data-theme="light"] .forest-rail [class*="text-[#9fe870]"] { color: rgb(var(--c-leaf-bright)); }
+html[data-theme="sunrise"] .forest-rail [class*="text-[#9fe870]"] { color: rgb(var(--c-leaf-bright)); }
+html[data-theme="light"] .rail-item, html[data-theme="sunrise"] .rail-item { color: rgb(var(--c-text) / .82); }
+html[data-theme="light"] .rail-item:hover, html[data-theme="sunrise"] .rail-item:hover { color: rgb(var(--c-text)); background: rgb(var(--c-hover) / .05); }
+html[data-theme="light"] .forest-rail [class*="border-[#9fe870]"], html[data-theme="sunrise"] .forest-rail [class*="border-[#9fe870]"] { border-color: rgb(var(--c-line)); }
+html[data-theme="light"] .forest-rail [class*="bg-white/"], html[data-theme="sunrise"] .forest-rail [class*="bg-white/"] { background-color: rgb(var(--c-surface) / .7); }
+/* The active item: forest pill with white label on paper, amber on ivory. */
+html[data-theme="light"] .rail-item.is-active { background: #1e4e08; box-shadow: 0 8px 22px -12px rgb(30 78 8 / .7); }
+html[data-theme="sunrise"] .rail-item.is-active { background: #b04a1e; box-shadow: 0 8px 22px -12px rgb(176 74 30 / .7); }
+html[data-theme="light"] .rail-item.is-active, html[data-theme="light"] .rail-item.is-active *,
+html[data-theme="sunrise"] .rail-item.is-active, html[data-theme="sunrise"] .rail-item.is-active * { color: #ffffff !important; }
+html[data-theme="light"] .rail-item.is-active .rail-tint, html[data-theme="sunrise"] .rail-item.is-active .rail-tint { background: rgb(255 255 255 / .16) !important; }
+
+/* On every rail, the active pill's own label contrasts with the pill. */
+html:not([data-theme="light"]):not([data-theme="sunrise"]) .forest-rail .rail-item.is-active,
+html:not([data-theme="light"]):not([data-theme="sunrise"]) .forest-rail .rail-item.is-active * { color: #163300; }
+html[data-theme="midnight"] .forest-rail .rail-item.is-active,
+html[data-theme="midnight"] .forest-rail .rail-item.is-active *,
+html[data-theme="command"] .forest-rail .rail-item.is-active,
+html[data-theme="command"] .forest-rail .rail-item.is-active * { color: rgb(var(--c-bg)); }
+
+/* Fields: one step off the card, legible in every theme. */
+input:not([type="range"]):not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+select, textarea {
+  background-color: rgb(var(--c-surface));
+  color: rgb(var(--c-text));
+  border-color: rgb(var(--c-line));
+}
+input::placeholder, textarea::placeholder { color: rgb(var(--c-muted) / .75); }
+select option { background: rgb(var(--c-bg-soft)); color: rgb(var(--c-text)); }
+html[data-theme="light"] select, html[data-theme="sunrise"] select { color-scheme: light; }
+
+/* Tables read from the tokens, so they invert with the theme. */
+thead th { background: rgb(var(--c-surface)); color: rgb(var(--c-text)); border-color: rgb(var(--c-line)); }
+tbody td { border-color: rgb(var(--c-line)); color: rgb(var(--c-text)); }
+tbody tr:hover { background: rgb(var(--c-hover) / .04); }
+
+/* Scrollbars follow the theme rather than staying dark on paper. */
+::-webkit-scrollbar-track { background: rgb(var(--c-surface)); }
+::-webkit-scrollbar-thumb { background: rgb(var(--c-line)); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: rgb(var(--c-muted)); }
+
+/* The animated backdrop takes the theme's own light. */
+[data-app-background="animated"] {
+  background:
+    radial-gradient(70% 50% at 10% 0%, rgb(var(--hero-a) / .12) 0%, transparent 55%),
+    radial-gradient(50% 40% at 100% 100%, rgb(var(--hero-b) / .20) 0%, transparent 60%),
+    rgb(var(--c-bg));
+}
+html[data-theme="light"] [data-app-background="animated"],
+html[data-theme="sunrise"] [data-app-background="animated"] {
+  background: radial-gradient(60% 40% at 12% 0%, rgb(var(--c-volt) / .10) 0%, transparent 60%), rgb(var(--c-bg)) !important;
+}
+/* On paper, drifting dots read as dust rather than depth. */
+html[data-theme="light"] canvas[data-fx-particles], html[data-theme="sunrise"] canvas[data-fx-particles] { display: none; }
+/* The canvas particle scene is drawn for dark surfaces only. */
+html[data-theme="light"] canvas[data-animated-background],
+html[data-theme="sunrise"] canvas[data-animated-background] { display: none; }
+/* ==================================================================
+   ALWAYS-DARK SCREENS — splash, login, change-password
+   ------------------------------------------------------------------
+   These paint their own dark scene, so they must not follow the theme.
+   The container sets white; elements that carry their OWN colour (the
+   login input is dark text on a white field) keep it. An earlier rule
+   forced `color: inherit` on every descendant, which turned that input's
+   text white on white — that is why the text "disappeared".
+   ================================================================== */
+[data-force-dark="1"] { color: #ffffff; }
+[data-force-dark="1"] h1,
+[data-force-dark="1"] h2,
+[data-force-dark="1"] h3,
+[data-force-dark="1"] label,
+[data-force-dark="1"] li,
+[data-force-dark="1"] td,
+[data-force-dark="1"] th { color: #ffffff; }
+/* Paragraphs and spans inherit, so a parent's tint reaches them. */
+[data-force-dark="1"] p,
+[data-force-dark="1"] span:not([class*="text-"]),
+[data-force-dark="1"] div:not([class*="text-"]) { color: inherit; }
+
+/* Fields on these screens are light cards: keep their own dark ink. */
+[data-force-dark="1"] input,
+[data-force-dark="1"] select,
+[data-force-dark="1"] textarea { color: #0f172a; background-color: rgba(248,251,252,.96); border-color: #dbe5e8; }
+[data-force-dark="1"] input::placeholder,
+[data-force-dark="1"] textarea::placeholder { color: #94a3b8; }
+
+/* Legibility over a moving 3D scene: a soft shadow lifts the type off it. */
+[data-force-dark="1"] h1,
+[data-force-dark="1"] h2 { text-shadow: 0 2px 24px rgb(0 0 0 / .55), 0 1px 3px rgb(0 0 0 / .4); }
+[data-force-dark="1"] .biome-shout { letter-spacing: -.035em; }
+
+/* ==================================================================
+   PHONES — the desktop pages must still fit a 390px screen when opened
+   from the Android app. Rows that were laid out for a wide monitor wrap
+   instead of running off the right edge; wide tables scroll inside
+   their own box rather than dragging the whole page sideways.
+   ================================================================== */
+@media (max-width: 767px) {
+  main .flex:not(.flex-col):not(.flex-nowrap):not(.overflow-x-auto) { flex-wrap: wrap; }
+  main nav[aria-label="Breadcrumb"] { flex-wrap: nowrap; }
+  main table { display: block; max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  main .grid { min-width: 0; }
+  main input, main select, main textarea { max-width: 100%; }
+  main h1 { font-size: 1.35rem; line-height: 1.2; }
+  main pre, main code { white-space: pre-wrap; word-break: break-word; }
+}

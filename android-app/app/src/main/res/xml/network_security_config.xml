@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Biome server runs on the office network over plain http
+     (http://192.168.x.x:3000). Android blocks that by default, so it is
+     allowed here. Nothing leaves the company network unless the server
+     itself is published. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

@@ -1,0 +1,487 @@
+/**
+ * Biome Platform — roles and permissions
+ * -------------------------------------------------------------------
+ * Deliberately free of `fs`, `crypto` and anything Node-specific, because
+ * the same table has to be readable in three places: the Edge middleware
+ * that guards routes, the API handlers that guard data, and the client
+ * components that decide what to draw. One table, three readers — if the
+ * matrix lived in more than one file it would drift, and a drifted
+ * permission matrix is a security hole that looks like a UI bug.
+ */
+
+/**
+ * Roles, most powerful first.
+ *
+ * `developer` sits above admin and is not an ordinary role: it is the
+ * account that decides what everyone else may do, and it does not appear
+ * in the user list for anybody but itself.
+ */
+export type Role = "developer" | "admin" | "accounts" | "coordinator" | "plant_manager";
+
+export const ROLES: { id: Role; label: string; description: string }[] = [
+  { id: "developer", label: "Developer", description: "Everything, plus access control and feature switches" },
+  { id: "admin", label: "Admin", description: "Day-to-day everything — access control sits with the developer" },
+  { id: "accounts", label: "Accounts", description: "Finance, Tally, approvals — no app settings" },
+  { id: "coordinator", label: "Coordinator", description: "Supply coordination, documents, WhatsApp" },
+  { id: "plant_manager", label: "Plant Manager", description: "Plant entries only — no Tally, no WhatsApp, no coordination" },
+];
+
+/**
+ * Permission keys are module-level on purpose. Finer-grained keys sound
+ * safer but end up half-applied; a small, honest list that is actually
+ * enforced everywhere beats a long one that is enforced in places.
+ */
+export type Permission =
+  | "finance" // finance dashboard, ledgers, payments, GST, reconciliation
+  | "tally" // anything that reads the Tally company
+  | "documents"
+  | "whatsapp"
+  | "ocr"
+  | "assistant"
+  | "operations" // view plants and transport
+  | "operations.entry" // create/edit plant and transport entries
+  // Supply coordination — its own key rather than riding on "operations".
+  // A plant manager needs plant and transport entry but must NOT see the
+  // coordination register, and the two were sharing one permission.
+  | "coordination"
+  | "vendors"
+  | "customers"
+  // Commercial registration — agreements, rates, bank details. Its own key
+  // because a coordinator holds "vendors" and must NOT hold this: a signed
+  // rate card is not something the person chasing weight slips reads.
+  | "partners"
+  | "imprest.entry"    // file my own imprest
+  | "imprest.view"     // see my own float
+  | "imprest.approve"  // accept or reject entries put in front of you
+  | "imprest.viewAll"  // read every holder's full ledger — admin only
+  | "imprest.manage"   // add and edit imprest holders
+  | "payroll"          // salary sheets, slips, PF/ESIC
+  | "payroll.approve"  // lock a month and mark it paid
+  | "employee.view"    // see the employee master
+  | "employee.add"     // put a new person on the rolls
+  | "employee.docs"    // upload supporting documents for a person
+  | "employee.edit"    // change an existing record — admin only
+  | "employee.freeze"  // freeze or remove a person — admin only
+  | "attendance.entry"
+  | "attendance.approve"
+  | "reports"
+  | "support"         // raise a ticket; approvers also answer them
+  | "work"            // the Work Engine: planner, autopilot, decisions
+  | "support.manage"  // see and answer everyone's tickets
+  | "release.read"    // be told a new version exists
+  | "release.publish" // announce one
+  | "company"
+  | "settings"
+  | "users"
+  // Developer-only. Deliberately separate from "users": an admin still
+  // adds people and resets passwords, but deciding what a person may DO
+  // is not something that should be one mis-click away.
+  | "access.grant"    // change a role, or a person's individual permissions
+  | "feature.switch"  // freeze or switch off a module
+  | "announce"        // send a notice by email and in-app
+  | "developer";      // the developer's own screens and hidden activity
+
+const ALL: Permission[] = [
+  "finance",
+  "tally",
+  "documents",
+  "whatsapp",
+  "ocr",
+  "assistant",
+  "operations",
+  "operations.entry",
+  "coordination",
+  "vendors",
+  "customers",
+  "partners",
+  "imprest.entry",
+  "imprest.view",
+  "imprest.approve",
+  "imprest.viewAll",
+  "imprest.manage",
+  "payroll",
+  "payroll.approve",
+  "employee.view",
+  "employee.add",
+  "employee.docs",
+  "employee.edit",
+  "employee.freeze",
+  "attendance.entry",
+  "attendance.approve",
+  "reports",
+  "work",
+  "support",
+  "support.manage",
+  "release.read",
+  "release.publish",
+  "company",
+  "settings",
+  "users",
+  "access.grant",
+  "feature.switch",
+  "announce",
+  "developer",
+];
+
+/** Every permission key, for validating a stored per-user override. */
+export const ALL_PERMISSIONS: Permission[] = ALL;
+
+/**
+ * Powers an admin no longer holds.
+ *
+ * The business asked for a few things to be taken out of the admin's
+ * hands so a slip cannot break the app for everyone. Kept short on
+ * purpose: an admin who cannot do their job will simply ask for the
+ * developer account, and then none of this means anything.
+ */
+export const DEVELOPER_ONLY: Permission[] = ["access.grant", "feature.switch", "announce", "developer"];
+
+export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
+  developer: ALL,
+  // Everything except the four keys above.
+  admin: ALL.filter((p) => !["access.grant", "feature.switch", "announce", "developer"].includes(p)),
+
+  // Everything the business runs on, minus the two things that change how
+  // the app itself behaves: app settings and user accounts.
+  accounts: [
+    "finance",
+    "tally",
+    "documents",
+    "whatsapp",
+    "ocr",
+    "assistant",
+    "operations",
+    "coordination",
+    "vendors",
+    "customers",
+    "partners",
+    "imprest.entry",
+    "imprest.view",
+    "imprest.approve",
+    "imprest.manage",
+    "payroll",
+    "payroll.approve",
+    "employee.view",
+    "employee.add",
+    "employee.docs",
+    "attendance.entry",
+    "attendance.approve",
+    "reports",
+    "support",
+    "work",
+    "support.manage",
+    "release.read",
+    "company",
+  ],
+
+  // Supply coordination on both the vendor and the client side. No money,
+  // no Tally — a coordinator never needs a ledger to chase a weight slip.
+  coordinator: [
+    "imprest.entry",
+    "imprest.view",
+    "documents",
+    "whatsapp",
+    "ocr",
+    "operations",
+    "coordination",
+    "vendors",
+    "customers",
+    // Trading vendors ONLY. The /api/partners route filters everything to
+    // category === "trading" for this role, so holding the key does not
+    // open the plant-side register — raw-material vendors and transporters
+    // stay the plant manager's, exactly as the business asked.
+    "partners",
+    "reports",
+    "attendance.entry",
+    "support",
+    "work",
+    "release.read",
+  ],
+
+  // Field role. No `tally` and no `whatsapp` — this is the access rule the
+  // business asked for, and it is enforced here rather than by hiding a
+  // link, so a hand-typed URL fails the same way a click would.
+  plant_manager: [
+    "documents",
+    "operations",
+    "operations.entry",
+    "partners",
+    "imprest.entry",
+    "imprest.view",
+    "attendance.entry",
+    "employee.view",
+    "employee.add",
+    "employee.docs",
+    "support",
+    "work",
+    "release.read",
+  ],
+};
+
+export function permissionsFor(role: Role): Permission[] {
+  return ROLE_PERMISSIONS[role] || [];
+}
+
+export function hasPermission(role: Role | null | undefined, permission: Permission): boolean {
+  if (!role) return false;
+  return permissionsFor(role).includes(permission);
+}
+
+/**
+ * Route → permission. Longest prefix wins, so `/api/tally/full` matches
+ * the `/api/tally` entry without needing a line of its own.
+ *
+ * A route that is absent from this table is treated as "signed in is
+ * enough". New sensitive routes MUST be added here; the default is
+ * deliberately not "deny all" only because the login and health routes
+ * have to stay reachable, and those are listed as public below.
+ */
+export const ROUTE_PERMISSIONS: { prefix: string; permission: Permission }[] = [
+  // --- APIs ---
+  { prefix: "/api/tally", permission: "tally" },
+  { prefix: "/api/whatsapp/", permission: "whatsapp" },
+  { prefix: "/api/whatsapp-settings", permission: "settings" },
+  { prefix: "/api/dashboard", permission: "finance" },
+  { prefix: "/api/ledger-agent", permission: "finance" },
+  { prefix: "/api/reconcile-ai", permission: "finance" },
+  { prefix: "/api/delivery-challan", permission: "finance" },
+  { prefix: "/api/assistant", permission: "assistant" },
+  { prefix: "/api/extract-document", permission: "ocr" },
+  { prefix: "/api/test-document", permission: "ocr" },
+  { prefix: "/api/vendors", permission: "vendors" },
+  { prefix: "/api/clients", permission: "customers" },
+  { prefix: "/api/company-documents", permission: "company" },
+  { prefix: "/api/coordination", permission: "coordination" },
+  { prefix: "/api/plant-data", permission: "operations" },
+  { prefix: "/api/partners", permission: "partners" },
+  { prefix: "/api/work", permission: "work" },
+  { prefix: "/api/workflows", permission: "work" },
+  { prefix: "/api/insights", permission: "developer" },
+  { prefix: "/api/issues", permission: "developer" },
+  { prefix: "/api/meetings", permission: "developer" },
+  { prefix: "/api/forms", permission: "developer" },
+  { prefix: "/api/timeline", permission: "developer" },
+  { prefix: "/api/ops-map", permission: "developer" },
+  { prefix: "/api/inbox", permission: "settings" },
+  { prefix: "/api/po", permission: "operations" },
+  { prefix: "/api/command", permission: "work" },
+  { prefix: "/api/entity", permission: "work" },
+  { prefix: "/api/contracts", permission: "developer" },
+  { prefix: "/api/memory", permission: "settings" },
+  { prefix: "/api/onboarding", permission: "developer" },
+  { prefix: "/api/vault", permission: "developer" },
+  { prefix: "/api/reports-builder", permission: "developer" },
+  { prefix: "/api/twin", permission: "developer" },
+  { prefix: "/api/backup", permission: "settings" },
+  { prefix: "/api/plants-master", permission: "operations" },
+  { prefix: "/api/plant-verify", permission: "operations" },
+  { prefix: "/api/plant-upload", permission: "operations" },
+  { prefix: "/api/plant-sheet", permission: "operations" },
+  { prefix: "/api/users", permission: "users" },
+  // Admin-only, same key as user management: the power to edit a frozen
+  // record belongs with the power to change who can log in.
+  { prefix: "/api/override", permission: "users" },
+  { prefix: "/api/access", permission: "access.grant" },
+  { prefix: "/api/features", permission: "feature.switch" },
+  { prefix: "/api/announcements", permission: "announce" },
+  { prefix: "/api/developer", permission: "developer" },
+  { prefix: "/api/imprest/people", permission: "imprest.manage" },
+  { prefix: "/api/imprest/decision", permission: "imprest.approve" },
+  { prefix: "/api/support", permission: "support" },
+  { prefix: "/api/release", permission: "release.read" },
+  { prefix: "/api/imprest", permission: "imprest.view" },
+  { prefix: "/api/payroll/employees", permission: "employee.view" },
+  { prefix: "/api/payroll/documents", permission: "employee.view" },
+  { prefix: "/api/payroll", permission: "payroll" },
+  { prefix: "/api/cloud/status", permission: "support" },
+  { prefix: "/api/cloud", permission: "settings" },
+  { prefix: "/api/audit", permission: "users" },
+  { prefix: "/api/letters", permission: "employee.view" },
+  { prefix: "/api/attendance/chase", permission: "attendance.approve" },
+  { prefix: "/api/attendance", permission: "attendance.entry" },
+  { prefix: "/api/leave", permission: "attendance.entry" },
+  { prefix: "/api/holidays", permission: "attendance.entry" },
+  { prefix: "/api/mail", permission: "settings" },
+  { prefix: "/api/ai-status", permission: "settings" },
+
+  // --- Pages ---
+  { prefix: "/reconciliation", permission: "finance" },
+  { prefix: "/ledgers", permission: "finance" },
+  { prefix: "/payments", permission: "finance" },
+  { prefix: "/gst-compliance", permission: "finance" },
+  { prefix: "/billing-sop", permission: "finance" },
+  { prefix: "/delivery-challan", permission: "finance" },
+  { prefix: "/whatsapp", permission: "whatsapp" },
+  { prefix: "/documents", permission: "documents" },
+  { prefix: "/review-queue", permission: "documents" },
+  { prefix: "/ocr", permission: "ocr" },
+  { prefix: "/assistant", permission: "assistant" },
+  { prefix: "/plants", permission: "operations" },
+  { prefix: "/transport", permission: "operations" },
+  { prefix: "/coordination", permission: "coordination" },
+  { prefix: "/developer", permission: "developer" },
+  { prefix: "/partners", permission: "partners" },
+  { prefix: "/work", permission: "developer" },
+  { prefix: "/insights", permission: "developer" },
+  { prefix: "/calendar", permission: "developer" },
+  { prefix: "/issues", permission: "developer" },
+  { prefix: "/meetings", permission: "developer" },
+  { prefix: "/forms", permission: "developer" },
+  { prefix: "/communications", permission: "developer" },
+  { prefix: "/operations", permission: "developer" },
+  { prefix: "/inbox", permission: "settings" },
+  { prefix: "/po", permission: "operations" },
+  { prefix: "/command", permission: "work" },
+  { prefix: "/decisions", permission: "developer" },
+  { prefix: "/entity", permission: "work" },
+  { prefix: "/contracts", permission: "developer" },
+  { prefix: "/onboarding", permission: "developer" },
+  { prefix: "/vault", permission: "developer" },
+  { prefix: "/report-builder", permission: "developer" },
+  { prefix: "/twin", permission: "developer" },
+  { prefix: "/vendors", permission: "vendors" },
+  { prefix: "/customers", permission: "customers" },
+  { prefix: "/analytics", permission: "reports" },
+  { prefix: "/reports", permission: "reports" },
+  { prefix: "/company-documents", permission: "company" },
+  { prefix: "/company", permission: "company" },
+  { prefix: "/imprest", permission: "imprest.view" },
+  // The phone version of the same module — same key, same rules.
+  { prefix: "/m/imprest", permission: "imprest.view" },
+  { prefix: "/support", permission: "support" },
+  { prefix: "/payroll", permission: "payroll" },
+  { prefix: "/attendance", permission: "attendance.entry" },
+  { prefix: "/leave", permission: "attendance.entry" },
+  { prefix: "/employees", permission: "employee.view" },
+  { prefix: "/cloud", permission: "settings" },
+  { prefix: "/audit", permission: "users" },
+  { prefix: "/organisation", permission: "payroll" },
+  { prefix: "/clients", permission: "customers" },
+  { prefix: "/settings", permission: "settings" },
+  { prefix: "/users", permission: "users" },
+];
+
+/** Reachable without a session. Everything else needs one. */
+export const PUBLIC_PREFIXES = [
+  "/login",
+  "/api/auth/login",
+  "/api/auth/me",
+  "/api/auth/logout",
+  // The server heartbeat. It MUST answer before anyone signs in — the
+  // login screen itself sits behind the ServerGuard, and a 401 here was
+  // read as "server down", blocking the whole app on its own doorstep.
+  "/api/health",
+  // Google's OAuth redirect lands in a plain browser tab with no app
+  // session; the code inside is worthless without the Client Secret.
+  "/api/gdrive/callback",
+  "/_next",
+  "/assets",
+  "/favicon",
+  // The phone app. The browser fetches these BEFORE anyone signs in — a
+  // redirect to /login here means the manifest is HTML, the service
+  // worker never registers, and "Install" never appears.
+  "/manifest.json",
+  "/sw.js",
+  "/icons/",
+  "/offline",
+  // pdf.js runtime: the OCR page loads these by URL.
+  "/pdf.worker.min.mjs",
+  "/pdfjs/",
+  // Browser OCR engine and its Hindi/English language data.
+  "/tesseract/",
+  "/tessdata/",
+];
+
+export function isPublicPath(pathname: string): boolean {
+  return PUBLIC_PREFIXES.some((p) => pathname === p || pathname.startsWith(p));
+}
+
+/** The permission a path needs, or null if being signed in is enough. */
+export function permissionForPath(pathname: string): Permission | null {
+  let best: { prefix: string; permission: Permission } | null = null;
+  for (const entry of ROUTE_PERMISSIONS) {
+    if (pathname === entry.prefix || pathname.startsWith(entry.prefix)) {
+      if (!best || entry.prefix.length > best.prefix.length) best = entry;
+    }
+  }
+  return best ? best.permission : null;
+}
+
+/**
+ * Page guard.
+ *
+ * `perms` is the list carried in the session token — a per-user grant or
+ * revoke the developer has made. When it is absent (an older token, or a
+ * caller that has only a role) the role's own list is used, so nothing
+ * breaks while sessions turn over.
+ */
+export function canAccessPath(
+  role: Role | null | undefined,
+  pathname: string,
+  perms?: string[] | null
+): boolean {
+  if (isPublicPath(pathname)) return true;
+  if (!role) return false;
+  const needed = permissionForPath(pathname);
+  if (!needed) return true;
+  if (perms && perms.length) return perms.includes(needed);
+  return hasPermission(role, needed);
+}
+
+/** Plant codes. Kept here so login, entries and filters agree on spelling. */
+export const PLANTS: { code: string; label: string }[] = [
+  { code: "REW", label: "Rewari" },
+  { code: "GKD", label: "Gangakhed" },
+];
+
+/**
+ * Where "/" should land for each role.
+ *
+ * The dashboard at "/" is the Finance Command Center: it reads Tally and
+ * is meaningless to a role that cannot. Sending a plant manager there
+ * would show a screen of failed requests, so each role gets a home it can
+ * actually use.
+ */
+export function landingPathFor(role: Role | null | undefined): string {
+  switch (role) {
+    case "plant_manager":
+      return "/plants";
+    case "coordinator":
+      return "/documents";
+    default:
+      return "/";
+  }
+}
+
+
+/**
+ * What each permission opens and why a person would need it — shown in
+ * Users & Access so a grant is a considered decision, not a guess.
+ */
+export const PERMISSION_INFO: Record<string, { label: string; what: string; why: string; risk: "low" | "medium" | "high" }> = {
+  "imprest.entry": { label: "Imprest — file entries", what: "File expenses, cash returns and see own float.", why: "Anyone who spends company cash in the field.", risk: "low" },
+  "imprest.view": { label: "Imprest — view & approve", what: "See every holder's float, approve/reject entries, set budgets.", why: "Accounts and managers who control petty cash.", risk: "medium" },
+  documents: { label: "Documents", what: "Browse, search and upload company documents; open the Review Queue.", why: "Office roles that handle paperwork.", risk: "low" },
+  whatsapp: { label: "WhatsApp Documents", what: "See the WhatsApp agent, filed supply sets, connection and training.", why: "Coordinators and accounts who work from supply documents.", risk: "medium" },
+  ocr: { label: "AI OCR Scanner", what: "Scan documents to text/Excel; Smart Sheets batch extraction.", why: "Anyone digitising paper.", risk: "low" },
+  finance: { label: "Finance", what: "Ledgers, reconciliation, payments, GST, billing SOP, delivery challans, PO override.", why: "Accounts only — it exposes money and Tally.", risk: "high" },
+  operations: { label: "Operations", what: "Plants, transport, PO Control.", why: "Coordinators and plant managers running supplies.", risk: "medium" },
+  coordination: { label: "Coordination", what: "Create and track supply trips, weights, receivings.", why: "Coordinators.", risk: "medium" },
+  vendors: { label: "Vendors", what: "Vendor master, codes, balances.", why: "Coordinators and accounts.", risk: "medium" },
+  customers: { label: "Clients", what: "Client master and document requirements.", why: "Coordinators and accounts.", risk: "medium" },
+  partners: { label: "Registration", what: "Register vendors/transporters with KYC (plant managers: own site, raw material; coordinators: trading).", why: "Whoever onboards suppliers.", risk: "medium" },
+  "employee.view": { label: "Employees", what: "Employee master and KYC files.", why: "HR/accounts and plant managers.", risk: "high" },
+  "attendance.entry": { label: "Attendance & Leave", what: "Mark attendance, decide leave, send holiday notices.", why: "Plant managers and accounts.", risk: "medium" },
+  payroll: { label: "Payroll", what: "Salary runs, payslips, PF/ESIC, organisation lists.", why: "Accounts only.", risk: "high" },
+  reports: { label: "Reports & Analytics", what: "Live Tally reports, analytics, Excel exports.", why: "Management and accounts.", risk: "medium" },
+  company: { label: "Company", what: "Company profile and company documents.", why: "Admin/accounts.", risk: "medium" },
+  settings: { label: "Settings", what: "Appearance, mail, backup, Drive, PO policy, SLA, memory.", why: "Admin. Changes affect everyone.", risk: "high" },
+  users: { label: "Users & Audit", what: "Create users, set roles, read the audit log.", why: "Admin only.", risk: "high" },
+  support: { label: "Help & Support", what: "Guides and support tickets.", why: "Everyone.", risk: "low" },
+  work: { label: "Command Center & Work", what: "Command Center, forms, entity search, PO alerts.", why: "Management and coordinators.", risk: "medium" },
+  "release.read": { label: "Release notes", what: "See what changed in each update.", why: "Everyone.", risk: "low" },
+  announce: { label: "Announcements", what: "Post announcements to staff.", why: "Developer/admin.", risk: "medium" },
+  "access.grant": { label: "Access control", what: "Grant or revoke permissions for others.", why: "Developer only.", risk: "high" },
+  "feature.switch": { label: "Feature switches", what: "Freeze or switch off a module.", why: "Developer only.", risk: "high" },
+  developer: { label: "Developer", what: "Developer screen, Server & Sync, developer-preview features, override edits.", why: "The developer only.", risk: "high" },
+};

@@ -1,20 +1,23 @@
 "use client";
 
-import { Factory } from "lucide-react";
-import ComingSoonPage from "@/components/ComingSoonPage";
+import SheetGrid from "@/components/plant/SheetGrid";
 
+/**
+ * Biomass purchase, per plant.
+ *
+ * Raw material bought from local farmers. Rewari and Gangakhed keep
+ * genuinely different books, so the grid switches schema with the plant
+ * rather than showing one plant columns it does not use.
+ */
 export default function PlantsPage() {
   return (
-    <ComingSoonPage
-      title="Plants"
-      description="A production dashboard for Biome's manufacturing units — Unit-1 (Rewari, Haryana) and Unit-2 (Gangakhed, Maharashtra)."
-      icon={Factory}
-      plannedFeatures={[
-        "Per-plant production volume (briquettes / pellets)",
-        "Feedstock intake and utilization by unit",
-        "Capacity vs. actual output tracking",
-        "Needs real production data from each unit to populate — nothing fabricated here in the meantime",
-      ]}
-    />
+    <div className="mx-auto max-w-[1500px] pb-8 pt-1">
+      <SheetGrid
+        kind="biomass"
+        storageKey="biome:plant"
+        title="Biomass Purchase"
+        subtitle="Material bought from local farmers, entered the way each plant already records it. Fill the white cells; the shaded ones work themselves out."
+      />
+    </div>
   );
 }

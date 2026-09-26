@@ -1,0 +1,169 @@
+import { NextRequest, NextResponse } from "next/server";
+import { getSession, findById, requirePermission } from "@/lib/authServer";
+import { hasPermission } from "@/lib/permissions";
+import {
+  loadHolidays, saveHolidays, Holiday, HolidayRegion, REGION_LABEL, datesBetween,
+} from "@/lib/leave";
+import { recordAudit } from "@/lib/audit";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+const REGIONS: HolidayRegion[] = ["HR", "MH", "DL"];
+
+/** Anyone signed in may READ the calendar; only an admin may change it. */
+export async function GET(req: NextRequest) {
+  const session = await getSession(req);
+  if (!session) return NextResponse.json({ error: "Please sign in." }, { status: 401 });
+  const user = findById(session.uid);
+  if (!user || !user.active) return NextResponse.json({ error: "Not found." }, { status: 404 });
+
+  const holidays = [...loadHolidays()].sort((a, b) => a.date.localeCompare(b.date));
+
+  return NextResponse.json({
+    holidays,
+    regions: REGIONS.map((r) => ({ id: r, label: REGION_LABEL[r] })),
+    canEdit: hasPermission(user.role, "users"),
+    unconfirmed: holidays.filter((h) => h.confirm).length,
+  });
+}
+
+/**
+ * Add one holiday, or a whole shutdown period.
+ *
+ * A range is stored as one entry per day rather than as a start/end pair.
+ * It costs a few more rows and makes everything downstream simple: the
+ * attendance grid, the leave calculation and the chase runner all ask the
+ * same question — "is this date a holiday?" — and none of them has to
+ * understand ranges.
+ */
+export async function POST(req: NextRequest) {
+  const auth = await requirePermission(req, "users");
+  if ("response" in auth) return auth.response;
+  const user = findById(auth.session.uid)!;
+
+  const body = await req.json().catch(() => null);
+  if (!body) return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
+
+  const name = String(body.name || "").trim().slice(0, 80);
+  const from = String(body.date || body.fromDate || "").slice(0, 10);
+  const to = String(body.toDate || from).slice(0, 10);
+  const regions: HolidayRegion[] = Array.isArray(body.regions)
+    ? body.regions.filter((r: string) => REGIONS.includes(r as HolidayRegion))
+    : [];
+  const confirm = Boolean(body.confirm);
+
+  if (!name) return NextResponse.json({ error: "Give the holiday a name." }, { status: 400 });
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+    return NextResponse.json({ error: "Choose the date." }, { status: 400 });
+  }
+  if (to < from) return NextResponse.json({ error: "The end date is before the start date." }, { status: 400 });
+  if (regions.length === 0) {
+    return NextResponse.json({ error: "Choose at least one location this applies to." }, { status: 400 });
+  }
+
+  const dates = datesBetween(from, to);
+  if (dates.length > 60) {
+    return NextResponse.json({ error: "That range is longer than 60 days. Add it in shorter blocks." }, { status: 400 });
+  }
+
+  const holidays = loadHolidays();
+  const added: Holiday[] = [];
+  const skipped: string[] = [];
+
+  for (const date of dates) {
+    const clash = holidays.find((h) => h.date === date && h.name.toLowerCase() === name.toLowerCase());
+    if (clash) {
+      // Same day, same name — merge the regions rather than making a
+      // duplicate row that the calendar would show twice.
+      clash.regions = [...new Set([...clash.regions, ...regions])];
+      skipped.push(date);
+      continue;
+    }
+    const entry: Holiday = { date, name, regions, confirm };
+    holidays.push(entry);
+    added.push(entry);
+  }
+
+  saveHolidays(holidays.sort((a, b) => a.date.localeCompare(b.date)));
+  recordAudit({
+    action: "HOLIDAY_ADDED",
+    userId: user.id, userName: user.name, role: user.role,
+    targetType: "holiday", targetLabel: name,
+    detail: `${from}${to !== from ? ` to ${to}` : ""} · ${regions.join(", ")}${added.length > 1 ? ` · ${added.length} days` : ""}`,
+  });
+
+  return NextResponse.json({
+    added: added.length,
+    merged: skipped.length,
+    holidays: loadHolidays().sort((a, b) => a.date.localeCompare(b.date)),
+  }, { status: 201 });
+}
+
+/** Edit one entry — including confirming a movable date. */
+export async function PUT(req: NextRequest) {
+  const auth = await requirePermission(req, "users");
+  if ("response" in auth) return auth.response;
+  const user = findById(auth.session.uid)!;
+
+  const body = await req.json().catch(() => null);
+  const originalDate = String(body?.originalDate || "").slice(0, 10);
+  const originalName = String(body?.originalName || "");
+  if (!originalDate || !originalName) {
+    return NextResponse.json({ error: "Which entry?" }, { status: 400 });
+  }
+
+  const holidays = loadHolidays();
+  const entry = holidays.find((h) => h.date === originalDate && h.name === originalName);
+  if (!entry) return NextResponse.json({ error: "Not found." }, { status: 404 });
+
+  if (body.date !== undefined) {
+    const d = String(body.date).slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return NextResponse.json({ error: "Invalid date." }, { status: 400 });
+    entry.date = d;
+  }
+  if (body.name !== undefined && String(body.name).trim()) entry.name = String(body.name).trim().slice(0, 80);
+  if (Array.isArray(body.regions)) {
+    const next = body.regions.filter((r: string) => REGIONS.includes(r as HolidayRegion));
+    if (next.length === 0) {
+      return NextResponse.json({ error: "A holiday must apply to at least one location." }, { status: 400 });
+    }
+    entry.regions = next;
+  }
+  // Confirming is the whole point of the flag — once checked against the
+  // gazette it should stop shouting.
+  if (body.confirm !== undefined) entry.confirm = Boolean(body.confirm);
+
+  saveHolidays(holidays.sort((a, b) => a.date.localeCompare(b.date)));
+  recordAudit({
+    action: body.confirm === false ? "HOLIDAY_CONFIRMED" : "HOLIDAY_UPDATED",
+    userId: user.id, userName: user.name, role: user.role,
+    targetType: "holiday", targetLabel: `${entry.date} ${entry.name}`,
+  });
+
+  return NextResponse.json({ holidays: loadHolidays().sort((a, b) => a.date.localeCompare(b.date)) });
+}
+
+export async function DELETE(req: NextRequest) {
+  const auth = await requirePermission(req, "users");
+  if ("response" in auth) return auth.response;
+  const user = findById(auth.session.uid)!;
+
+  const date = req.nextUrl.searchParams.get("date") || "";
+  const name = req.nextUrl.searchParams.get("name") || "";
+  if (!date || !name) return NextResponse.json({ error: "Which entry?" }, { status: 400 });
+
+  const holidays = loadHolidays();
+  const before = holidays.length;
+  const next = holidays.filter((h) => !(h.date === date && h.name === name));
+  if (next.length === before) return NextResponse.json({ error: "Not found." }, { status: 404 });
+
+  saveHolidays(next);
+  recordAudit({
+    action: "HOLIDAY_REMOVED",
+    userId: user.id, userName: user.name, role: user.role,
+    targetType: "holiday", targetLabel: `${date} ${name}`,
+  });
+
+  return NextResponse.json({ holidays: next });
+}
