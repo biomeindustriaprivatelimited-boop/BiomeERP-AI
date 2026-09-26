@@ -97,8 +97,8 @@ export const FEATURE_MAP: FeatureCategory[] = [
   {
     id: "reports", label: "Reports", tagline: "What the numbers say, live from Tally and the app.", icon: "BarChart3", tone: "from-violet-500/25 to-fuchsia-400/10",
     features: [
-      { id: "reports", label: "Reports", href: "/reports", icon: "BarChart3", perm: "reports", what: "Canned live-from-Tally reports with Excel export." },
-      { id: "analytics", label: "Analytics", href: "/analytics", icon: "Activity", perm: "reports", what: "Trends by month and by party for the current FY." },
+      { id: "reports", label: "Tally Reports", href: "/reports", icon: "BarChart3", perm: "tally", what: "Canned live-from-Tally reports with Excel export." },
+      { id: "analytics", label: "Analytics", href: "/analytics", icon: "Activity", perm: "tally", what: "Trends by month and by party for the current FY." },
       { id: "report-builder", label: "Report Builder", href: "/report-builder", icon: "BarChart3", perm: "reports", what: "Imprest, coordination, transport, biomass, stock, vendors… by category, person, place, plant or user — PDF and Excel." },
     ],
   },

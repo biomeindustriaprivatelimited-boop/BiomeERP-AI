@@ -376,8 +376,9 @@ export const ROUTE_PERMISSIONS: { prefix: string; permission: Permission }[] = [
   { prefix: "/twin", permission: "developer" },
   { prefix: "/vendors", permission: "vendors" },
   { prefix: "/customers", permission: "customers" },
-  { prefix: "/analytics", permission: "reports" },
-  { prefix: "/reports", permission: "reports" },
+  // Live-from-Tally screens: useless (every call 403s) without `tally`.
+  { prefix: "/analytics", permission: "tally" },
+  { prefix: "/reports", permission: "tally" },
   { prefix: "/company-documents", permission: "company" },
   { prefix: "/company", permission: "company" },
   { prefix: "/imprest", permission: "imprest.view" },

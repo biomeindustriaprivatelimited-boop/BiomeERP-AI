@@ -22,6 +22,8 @@ type Tab = "stock" | "receive" | "issue" | "ledger" | "machines" | "items";
 
 const inr = (n: number) => "₹" + Math.round(n || 0).toLocaleString("en-IN");
 const input = "bmx-input w-full rounded-xl border border-biome-line bg-biome-bg px-3 py-2 text-[12px] text-biome-text outline-none";
+// Inline filter controls: same look as `input`, but sized to content.
+const inline = "bmx-input rounded-xl border border-biome-line bg-biome-bg px-3 py-2 text-[12px] text-biome-text outline-none";
 const label = "mb-1 block text-[10px] font-bold uppercase tracking-[.13em] text-biome-muted";
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -141,11 +143,11 @@ function StockTab({ data }: { data: any }) {
     <section className="rounded-2xl border border-biome-line bg-biome-bgSoft p-4">
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <div className="relative"><Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-biome-muted" />
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Part, part no, rack" className={`${input} w-[220px] pl-8`} /></div>
-        <select value={cat} onChange={(e) => setCat(e.target.value)} className={`${input} w-auto`}>
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Part, part no, rack" className={`${inline} w-[220px] pl-8`} /></div>
+        <select value={cat} onChange={(e) => setCat(e.target.value)} className={inline}>
           <option value="">Every category</option>{data.categories.map((c: string) => <option key={c}>{c}</option>)}
         </select>
-        <select value={only} onChange={(e) => setOnly(e.target.value as any)} className={`${input} w-auto`}>
+        <select value={only} onChange={(e) => setOnly(e.target.value as any)} className={inline}>
           <option value="all">All stock</option><option value="low">Only low / out</option>
         </select>
         <button onClick={() => toExcel("Stock", rows.map((r) => ({ Plant: r.plant, Code: r.code, Part: r.name, "Part no": r.partNo, Category: r.category, Unit: r.unit, "On hand": r.qty, "Avg rate": r.avgRate, Value: r.value, "Re-order level": r.minLevel, Status: r.status, Received: r.received, Issued: r.issued, "Last receipt": r.lastReceipt, "Last issue": r.lastIssue, Rack: r.rack })))}
@@ -157,7 +159,7 @@ function StockTab({ data }: { data: any }) {
         <div className="overflow-x-auto">
           <table className="w-full min-w-[820px] text-left text-[11.5px]">
             <thead><tr className="border-b border-biome-line text-[9.5px] uppercase tracking-[.12em] text-biome-muted">
-              <th className="py-2">Plant</th><th>Part</th><th>Category</th><th className="text-right">On hand</th><th className="text-right">Re-order</th><th className="text-right">Avg rate</th><th className="text-right">Value</th><th>Last in / out</th><th>Status</th>
+              <th className="py-2">Plant</th><th>Part</th><th>Category</th><th className="pr-3 text-right">On hand</th><th className="pr-3 text-right">Re-order</th><th className="pr-3 text-right">Avg rate</th><th className="pr-4 text-right">Value</th><th>Last in / out</th><th>Status</th>
             </tr></thead>
             <tbody>
               {rows.map((r) => (
@@ -165,10 +167,10 @@ function StockTab({ data }: { data: any }) {
                   <td className="py-2 font-mono text-[10.5px]">{r.plant}</td>
                   <td><p className="font-semibold text-biome-text">{r.name}</p><p className="text-[10px] text-biome-muted">{r.code}{r.partNo && ` · ${r.partNo}`}{r.rack && ` · rack ${r.rack}`}</p></td>
                   <td className="text-biome-muted">{r.category}</td>
-                  <td className="text-right font-mono font-semibold">{r.qty} {r.unit}</td>
-                  <td className="text-right font-mono text-biome-muted">{r.minLevel || "—"}</td>
-                  <td className="text-right font-mono">{inr(r.avgRate)}</td>
-                  <td className="text-right font-mono">{inr(r.value)}</td>
+                  <td className="pr-3 text-right font-mono font-semibold">{r.qty} {r.unit}</td>
+                  <td className="pr-3 text-right font-mono text-biome-muted">{r.minLevel || "—"}</td>
+                  <td className="pr-3 text-right font-mono">{inr(r.avgRate)}</td>
+                  <td className="pr-4 text-right font-mono">{inr(r.value)}</td>
                   <td className="text-[10px] text-biome-muted">{r.lastReceipt || "—"} / {r.lastIssue || "—"}</td>
                   <td>{r.status === "ok" ? <span className="text-[10px] font-bold text-emerald-600">OK</span>
                     : r.status === "low" ? <span className="text-[10px] font-bold text-amber-600">LOW — reorder</span>
@@ -292,12 +294,12 @@ function LedgerTab({ data, post, setOk }: { data: any; post: (b: any) => Promise
   return (
     <section className="rounded-2xl border border-biome-line bg-biome-bgSoft p-4">
       <div className="mb-3 flex flex-wrap items-center gap-2">
-        <select value={type} onChange={(e) => setType(e.target.value)} className={`${input} w-auto`}>
+        <select value={type} onChange={(e) => setType(e.target.value)} className={inline}>
           <option value="">Every movement</option>{Object.entries(data.movementLabels).map(([k, v]: any) => <option key={k} value={k}>{v}</option>)}
         </select>
-        <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className={`${input} w-auto`} />
-        <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className={`${input} w-auto`} />
-        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="No, part, vendor, machine, person" className={`${input} w-[240px]`} />
+        <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className={inline} />
+        <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className={inline} />
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="No, part, vendor, machine, person" className={`${inline} w-[240px]`} />
         <button onClick={() => toExcel("Stock ledger", rows.map((m) => ({ No: m.no, Date: m.date, Plant: m.plant, Type: data.movementLabels[m.type], Part: items.get(m.itemId)?.name, "Part no": items.get(m.itemId)?.partNo, Qty: m.qty * (["issue", "adjust_out", "transfer_out"].includes(m.type) ? -1 : 1), Unit: items.get(m.itemId)?.unit, Rate: m.rate, Amount: m.amount, Vendor: m.vendorName, Invoice: m.invoiceNo, Machine: machines.get(m.machineId)?.name || "", "Issued to": m.issuedTo, Purpose: m.purpose, By: m.createdByName, Cancelled: m.cancelled ? `Yes — ${m.cancelReason}` : "" })))}
           className="bmx-chip ml-auto flex items-center gap-1.5 rounded-xl border border-biome-line px-3 py-2 text-[11px] font-semibold text-biome-muted"><Download size={12} /> Excel</button>
       </div>
@@ -456,7 +458,7 @@ function ItemsTab({ data, post, setOk }: { data: any; post: (b: any) => Promise<
           {!data.canManage && <span className="flex items-center gap-1 text-[10px] text-biome-muted"><ShieldAlert size={11} /> You can add parts; editing needs stores / procurement.</span>}
         </div>
       </div>
-      <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search parts" className={`${input} max-w-[280px]`} />
+      <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search parts" className={`${inline} w-[280px]`} />
       <div className="overflow-x-auto rounded-2xl border border-biome-line bg-biome-bgSoft p-3">
         <table className="w-full min-w-[720px] text-left text-[11.5px]">
           <thead><tr className="border-b border-biome-line text-[9.5px] uppercase tracking-[.12em] text-biome-muted"><th className="py-2">Code</th><th>Part</th><th>Category</th><th>Unit</th><th>Re-order</th><th>Fits</th><th></th></tr></thead>

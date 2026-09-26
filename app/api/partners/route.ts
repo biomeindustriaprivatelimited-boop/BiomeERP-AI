@@ -287,6 +287,8 @@ export async function PUT(req: NextRequest) {
     // Category and the lock never change through an ordinary save. Only
     // accounts/admin/developer may move a record between trading and
     // manufacturing; the lock moves only through submit / unlock.
+    // The type (vendor / client / transporter) is fixed at registration.
+    kind: existing.kind,
     category: canOverrideFreeze(user.role) && body.category ? categoryOf(body.category) : existing.category,
     submittedAt: existing.submittedAt,
     lockState: existing.lockState,
