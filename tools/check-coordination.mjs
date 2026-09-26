@@ -841,11 +841,26 @@ group("The checks still match lib/numberSeries.ts", () => {
   );
   check("the developer role still exists", perms.includes('developer: ALL,'), true);
 
-  // The access rule this round turns on: a coordinator must never hold
-  // "partners". If this fails, a signed rate card just became visible to
-  // the person chasing weight slips.
+  // The rule changed: a coordinator now registers TRADING vendors and
+  // clients, so they hold "partners" — and the registration API must pin
+  // them to the trading register so the plant-side (manufacturing) records,
+  // rate cards and agreements stay out of their reach.
   const coordinatorBlock = perms.slice(perms.indexOf("coordinator: ["), perms.indexOf("plant_manager: ["));
-  check("coordinator has no partners access", coordinatorBlock.includes('"partners"'), false);
+  check("coordinator holds partners (trading registration)", coordinatorBlock.includes('"partners"'), true);
+  let partnersRoute = "";
+  try {
+    partnersRoute = readFileSync(join(here, "..", "app", "api", "partners", "route.ts"), "utf8");
+  } catch { /* reported by the checks below */ }
+  check(
+    "coordinator is pinned to trading records in the API",
+    /role === "coordinator"\) \{\s*return partners\.filter\(\(p\) => p\.category === "trading"\)/.test(partnersRoute),
+    true
+  );
+  check(
+    "coordinator can only register trading",
+    partnersRoute.includes('if (user.role === "coordinator") category = "trading";'),
+    true
+  );
   const managerBlock = perms.slice(perms.indexOf("plant_manager: ["));
   check("plant manager does", managerBlock.includes('"partners"'), true);
 });

@@ -127,6 +127,40 @@ Users & Access se `Plant stock` / `Plant stock — manage` permission de sakta h
 
 ---
 
+## 8. GitHub se app test kaise karein
+
+GitHub khud app nahi chalata — wahan sirf code rehta hai. Test karne ke 2 raaste:
+
+**A) Installer download karke (sabse aasan, Node.js ki zaroorat nahi)**
+1. GitHub repo → **Actions** tab → "Build Windows installer" → sabse upar wala ✓ green run.
+2. Neeche **Artifacts → Biome-Windows-Installer** download karein, zip kholein.
+3. `Biome Setup ….exe` chalayein (SmartScreen aaye to *More info → Run anyway*).
+4. Test ke liye kisi **alag PC** par ya alag data folder ke saath chalayein, taaki asli
+   server ka data na chhede.
+
+**B) Code download karke (developer tarika)**
+1. Node.js 20+ install karein: https://nodejs.org
+2. Repo page → **Code → Download ZIP** (ya `git clone`), folder kholein.
+3. Terminal me: `npm install` → `npm run dev` → browser me `http://localhost:3000`.
+4. Asli data se bachne ke liye test data folder alag rakhein:
+   PowerShell: `$env:BIOME_DATA_ROOT="C:\BiomeTest"; npm run dev`
+
+**Pehla login (naye/khali data folder par):** username `admin`, password `biome-admin`
+→ app turant naya password maangega. Developer account:
+`node tools/biome-admin.js --developer=AapkaPassword123`
+
+**Kya-kya test karein (checklist):**
+- Settings → Backup: "Backup now", schedule save, backup Restore (Override ON karke).
+- Command theme me mouse pointer dikhta hai.
+- Users & Access se coordinator, plant manager, procurement, accounts banayein, har login se:
+  - Vendor & Client Registration → documents attach → Submit & freeze → edit block;
+    accounts se Unlock.
+  - Supply → Plant Stock → Items, Machines, GRN, Issue to machine.
+  - Plant transport sheet aur Coordination (manufacturing) me same vehicle/date → ✓ badge.
+  - Reports → Report Builder → report chalayein → PDF aur Excel download.
+
+---
+
 ### Aapke liye sawal (confirm kar dijiye)
 
 1. Coordination team ko ab **manufacturing register** bhi dikhta hai (aapne "coordination team

@@ -1,0 +1,64 @@
+name: Build Windows installer
+
+# Every push and pull request: type-check, the repo's own business-rule
+# checks, and a production build — so a broken change is caught on GitHub,
+# not on the server PC.
+#
+# Push to main (or "Run workflow" by hand from the Actions tab): also builds
+# the Windows installer and attaches it to the run as the
+# "Biome-Windows-Installer" artifact, ready to download and install.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Type-check, checks and build
+    runs-on: ubuntu-latest
+    env:
+      # Electron itself is not needed to type-check or build the web app.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: TypeScript
+        run: npx tsc --noEmit -p .
+      - name: Business-rule checks
+        run: npm run check
+      - name: Production build
+        run: npx next build
+
+  windows:
+    name: Windows installer (.exe)
+    needs: check
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Build the app
+        run: npx next build
+      - name: Package the installer
+        # --publish never: build only, never upload a release anywhere.
+        run: npx electron-builder --win --x64 --publish never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Biome-Windows-Installer
+          path: release/*.exe
+          if-no-files-found: error
+          retention-days: 14
