@@ -193,3 +193,58 @@ export async function uploadToDrive(token: string, folderId: string, name: strin
   if (!put.ok || !json.id) throw new Error("The upload did not complete.");
   return json.id;
 }
+
+/* ------------------------------------------------------------------ */
+/* Backup housekeeping — list, download, delete what THIS app uploaded */
+/* ------------------------------------------------------------------ */
+
+export interface DriveBackupFile {
+  id: string;
+  name: string;
+  size: number;
+  createdTime: string;
+}
+
+/** Every backup file in the app's Drive folder, newest first. */
+export async function listDriveBackups(token: string, folderId: string): Promise<DriveBackupFile[]> {
+  const out: DriveBackupFile[] = [];
+  let pageToken = "";
+  for (let guard = 0; guard < 20; guard++) {
+    const q = encodeURIComponent(`'${folderId}' in parents and trashed = false`);
+    const url =
+      `https://www.googleapis.com/drive/v3/files?q=${q}&pageSize=200&orderBy=createdTime desc` +
+      `&fields=nextPageToken,files(id,name,size,createdTime)` + (pageToken ? `&pageToken=${pageToken}` : "");
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    const json: any = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json?.error?.message || "Could not list the Drive backup folder.");
+    for (const f of json.files || []) {
+      if (!/\.(zip|biomebak)$/i.test(f.name || "")) continue;
+      out.push({ id: f.id, name: f.name, size: Number(f.size) || 0, createdTime: f.createdTime || "" });
+    }
+    if (!json.nextPageToken) break;
+    pageToken = json.nextPageToken;
+  }
+  return out;
+}
+
+export async function downloadDriveFile(token: string, fileId: string): Promise<Buffer> {
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Drive refused the download (${res.status}).`);
+  return Buffer.from(await res.arrayBuffer());
+}
+
+/** drive.file scope: only files this app created can be deleted — exactly what retention needs. */
+export async function deleteDriveFile(token: string, fileId: string): Promise<void> {
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok && res.status !== 404) throw new Error(`Drive refused the delete (${res.status}).`);
+}
+
+export function driveConnected(): boolean {
+  const cfg = loadDrive();
+  return Boolean(cfg.refreshTokenEnc && cfg.clientId);
+}

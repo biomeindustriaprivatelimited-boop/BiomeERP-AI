@@ -33,7 +33,14 @@ const nextConfig = {
   env: { NEXT_PUBLIC_APP_VERSION: pkg.version },
   ...(major >= 15
     ? { serverExternalPackages: EXTERNAL }
-    : { experimental: { serverComponentsExternalPackages: EXTERNAL } }),
+    : {
+        experimental: {
+          serverComponentsExternalPackages: EXTERNAL,
+          // instrumentation.ts starts the automatic backup timer. Stable
+          // (no flag needed) from Next 15.
+          instrumentationHook: true,
+        },
+      }),
 
   // Turbopack walks up looking for a lockfile and can land on
   // C:\Users\<name>, which would pull the entire home directory into the

@@ -15,7 +15,7 @@ import { canAccessPath, isPublicPath, hasPermission, landingPathFor } from "@/li
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  if (isPublicPath(pathname)) return NextResponse.next();
+  if (isPublicPath(pathname)) return harden(NextResponse.next(), pathname);
 
   const bearer = req.headers.get("authorization") || "";
   const token = bearer.toLowerCase().startsWith("bearer ")
@@ -65,7 +65,28 @@ export async function middleware(req: NextRequest) {
     });
   }
 
-  return NextResponse.next();
+  return harden(NextResponse.next(), pathname);
+}
+
+/**
+ * DATA STAYS ON THE SERVER.
+ *
+ * Every business record lives only on the server PC. A phone or a client
+ * PC must never keep a copy — not even in the browser's disk cache, where
+ * anyone with the device could dig it out later. So every API answer and
+ * every page is marked `no-store, private`: the browser (and Electron's
+ * Chromium) shows it and forgets it. Static build files are untouched and
+ * stay cacheable, they contain no data.
+ */
+function harden(res: NextResponse, pathname: string): NextResponse {
+  if (!pathname.startsWith("/_next/static") && !/\.(js|css|png|jpg|svg|ico|woff2?|wasm|mjs|traineddata)$/i.test(pathname)) {
+    res.headers.set("Cache-Control", "no-store, private, max-age=0");
+    res.headers.set("Pragma", "no-cache");
+  }
+  res.headers.set("X-Content-Type-Options", "nosniff");
+  res.headers.set("X-Frame-Options", "SAMEORIGIN");
+  res.headers.set("Referrer-Policy", "same-origin");
+  return res;
 }
 
 /** Plain 404 body. Deliberately says nothing about roles or permissions. */

@@ -44,11 +44,40 @@ const SENSITIVE_FILES: string[] = [
   "config/cloud-credentials.json",
   "config/cloud-service-account.json",
   "config/mail.json",
+  // Drive refresh token for backups, and the backup schedule (it holds the
+  // encryption passphrase). Both belong to THIS server, not to the data.
+  "config/gdrive.json",
+  "config/backup-schedule.json",
 ];
+
+/**
+ * What a restore carries across from the machine it runs on, because the
+ * backup never held it. Listed once so the backup and the restore agree.
+ */
+export const KEEP_ON_RESTORE: string[] = [
+  "whatsapp/auth",
+  "config/mail.json",
+  "config/cloud-credentials.json",
+  "config/cloud-service-account.json",
+  "config/gdrive.json",
+  "config/backup-schedule.json",
+  "runtime",
+  "backups",
+];
+
+export type BackupKind = "manual" | "daily" | "weekly" | "monthly" | "uploaded" | "drive";
 
 export interface BackupEntry {
   /** File name inside the backups folder. */
   file: string;
+  /** Why it exists — decides which retention rule applies. Older rows: manual. */
+  kind?: BackupKind;
+  /** True when the file is AES-256 encrypted (.biomebak) rather than a plain zip. */
+  encrypted?: boolean;
+  /** Where else a copy went. */
+  drive?: { fileId: string; uploadedAt: string } | null;
+  driveError?: string;
+  extraCopy?: string;
   createdAt: string;
   createdBy: string;
   sizeBytes: number;

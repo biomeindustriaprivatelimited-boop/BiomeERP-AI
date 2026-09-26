@@ -1759,5 +1759,8 @@ h1.biome-shout span.text-biome-leafBright { text-shadow: 0 0 22px rgb(var(--c-vo
 .rail-item .rail-tint { transition: transform .25s cubic-bezier(.2,.8,.2,1), box-shadow .25s; }
 .rail-item:hover .rail-tint { transform: translateY(-1px) scale(1.08) rotate(-3deg); box-shadow: 0 6px 16px -8px rgb(var(--c-volt) / .8); }
 
-/* Cursor: the native arrow steps back so the glow leads */
-@media (pointer: fine) and (prefers-reduced-motion: no-preference) { html[data-theme="midnight"] body, html[data-theme="command"] body { cursor: none; } html[data-theme="midnight"] a, html[data-theme="midnight"] button, html[data-theme="command"] a, html[data-theme="command"] button { cursor: none; } }
+/* Cursor: the native arrow ALWAYS stays visible. The glow is decoration
+   that follows it — never a replacement. Hiding the arrow (cursor:none) left
+   the Command/Midnight themes with no pointer at all whenever the glow was
+   switched off (reduce-motion, phone pages, modals above z-9998). */
+html[data-theme="midnight"] body, html[data-theme="command"] body { cursor: auto; }

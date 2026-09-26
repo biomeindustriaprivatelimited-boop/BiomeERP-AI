@@ -1,16 +1,11 @@
-import path from "path";
-import fs from "fs";
 import { NextRequest, NextResponse } from "next/server";
-import JSZip from "jszip";
-import { requirePermission } from "@/lib/authServer";
-import { paths } from "@/lib/dataRoot";
-import { collectFiles, backupFileName } from "@/lib/backup";
-import { loadDrive, saveDrive, accessToken, ensureFolder, uploadToDrive } from "@/lib/gdrive";
+import { requirePermission, findById } from "@/lib/authServer";
+import { runBackup } from "@/lib/backupEngine";
 
 /**
- * "Back up to Drive" — the SAME file set the local backup takes, zipped
- * the same way, uploaded to the connected account's Biome folder. One
- * definition of "a backup", two destinations.
+ * "Back up to Drive" — the SAME backup the local button and the schedule
+ * make (same file set, same manifest, encrypted when a backup password is
+ * set), kept on the server AND uploaded to the connected Drive folder.
  */
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,32 +14,14 @@ export const maxDuration = 300;
 export async function POST(req: NextRequest) {
   const auth = await requirePermission(req, "settings");
   if ("response" in auth) return auth.response;
+  const user = findById(auth.session.uid)!;
 
   try {
-    const token = await accessToken();
-    const folderId = await ensureFolder(token);
-
-    const zip = new JSZip();
-    const files = collectFiles();
-    for (const rel of files) {
-      const abs = path.join(paths.root, rel);
-      if (fs.existsSync(abs) && fs.statSync(abs).isFile()) {
-        zip.file(rel.split(path.sep).join("/"), fs.readFileSync(abs));
-      }
+    const r = await runBackup({ kind: "manual", by: user.name, note: "Back up to Drive", drive: true });
+    if (!r.entry.drive) {
+      return NextResponse.json({ error: r.notes.join(" ") || "The Drive upload did not complete." }, { status: 502 });
     }
-    const buffer = await zip.generateAsync({
-      type: "nodebuffer",
-      compression: "DEFLATE",
-      compressionOptions: { level: 6 },
-    });
-
-    const name = `drive-${backupFileName()}`;
-    await uploadToDrive(token, folderId, name, buffer);
-
-    const cfg = loadDrive();
-    saveDrive({ ...cfg, lastBackupAt: new Date().toISOString(), lastBackupName: name });
-
-    return NextResponse.json({ ok: true, name, files: files.length, size: buffer.length });
+    return NextResponse.json({ ok: true, name: r.entry.file, files: r.entry.fileCount, size: r.entry.sizeBytes });
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 502 });
   }

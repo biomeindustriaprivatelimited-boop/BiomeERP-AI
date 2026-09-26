@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell, ipcMain } = require("electron");
+const { app, BrowserWindow, shell, ipcMain, session } = require("electron");
 const path = require("path");
 const { spawn } = require("child_process");
 const http = require("http");
@@ -344,7 +344,23 @@ ipcMain.handle("biome:setSyncConfig", (_evt, cfg) => {
 
 /* ------------------------------------------------------------------ */
 
+/**
+ * A client PC holds no business data. The server already marks every
+ * answer no-store; this also wipes Chromium's HTTP cache and any service
+ * worker cache on this machine at start and at quit, so nothing from a
+ * previous session can be dug out of the profile folder.
+ */
+function wipeClientCache() {
+  if (SYNC.mode !== "client") return Promise.resolve();
+  const ses = session.defaultSession;
+  return Promise.all([
+    ses.clearCache().catch(() => {}),
+    ses.clearStorageData({ storages: ["cachestorage", "serviceworkers", "shadercache"] }).catch(() => {}),
+  ]);
+}
+
 app.whenReady().then(() => {
+  wipeClientCache();
   createLoadingWindow();
   if (SYNC.mode === "server") {
     startNextServer();
@@ -363,5 +379,6 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  wipeClientCache();
   stopChildren();
 });
