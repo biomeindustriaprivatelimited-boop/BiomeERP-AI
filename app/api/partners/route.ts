@@ -9,9 +9,9 @@ import { plantOptions } from "@/lib/plants";
 import {
   loadPartners, savePartners, blankPartner, gapsFor, partnersDir,
   documentTypesFor, partnerDocAllowed, gstinLooksRight, panLooksRight, ifscLooksRight,
-  PARTNER_KINDS, PARTNER_STATUS, PARTNER_DOCUMENT_TYPES, VENDOR_CATEGORIES,
-  freezeInfoFor, PARTNER_FREEZE_DAYS,
-  Partner, PartnerKind, PartnerStatus, PartnerDocument, VendorCategory,
+  PARTNER_KINDS, PARTNER_STATUS, PARTNER_DOCUMENT_TYPES, VENDOR_CATEGORIES, SUPPLY_CATEGORIES,
+  freezeInfoFor,
+  Partner, PartnerKind, PartnerStatus, PartnerDocument, VendorCategory, SupplyCategory,
 } from "@/lib/partners";
 import { devStamp } from "@/lib/devEdit";
 import { importMasterIntoRegistration, syncMasterFromRegistration } from "@/lib/vendorSync";
@@ -43,15 +43,14 @@ function kindOf(v: unknown): PartnerKind {
 /**
  * Who sees which records. The business asked for a hard split:
  *
- *   coordinator    — TRADING vendors only. The plant-side register —
- *                    raw-material vendors and transporters — is not theirs.
- *   plant_manager  — raw-material vendors and transporters for THEIR site.
- *                    Trading vendors never appear for them.
- *   admin/accounts — everything.
+ *   coordinator    — TRADING vendors, clients and transporters.
+ *   plant_manager  — MANUFACTURING vendors, clients and transporters for
+ *                    THEIR site. Trading records never appear for them.
+ *   accounts/admin/developer — everything.
  */
 function visibleTo(partners: Partner[], role: string, plant: string | null): Partner[] {
   if (role === "coordinator") {
-    return partners.filter((p) => p.kind === "biomass_vendor" && p.category === "trading");
+    return partners.filter((p) => p.category === "trading");
   }
   if (role === "plant_manager") {
     return partners.filter(
@@ -65,18 +64,28 @@ function visibleTo(partners: Partner[], role: string, plant: string | null): Par
   return partners;
 }
 
+/** Accounts, admin and the developer may correct or unlock a frozen record. */
+function canOverrideFreeze(role: string): boolean {
+  return hasPermission(role as any, "users") || hasPermission(role as any, "finance");
+}
+
 /**
  * Whether THIS user may still change THIS record.
  *
- * A plant manager's submission freezes one week after it was registered.
- * After that, corrections go through accounts or the admin — the freeze
- * exists so a site cannot quietly rewrite an agreement after the fact.
+ * Once the owner presses "Submit & freeze", the coordinator / plant
+ * manager can no longer change it. Accounts, admin or the developer can
+ * correct it directly, or unlock it and send it back.
  */
 function frozenFor(p: Partner, role: string): string | null {
-  if (role !== "plant_manager") return null;
-  const f = freezeInfoFor(p);
-  if (!f.frozen) return null;
-  return `This record froze on ${f.freezesOn} — a plant manager's submission stays editable for ${PARTNER_FREEZE_DAYS} days. Ask accounts or the admin for a correction.`;
+  if (canOverrideFreeze(role)) return null;
+  if (p.lockState !== "submitted") return null;
+  return `This registration was submitted and frozen${p.lockedAt ? ` on ${p.lockedAt.slice(0, 10)}` : ""}${p.lockedByName ? ` by ${p.lockedByName}` : ""}. To change it, ask accounts, the admin or the developer to unlock it.`;
+}
+
+function suppliesOf(v: unknown): SupplyCategory[] {
+  if (!Array.isArray(v)) return [];
+  const ok = new Set(SUPPLY_CATEGORIES.map((c) => c.id));
+  return Array.from(new Set(v.map(String).filter((x) => ok.has(x as SupplyCategory)))) as SupplyCategory[];
 }
 
 function categoryOf(v: unknown): VendorCategory {
@@ -99,6 +108,12 @@ export async function GET(req: NextRequest) {
 
   let list = mine;
   if (kind && kind !== "all") list = list.filter((p) => p.kind === kind);
+  const supply = req.nextUrl.searchParams.get("supplies");
+  if (supply && supply !== "all") list = list.filter((p) => p.supplies.includes(supply as SupplyCategory));
+  const cat = req.nextUrl.searchParams.get("category");
+  if (cat && cat !== "all") list = list.filter((p) => p.category === cat);
+  const lock = req.nextUrl.searchParams.get("lock");
+  if (lock && lock !== "all") list = list.filter((p) => p.lockState === lock);
   if (status && status !== "all") list = list.filter((p) => p.status === status);
   if (search) {
     list = list.filter((p) =>
@@ -133,8 +148,9 @@ export async function GET(req: NextRequest) {
     myPlant: auth.session.plant,
     myRole: user.role,
     categories: VENDOR_CATEGORIES,
-    freezeDays: PARTNER_FREEZE_DAYS,
+    supplyCategories: SUPPLY_CATEGORIES,
     canActivate: hasPermission(user.role, "users") || hasPermission(user.role, "finance"),
+    canUnlock: canOverrideFreeze(user.role),
   });
 }
 
@@ -149,34 +165,19 @@ export async function POST(req: NextRequest) {
 
   const partners = loadPartners();
   const kind = kindOf(body?.kind);
-  let category = kind === "biomass_vendor" ? categoryOf(body?.category) : "raw_material" as VendorCategory;
+  let category = categoryOf(body?.category);
 
-  // Ownership is decided by role, not by what the form sent.
-  if (user.role === "coordinator") {
-    if (kind !== "biomass_vendor") {
-      return NextResponse.json(
-        { error: "A coordinator registers trading vendors. Raw-material vendors and transporters are registered by the plant manager of the site they serve." },
-        { status: 403 }
-      );
-    }
-    category = "trading";
-  }
-  if (user.role === "plant_manager") {
-    if (category === "trading") {
-      return NextResponse.json(
-        { error: "Trading vendors are the coordinator's register. A plant manager registers raw-material vendors and transporters for their own site." },
-        { status: 403 }
-      );
-    }
-    category = "raw_material";
-  }
+  // Ownership is decided by role, not by what the form sent: trading is
+  // the coordinator's register, manufacturing the plant manager's.
+  if (user.role === "coordinator") category = "trading";
+  if (user.role === "plant_manager") category = "raw_material";
 
   // Two records for one company means two sets of papers, two agreements,
   // and a payment made against whichever one someone opened first.
   const clash = partners.find(
     (p) =>
       (p.gstin && body?.gstin && p.gstin.toUpperCase() === str(body.gstin).toUpperCase()) ||
-      (p.name.trim().toLowerCase() === name.toLowerCase() && p.kind === kind)
+      (p.name.trim().toLowerCase() === name.toLowerCase() && p.kind === kind && p.category === category)
   );
   if (clash) {
     return NextResponse.json(
@@ -232,17 +233,62 @@ export async function PUT(req: NextRequest) {
     return NextResponse.json({ error: "Not found." }, { status: 404 });
   }
 
+  // ---- Submit & freeze / unlock ----
+  if (body.action === "submit" || body.action === "unlock") {
+    const now = new Date().toISOString();
+    if (body.action === "submit") {
+      if (existing.lockState === "submitted") return NextResponse.json({ error: "Already submitted and frozen." }, { status: 409 });
+      const g = gapsFor(existing);
+      const why = [...g.missing.map((m) => `${m.label} (document)`), ...g.expired.map((e) => `${e.label} expired ${e.validTill}`), ...g.missingFields];
+      if (why.length) {
+        return NextResponse.json({ error: `Cannot submit yet — still missing: ${why.join(", ")}. Upload / fill these, check everything, then submit.` }, { status: 409 });
+      }
+      if (body.confirmChecked !== true) {
+        return NextResponse.json({ error: "Tick \"I have checked every detail and document\" before submitting." }, { status: 400 });
+      }
+    } else {
+      if (!canOverrideFreeze(user.role)) {
+        return NextResponse.json({ error: "Only accounts, the admin or the developer can unlock a frozen registration." }, { status: 403 });
+      }
+      if (existing.lockState !== "submitted") return NextResponse.json({ error: "It is not frozen." }, { status: 409 });
+      if (!str(body.reason, 300)) return NextResponse.json({ error: "Give a reason for unlocking — it goes on the record." }, { status: 400 });
+    }
+    const updated: Partner = {
+      ...existing,
+      lockState: body.action === "submit" ? "submitted" : "open",
+      lockedAt: body.action === "submit" ? now : "",
+      lockedByName: body.action === "submit" ? user.name : "",
+      lockHistory: [
+        ...existing.lockHistory,
+        { at: now, by: user.id, byName: user.name, action: body.action === "submit" ? "submitted" : "unlocked", reason: str(body.reason, 300) },
+      ],
+      updatedAt: now,
+    };
+    savePartners(partners.map((p) => (p.id === updated.id ? updated : p)));
+    recordAudit({
+      action: body.action === "submit" ? "PARTNER_SUBMITTED_FROZEN" : "PARTNER_UNLOCKED",
+      userId: user.id, userName: user.name, role: user.role,
+      targetType: "partner", targetId: updated.id, targetLabel: updated.name,
+      detail: body.action === "submit" ? "Submitted & frozen" : `Unlocked for correction · ${str(body.reason, 300)}`,
+    });
+    return NextResponse.json({ partner: { ...updated, gaps: gapsFor(updated), freeze: freezeInfoFor(updated), locked: Boolean(frozenFor(updated, user.role)) } });
+  }
+
   const lock = frozenFor(existing, user.role);
   if (lock) return NextResponse.json({ error: lock }, { status: 423 });
 
   const updated: Partner = devStamp({
     ...existing,
     ...readPartner(body, auth.session.plant, user.role),
-    // Category and the freeze clock never change on edit. A coordinator's
-    // trading vendor cannot be re-filed as raw material, and re-saving a
-    // record must not restart its one-week window.
-    category: existing.category,
+    // Category and the lock never change through an ordinary save. Only
+    // accounts/admin/developer may move a record between trading and
+    // manufacturing; the lock moves only through submit / unlock.
+    category: canOverrideFreeze(user.role) && body.category ? categoryOf(body.category) : existing.category,
     submittedAt: existing.submittedAt,
+    lockState: existing.lockState,
+    lockedAt: existing.lockedAt,
+    lockedByName: existing.lockedByName,
+    lockHistory: existing.lockHistory,
     updatedAt: new Date().toISOString(),
   }, existing, { name: user.name, role: user.role }, body.devNote);
 
@@ -286,6 +332,14 @@ export async function PUT(req: NextRequest) {
     });
   }
 
+  if (existing.lockState === "submitted") {
+    recordAudit({
+      action: "PARTNER_EDITED_AFTER_FREEZE",
+      userId: user.id, userName: user.name, role: user.role,
+      targetType: "partner", targetId: updated.id, targetLabel: updated.name,
+      detail: "Frozen registration corrected by an authorised user",
+    });
+  }
   savePartners(partners.map((p) => (p.id === updated.id ? updated : p)));
   try { syncMasterFromRegistration(); } catch { /* derived file */ }
   return NextResponse.json({ partner: { ...updated, gaps: gapsFor(updated), freeze: freezeInfoFor(updated), locked: false } });
@@ -418,5 +472,6 @@ function readPartner(body: any, sessionPlant: string | null, role: string): Part
     agreementFrom: str(body?.agreementFrom, 10),
     agreementTo: str(body?.agreementTo, 10),
     notes: str(body?.notes, 600),
+    supplies: suppliesOf(body?.supplies),
   };
 }

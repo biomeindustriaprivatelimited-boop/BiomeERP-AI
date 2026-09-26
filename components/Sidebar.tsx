@@ -157,7 +157,7 @@ export default function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
       // manager sees the registration module the business gave them.
       .map((item) =>
         item.href === "/partners"
-          ? { ...item, label: user?.role === "coordinator" ? "Vendors (trading)" : user?.role === "plant_manager" ? "Vendors (my plant)" : "Vendors & Transporters" }
+          ? { ...item, label: user?.role === "coordinator" ? "Vendor/Client Reg. (Trading)" : user?.role === "plant_manager" ? "Vendor/Client Reg. (Plant)" : "Vendor & Client Registration" }
           : item
       ),
   })).filter((section) => section.items.length > 0);

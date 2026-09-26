@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
 import {
   Handshake, Truck, Plus, Loader2, AlertCircle, Check, Search, Filter,
-  FileText, Upload, ShieldAlert, Clock, Building2, Landmark, X, Trash2, Mail } from "lucide-react";
+  FileText, Upload, ShieldAlert, Clock, Building2, Landmark, X, Trash2, Mail, Lock, Unlock } from "lucide-react";
 import FormPanel, { FormSection } from "@/components/FormPanel";
 import DevEditedChip from "@/components/DevEditedChip";
 import { EmptyState } from "@/components/SetupGuide";
@@ -44,13 +44,18 @@ interface Partner {
   status: string; statusReason: string; documents: PartnerDoc[]; notes: string;
   registeredByName: string; createdAt: string;
   category: string;
+  supplies?: string[];
+  lockState?: "open" | "submitted";
+  lockedAt?: string;
+  lockedByName?: string;
+  lockHistory?: { at: string; byName: string; action: string; reason: string }[];
   gaps: Gaps;
   freeze?: { frozen: boolean; daysLeft: number; freezesOn: string };
   locked?: boolean;
 }
 
 const blank = {
-  kind: "biomass_vendor", category: "raw_material",
+  kind: "biomass_vendor", category: "raw_material", supplies: ["biomass"] as string[],
   code: "", name: "", legalName: "", gstin: "", pan: "",
   plants: [] as string[], material: "", contactPerson: "", phone: "", email: "",
   addressLine: "", city: "", state: "", pincode: "",
@@ -72,7 +77,11 @@ export default function PartnersPage() {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Partner | null>(null);
   const [form, setForm] = useState<any>({ ...blank });
-  const [filters, setFilters] = useState({ kind: "all", status: "all", search: "" });
+  const [filters, setFilters] = useState({ kind: "all", status: "all", category: "all", lock: "all", search: "" });
+  // Papers chosen on the NEW registration form — uploaded right after the
+  // record is created, so KYC goes in on the same screen.
+  const [queued, setQueued] = useState<{ type: string; file: File; reference: string; validTill: string }[]>([]);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -99,11 +108,18 @@ export default function PartnersPage() {
 
   function startAdd() {
     setEditing(null);
-    setForm({ ...blank });
+    setForm({
+      ...blank,
+      category: data?.myRole === "coordinator" ? "trading" : "raw_material",
+      plants: data?.myRole === "plant_manager" && data?.myPlant ? [data.myPlant] : [],
+    });
+    setQueued([]);
+    setNotice(null);
     setOpen(true);
   }
 
   function edit(p: Partner) {
+    setNotice(null);
     setEditing(p);
     setForm({ ...blank, ...p });
     setOpen(true);
@@ -120,7 +136,48 @@ export default function PartnersPage() {
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json.error || "Could not save.");
       if (editing) setEditing(json.partner);
-      else { setOpen(false); setForm({ ...blank }); }
+      else {
+        // Upload the papers chosen on the form, then keep the panel open on
+        // the new record so it can be checked and submitted.
+        const failed: string[] = [];
+        let latest = json.partner;
+        for (const q of queued) {
+          const fd = new FormData();
+          fd.append("partnerId", json.partner.id);
+          fd.append("file", q.file);
+          fd.append("type", q.type);
+          fd.append("reference", q.reference);
+          fd.append("validTill", q.validTill);
+          const r = await fetch("/api/partners", { method: "PATCH", body: fd });
+          const j = await r.json().catch(() => ({}));
+          if (!r.ok) failed.push(`${q.file.name}: ${j.error || r.status}`);
+          else latest = j.partner;
+        }
+        setQueued([]);
+        setEditing(latest);
+        setForm({ ...blank, ...latest });
+        setNotice(
+          failed.length
+            ? `Registered. ${failed.length} document(s) did not upload: ${failed.join("; ")}`
+            : "Registered with its documents. Check every detail and paper below, then press Submit & freeze."
+        );
+      }
+      await load();
+    } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+  }
+
+  async function lockAction(action: "submit" | "unlock", extra: Record<string, unknown>) {
+    if (!editing) return;
+    setBusy(true); setError(null); setNotice(null);
+    try {
+      const res = await fetch("/api/partners", {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: editing.id, action, ...extra }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Could not do that.");
+      setEditing(json.partner);
+      setNotice(action === "submit" ? "Submitted and frozen. Only accounts, admin or the developer can change it now." : "Unlocked — the owner can correct it and submit again.");
       await load();
     } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
   }
@@ -156,19 +213,19 @@ export default function PartnersPage() {
         <div>
           <h1 className="flex items-center gap-2 text-[20px] font-semibold tracking-[-.03em] text-biome-text">
             <Handshake size={19} className="text-biome-leaf" />
-            {isCoordinator ? "Vendors · trading" : isPlantManager ? "Vendors & transporters · my plant" : "Vendors & transporters"}
+            {isCoordinator ? "Vendor & client registration · Trading" : isPlantManager ? "Vendor & client registration · Manufacturing (my plant)" : "Vendor & client registration"}
           </h1>
           <p className="mt-1 text-[11.5px] leading-relaxed text-biome-muted">
             {isCoordinator
-              ? "Bought-and-sold material. Raw-material vendors and transporters are registered by each site's plant manager."
+              ? "Trading vendors and clients. Manufacturing vendors and clients are registered by each site's plant manager. Upload KYC, check everything, then Submit & freeze."
               : isPlantManager
-                ? `Raw-material vendors and transporters for your site. A submission stays editable for ${data?.freezeDays ?? 7} days, then it freezes.`
-                : "Who they are, what was agreed, and the signed paper that proves it."}
+                ? "Manufacturing vendors, clients and transporters for your site. Upload KYC, check everything, then Submit & freeze — after that only accounts, admin or the developer can change it."
+                : "One register for every vendor and client — trading (coordinator) and manufacturing (plant manager). Frozen records can be corrected or unlocked here."}
           </p>
         </div>
         <button onClick={startAdd}
           className="bmx-btn flex items-center gap-2 rounded-xl bg-biome-leaf px-4 py-2.5 text-[11.5px] font-bold text-white">
-          <Plus size={14} /> {isCoordinator ? "Register a trading vendor" : "Register a vendor / transporter"}
+          <Plus size={14} /> {isCoordinator ? "Register trading vendor / client" : isPlantManager ? "Register manufacturing vendor / client" : "Register vendor / client"}
         </button>
       </header>
 
@@ -193,8 +250,19 @@ export default function PartnersPage() {
       <div className="flex flex-wrap items-center gap-2">
         <Filter size={13} className="text-biome-muted" />
         <select value={filters.kind} onChange={(e) => setFilters({ ...filters, kind: e.target.value })} className={selectCls}>
-          <option value="all">Vendors and transporters</option>
+          <option value="all">Vendors, clients, transporters</option>
           {(data?.kinds || []).map((k: any) => <option key={k.id} value={k.id}>{k.label}</option>)}
+        </select>
+        {!isCoordinator && !isPlantManager && (
+          <select value={filters.category} onChange={(e) => setFilters({ ...filters, category: e.target.value })} className={selectCls}>
+            <option value="all">Trading + manufacturing</option>
+            {(data?.categories || []).map((c: any) => <option key={c.id} value={c.id}>{c.label}</option>)}
+          </select>
+        )}
+        <select value={filters.lock} onChange={(e) => setFilters({ ...filters, lock: e.target.value })} className={selectCls}>
+          <option value="all">Submitted or not</option>
+          <option value="open">Not submitted (editable)</option>
+          <option value="submitted">Submitted &amp; frozen</option>
         </select>
         <select value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })} className={selectCls}>
           <option value="all">Every status</option>
@@ -234,24 +302,26 @@ export default function PartnersPage() {
                     <span className={`rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase tracking-[.1em] ${STATUS_TONE[p.status]}`}>
                       {(data?.statuses || []).find((x: any) => x.id === p.status)?.label || p.status}
                     </span>
+                    <span className="rounded-full border border-biome-line px-2 py-0.5 text-[9px] font-bold uppercase tracking-[.08em] text-biome-muted">
+                      {(data?.kinds || []).find((k: any) => k.id === p.kind)?.label || p.kind}
+                    </span>
                     {p.category === "trading" ? (
                       <span className="rounded-full border border-cyan-500/35 bg-cyan-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[.08em] text-cyan-600">
                         Trading
                       </span>
-                    ) : p.kind === "biomass_vendor" ? (
+                    ) : (
                       <span className="rounded-full border border-lime-500/30 bg-lime-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[.08em] text-lime-600">
-                        Raw material
-                      </span>
-                    ) : null}
-                    <DevEditedChip mark={(p as any).devEdited} />
-                    {p.locked && (
-                      <span className="flex items-center gap-1 rounded-full border border-slate-400/40 bg-slate-400/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[.08em] text-biome-muted">
-                        <Clock size={9} /> Frozen
+                        Manufacturing
                       </span>
                     )}
-                    {!p.locked && isPlantManager && p.freeze && !p.freeze.frozen && (
+                    <DevEditedChip mark={(p as any).devEdited} />
+                    {p.lockState === "submitted" ? (
+                      <span className="flex items-center gap-1 rounded-full border border-slate-400/40 bg-slate-400/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[.08em] text-biome-muted">
+                        <Lock size={9} /> Submitted &amp; frozen
+                      </span>
+                    ) : (
                       <span className="rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-[9px] font-semibold text-sky-600">
-                        {p.freeze.daysLeft === 0 ? "freezes today" : `${p.freeze.daysLeft}d to freeze`}
+                        Not submitted
                       </span>
                     )}
                     {p.gaps.expired.length > 0 && (
@@ -270,6 +340,7 @@ export default function PartnersPage() {
                     {p.city && ` · ${p.city}`}
                     {p.plants.length > 0 && ` · ${p.plants.join(", ")}`}
                     {p.material && ` · ${p.material}`}
+                    {p.supplies && p.supplies.length > 0 && ` · handles: ${p.supplies.map((x) => (data?.supplyCategories || []).find((c: any) => c.id === x)?.label || x).join(", ")}`}
                     {` · ${p.documents.length} document${p.documents.length === 1 ? "" : "s"}`}
                   </p>
                   {(p.gaps.missing.length > 0 || p.gaps.missingFields.length > 0) && (
@@ -299,7 +370,7 @@ export default function PartnersPage() {
         open={open}
         onClose={() => { setOpen(false); setEditing(null); }}
         icon={form.kind === "transporter" ? <Truck size={20} /> : <Handshake size={20} />}
-        eyebrow={editing ? "Registered company" : "New registration"}
+        eyebrow={editing ? (editing.lockState === "submitted" ? "Submitted & frozen" : "Registered — not yet submitted") : "New registration"}
         title={editing ? editing.name : "Register a company"}
         subtitle="The papers here are what a payment and an invoice claim rest on. Half a folder is worse than an empty one, because it looks finished."
         headerRight={
@@ -317,59 +388,57 @@ export default function PartnersPage() {
             <button onClick={() => { setOpen(false); setEditing(null); }}
               className="bmx-chip rounded-xl border border-biome-line px-4 py-2.5 text-[11.5px] font-semibold text-biome-muted">Close</button>
             <button onClick={save} disabled={busy || editingLocked}
-              title={editingLocked ? "This record has frozen — ask accounts or the admin for a correction." : undefined}
+              title={editingLocked ? "Submitted & frozen — ask accounts, admin or the developer to unlock it." : undefined}
               className="bmx-btn flex items-center gap-2 rounded-xl bg-biome-leaf px-5 py-2.5 text-[11.5px] font-bold text-white disabled:opacity-60">
               {busy ? <Loader2 size={14} className="bmx-spin" /> : <Check size={14} />} {editing ? "Save changes" : "Register"}
             </button>
           </>
         }
       >
-        {editing && isPlantManager && editing.freeze && (
-          <div className={`rounded-xl border px-4 py-3 ${
-            editingLocked ? "border-slate-400/40 bg-slate-400/[.08]" : "border-sky-500/30 bg-sky-500/[.06]"
-          }`}>
-            <p className={`flex items-center gap-1.5 text-[11.5px] font-semibold ${editingLocked ? "text-biome-muted" : "text-sky-600"}`}>
-              <Clock size={13} />
-              {editingLocked
-                ? `Frozen since ${editing.freeze.freezesOn}`
-                : editing.freeze.daysLeft === 0
-                  ? "This record freezes today"
-                  : `Editable for ${editing.freeze.daysLeft} more day${editing.freeze.daysLeft === 1 ? "" : "s"} — freezes on ${editing.freeze.freezesOn}`}
+        {notice && (
+          <p className="rounded-xl border border-emerald-500/30 bg-emerald-500/[.07] px-4 py-2.5 text-[11.5px] font-semibold text-emerald-600">{notice}</p>
+        )}
+        {error && open && (
+          <p className="rounded-xl border border-rose-400/25 bg-rose-400/[.07] px-4 py-2.5 text-[11.5px] text-biome-text">{error}</p>
+        )}
+        {editing && editing.lockState === "submitted" && (
+          <div className="rounded-xl border border-slate-400/40 bg-slate-400/[.08] px-4 py-3">
+            <p className="flex items-center gap-1.5 text-[11.5px] font-semibold text-biome-text">
+              <Lock size={13} /> Submitted &amp; frozen{editing.lockedAt ? ` on ${editing.lockedAt.slice(0, 10)}` : ""}{editing.lockedByName ? ` by ${editing.lockedByName}` : ""}
             </p>
             <p className="mt-0.5 text-[10.5px] leading-relaxed text-biome-muted">
-              A plant manager&rsquo;s submission stays editable for one week from registration. After that,
-              corrections go through accounts or the admin — so an agreement cannot be quietly rewritten later.
+              {editingLocked
+                ? "You can view it but not change it. Accounts, the admin or the developer can unlock it for correction."
+                : "You can still correct it (every change is audited), or unlock it so the owner can correct and resubmit."}
             </p>
           </div>
         )}
         <FormSection title="The company" sectionIcon={<Building2 size={14} />} columns={3}>
           <F label="They are a">
-            <select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value })} className={inputCls}
-              disabled={Boolean(editing) || isCoordinator}>
-              {(data?.kinds || [])
-                .filter((k: any) => !isCoordinator || k.id === "biomass_vendor")
-                .map((k: any) => <option key={k.id} value={k.id}>{k.label}</option>)}
+            <select value={form.kind} onChange={(e) => {
+              const kind = e.target.value;
+              setForm({ ...form, kind, supplies: kind === "transporter" ? ["transport"] : kind === "client" ? [] : form.supplies });
+            }} className={inputCls} disabled={Boolean(editing)}>
+              {(data?.kinds || []).map((k: any) => <option key={k.id} value={k.id}>{k.label}</option>)}
             </select>
           </F>
-          {form.kind === "biomass_vendor" && (
-            <F label="Vendor category">
-              <select
-                value={isCoordinator ? "trading" : isPlantManager ? "raw_material" : form.category}
-                onChange={(e) => setForm({ ...form, category: e.target.value })}
-                className={inputCls}
-                disabled={Boolean(editing) || isCoordinator || isPlantManager}
-              >
-                {(data?.categories || []).map((c: any) => <option key={c.id} value={c.id}>{c.label}</option>)}
-              </select>
-              <p className="mt-1 text-[9.5px] text-biome-muted">
-                {isCoordinator
-                  ? "Trading vendors are your register. Raw-material vendors belong to the plant manager."
-                  : isPlantManager
-                    ? "Raw material only — trading vendors are the coordinator's register."
-                    : "Trading is the coordinator's register; raw material is the plant manager's."}
-              </p>
-            </F>
-          )}
+          <F label="Business side">
+            <select
+              value={isCoordinator ? "trading" : isPlantManager ? "raw_material" : form.category}
+              onChange={(e) => setForm({ ...form, category: e.target.value })}
+              className={inputCls}
+              disabled={isCoordinator || isPlantManager || (Boolean(editing) && !data?.canUnlock)}
+            >
+              {(data?.categories || []).map((c: any) => <option key={c.id} value={c.id}>{c.label}</option>)}
+            </select>
+            <p className="mt-1 text-[9.5px] text-biome-muted">
+              {isCoordinator
+                ? "Trading is your register. Manufacturing vendors/clients belong to the plant manager."
+                : isPlantManager
+                  ? "Manufacturing only — trading vendors/clients are the coordinator's register."
+                  : "Trading → coordinator. Manufacturing → plant manager of the site."}
+            </p>
+          </F>
           <F label="Trading name"><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inputCls} /></F>
           <F label="Short code (optional)">
             <input value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value.toUpperCase() })}
@@ -382,8 +451,26 @@ export default function PartnersPage() {
           </div>
           <F label="Material / service">
             <input value={form.material} onChange={(e) => setForm({ ...form, material: e.target.value })}
-              placeholder={form.kind === "transporter" ? "Trailer, tipper…" : "Mustard husk, pellet…"} className={inputCls} />
+              placeholder={form.kind === "transporter" ? "Trailer, tipper…" : form.kind === "client" ? "What they buy" : "Mustard husk, pellet, bearings…"} className={inputCls} />
           </F>
+          {form.kind !== "client" && (
+            <div className="md:col-span-3">
+              <span className="mb-1.5 block text-[10px] font-bold uppercase tracking-[.13em] text-biome-muted">Handled for (choose all that apply)</span>
+              <div className="flex flex-wrap gap-1.5">
+                {(data?.supplyCategories || []).map((c: any) => {
+                  const on = (form.supplies || []).includes(c.id);
+                  return (
+                    <button type="button" key={c.id} disabled={editingLocked}
+                      onClick={() => setForm({ ...form, supplies: on ? form.supplies.filter((x: string) => x !== c.id) : [...(form.supplies || []), c.id] })}
+                      className={`bmx-chip rounded-full border px-3 py-1 text-[10.5px] font-semibold ${on ? "border-biome-leaf/50 bg-biome-leaf/12 text-biome-leaf" : "border-biome-line text-biome-muted"}`}>
+                      {on ? "✓ " : ""}{c.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="mt-1 text-[9.5px] text-biome-muted">Decides where this vendor can be picked — e.g. only &ldquo;Machine spare parts&rdquo; vendors appear in Plant Stock receipts.</p>
+            </div>
+          )}
         </FormSection>
 
         <FormSection title="Statutory" sectionIcon={<ShieldAlert size={14} />} columns={3}
@@ -398,7 +485,7 @@ export default function PartnersPage() {
             <Shape value={form.pan} ok={/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(form.pan || "")} what="PAN" />
           </F>
           <F label="Serves which plants">
-            <select multiple value={form.plants}
+            <select multiple value={form.plants} disabled={isPlantManager}
               onChange={(e) => setForm({ ...form, plants: Array.from(e.target.selectedOptions).map((o) => o.value) })}
               className={`${inputCls} h-[76px]`}>
               {(data?.plants || []).map((p: any) => <option key={p.code} value={p.code}>{p.label}</option>)}
@@ -453,16 +540,12 @@ export default function PartnersPage() {
         {editing && (
           <>
             <DocumentsSection partner={editing} types={docTypes} onChanged={load} locked={editingLocked} />
+            <SubmitSection partner={editing} canUnlock={Boolean(data?.canUnlock)} busy={busy} onAction={lockAction} />
             <StatusSection partner={editing} statuses={data?.statuses || []} canActivate={data?.canActivate} busy={busy} onSet={setStatus} />
           </>
         )}
         {!editing && (
-          <FormSection title="Documents" sectionIcon={<FileText size={14} />} columns={1}>
-            <p className="text-[11.5px] leading-relaxed text-biome-muted">
-              Register the company first — the papers attach to the record once it exists, so an upload cannot end up
-              belonging to nobody.
-            </p>
-          </FormSection>
+          <NewDocsSection types={docTypes} queued={queued} setQueued={setQueued} />
         )}
       </FormPanel>
     </div>
@@ -533,7 +616,7 @@ function DocumentsSection({ partner, types, onChanged, locked }: { partner: Part
                 <span className="ml-auto text-[9.5px] text-biome-muted">
                   {d.uploadedByName}{d.plant ? ` · ${d.plant}` : ""} · {Math.round(d.sizeBytes / 1024)} KB
                 </span>
-                <button onClick={() => remove(d.id)} disabled={busy} title="Remove from the register"
+                <button onClick={() => remove(d.id)} disabled={busy || locked} title="Remove from the register"
                   className="bmx-chip rounded-lg border border-biome-line px-2 py-1 text-rose-500 disabled:opacity-60">
                   <Trash2 size={11} />
                 </button>
@@ -563,7 +646,7 @@ function DocumentsSection({ partner, types, onChanged, locked }: { partner: Part
 
       {locked ? (
         <p className="rounded-xl border border-slate-400/40 bg-slate-400/[.08] px-3 py-2.5 text-[11px] leading-relaxed text-biome-muted">
-          This record has frozen — documents can no longer be attached from here. Ask accounts or the admin.
+          Submitted &amp; frozen — documents can no longer be attached or removed. Ask accounts, the admin or the developer to unlock it.
         </p>
       ) : (
       <div className="grid gap-2 rounded-xl border border-biome-line bg-biome-bg p-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -640,6 +723,134 @@ function StatusSection({
           You can register a company and put their papers on file. Marking one Active is accounts&rsquo; or the
           admin&rsquo;s call — the same separation the rest of the app runs on.
         </p>
+      )}
+    </FormSection>
+  );
+}
+
+/** KYC and business papers picked on the NEW registration form. */
+function NewDocsSection({ types, queued, setQueued }: {
+  types: any[];
+  queued: { type: string; file: File; reference: string; validTill: string }[];
+  setQueued: (q: { type: string; file: File; reference: string; validTill: string }[]) => void;
+}) {
+  const [type, setType] = useState("");
+  const [reference, setReference] = useState("");
+  const [validTill, setValidTill] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+  const expires = types.find((t) => t.id === type)?.expires;
+  const have = new Set(queued.map((q) => q.type));
+  const missingReq = types.filter((t) => t.required && !have.has(t.id));
+
+  function add(files: FileList | null) {
+    if (!files || !files.length) return;
+    if (!type) { setErr("Choose which document this is first."); return; }
+    const next = [...queued];
+    for (const f of Array.from(files)) {
+      if (f.size > 15 * 1024 * 1024) { setErr(`${f.name} is over 15 MB.`); continue; }
+      next.push({ type, file: f, reference, validTill });
+    }
+    setQueued(next); setErr(null); setReference(""); setValidTill("");
+  }
+
+  return (
+    <FormSection title="KYC & business documents" sectionIcon={<FileText size={14} />} columns={1}
+      hint="Attach them here — they upload the moment you press Register. Required papers are marked *. After registering, check everything and press Submit & freeze.">
+      {err && <p className="rounded-xl border border-rose-400/25 bg-rose-400/[.07] px-3 py-2 text-[11px] text-biome-text">{err}</p>}
+      {queued.length > 0 && (
+        <div className="space-y-1.5">
+          {queued.map((q, i) => (
+            <div key={i} className="flex flex-wrap items-center gap-2 rounded-xl border border-biome-line px-3 py-2">
+              <FileText size={12} className="text-biome-leaf" />
+              <span className="text-[11.5px] font-semibold text-biome-text">{types.find((t) => t.id === q.type)?.label || q.type}</span>
+              <span className="text-[10px] text-biome-muted">{q.file.name} · {Math.round(q.file.size / 1024)} KB{q.reference && ` · ${q.reference}`}{q.validTill && ` · valid till ${q.validTill}`}</span>
+              <button type="button" onClick={() => setQueued(queued.filter((_, j) => j !== i))} className="ml-auto rounded-lg border border-biome-line px-2 py-1 text-rose-500"><X size={11} /></button>
+            </div>
+          ))}
+        </div>
+      )}
+      {missingReq.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-amber-500/30 bg-amber-500/[.07] px-3 py-2">
+          <span className="text-[10px] font-bold uppercase tracking-[.1em] text-amber-600">Still to attach:</span>
+          {missingReq.map((t) => <span key={t.id} className="rounded-full border border-amber-500/40 px-2 py-0.5 text-[10px] font-semibold text-amber-600">{t.label}</span>)}
+        </div>
+      )}
+      <div className="grid gap-2 rounded-xl border border-biome-line bg-biome-bg p-3 sm:grid-cols-2 lg:grid-cols-4">
+        <F label="Document">
+          <select value={type} onChange={(e) => setType(e.target.value)} className={inputCls}>
+            <option value="">Choose…</option>
+            {types.map((t) => <option key={t.id} value={t.id}>{t.label}{t.required ? " *" : ""}</option>)}
+          </select>
+        </F>
+        <F label="Number on it"><input value={reference} onChange={(e) => setReference(e.target.value)} className={inputCls} /></F>
+        <F label={expires ? "Valid till" : "Valid till (n/a)"}>
+          <input type="date" value={validTill} disabled={!expires} onChange={(e) => setValidTill(e.target.value)} className={`${inputCls} disabled:opacity-50`} />
+        </F>
+        <F label="File (PDF / photo)">
+          <input type="file" multiple accept="image/*,application/pdf" onChange={(e) => { add(e.target.files); e.target.value = ""; }}
+            className="block w-full text-[11px] text-biome-muted file:mr-2 file:rounded-lg file:border-0 file:bg-biome-leaf file:px-3 file:py-1.5 file:text-[10.5px] file:font-bold file:text-white" />
+        </F>
+      </div>
+    </FormSection>
+  );
+}
+
+/** Submit & freeze (owner) and Unlock (accounts / admin / developer). */
+function SubmitSection({ partner, canUnlock, busy, onAction }: {
+  partner: Partner; canUnlock: boolean; busy: boolean;
+  onAction: (a: "submit" | "unlock", extra: Record<string, unknown>) => void;
+}) {
+  const [checked, setChecked] = useState(false);
+  const [reason, setReason] = useState("");
+  const g = partner.gaps;
+  const blockers = [...g.missing.map((m) => m.label), ...g.expired.map((e) => `${e.label} (expired)`), ...g.missingFields];
+  const submitted = partner.lockState === "submitted";
+
+  return (
+    <FormSection title="Submit & freeze" sectionIcon={<Lock size={14} />} columns={1}>
+      {!submitted ? (
+        <>
+          <p className="text-[11px] leading-relaxed text-biome-muted">
+            When every field and document has been checked, submit it. After that it is frozen: you can no longer edit it or its
+            documents — accounts, the admin or the developer must unlock it.
+          </p>
+          {blockers.length > 0 && (
+            <p className="rounded-xl border border-amber-500/30 bg-amber-500/[.07] px-3 py-2 text-[11px] text-amber-600">
+              Before submitting: {blockers.join(", ")}.
+            </p>
+          )}
+          <label className="flex items-center gap-2 text-[11.5px] text-biome-text">
+            <input type="checkbox" checked={checked} onChange={(e) => setChecked(e.target.checked)} />
+            I have checked every detail and every document.
+          </label>
+          <button onClick={() => onAction("submit", { confirmChecked: checked })} disabled={busy || !checked || blockers.length > 0}
+            className="bmx-btn flex w-fit items-center gap-2 rounded-xl bg-biome-leaf px-4 py-2.5 text-[11.5px] font-bold text-white disabled:opacity-50">
+            {busy ? <Loader2 size={13} className="bmx-spin" /> : <Lock size={13} />} Submit &amp; freeze
+          </button>
+        </>
+      ) : canUnlock ? (
+        <div className="flex flex-wrap items-end gap-2">
+          <div className="min-w-[220px] flex-1">
+            <F label="Reason for unlocking">
+              <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Bank account changed — new cancelled cheque" className={inputCls} />
+            </F>
+          </div>
+          <button onClick={() => onAction("unlock", { reason })} disabled={busy || !reason.trim()}
+            className="bmx-chip flex items-center gap-2 rounded-xl border border-amber-500/40 px-4 py-2.5 text-[11.5px] font-semibold text-amber-600 disabled:opacity-50">
+            <Unlock size={13} /> Unlock for correction
+          </button>
+        </div>
+      ) : (
+        <p className="text-[11px] text-biome-muted">Frozen. Ask accounts, the admin or the developer if something needs correcting.</p>
+      )}
+      {(partner.lockHistory || []).length > 0 && (
+        <ul className="space-y-0.5">
+          {(partner.lockHistory || []).slice().reverse().map((h, i) => (
+            <li key={i} className="text-[10px] text-biome-muted">
+              · {new Date(h.at).toLocaleString("en-IN")} — {h.action === "submitted" ? "Submitted & frozen" : "Unlocked"} by {h.byName}{h.reason ? ` · ${h.reason}` : ""}
+            </li>
+          ))}
+        </ul>
       )}
     </FormSection>
   );

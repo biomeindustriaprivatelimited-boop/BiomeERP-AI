@@ -27,7 +27,7 @@ import path from "path";
 import crypto from "crypto";
 import { paths, readJson, writeJsonAtomic, ensureDir } from "@/lib/dataRoot";
 import { recordAudit } from "@/lib/audit";
-import { loadPartners, gapsFor, freezeInfoFor } from "@/lib/partners";
+import { loadPartners, gapsFor } from "@/lib/partners";
 import { loadEntries as loadImprestEntries, loadPeople as loadImprestPeople } from "@/lib/imprest";
 import { loadLeave } from "@/lib/leave";
 import { loadTrips, derivedStatus } from "@/lib/coordination";
@@ -185,16 +185,19 @@ function detectRegistration(): Candidate[] {
         dueOn: plusDays(today(), 2), amount: null, evidence: ["All required documents present"],
       }));
     }
-    const fz = freezeInfoFor(p);
-    if (p.status === "draft" && !fz.frozen && fz.daysLeft <= 1 && gaps.missingFields.length) {
+    // Registered but never "Submit & freeze"d after 3 days — the owner
+    // (coordinator for trading, plant manager for manufacturing) is chased.
+    const openDays = Math.floor((Date.now() - new Date(p.createdAt).getTime()) / 86400000);
+    if (p.lockState === "open" && openDays >= 3) {
       out.push(cand({
-        key: `partners:${p.id}:freeze-soon`,
+        key: `partners:${p.id}:not-submitted`,
         kind: "followup", module: "Registration",
-        title: `${p.name}: record freezes ${fz.daysLeft === 0 ? "today" : "tomorrow"} with fields still empty`,
-        why: `After ${fz.freezesOn} the plant manager can no longer edit; ${gaps.missingFields.join(", ")} would need accounts to fix.`,
-        nextAction: `Fill ${gaps.missingFields.join(", ")} before the window closes.`,
-        href: "/partners", priority: "urgent", ownerRoles: ["plant_manager"], plant: p.plants[0] || null,
-        dueOn: today(), amount: null, evidence: [`Freezes on ${fz.freezesOn}`],
+        title: `${p.name}: registration not submitted & frozen yet`,
+        why: `Opened ${openDays} days ago and still editable.${gaps.missing.length || gaps.missingFields.length ? ` Still missing: ${[...gaps.missing.map((m) => m.label), ...gaps.missingFields].join(", ")}.` : ""}`,
+        nextAction: "Upload the remaining KYC papers, check every field, then press Submit & freeze.",
+        href: "/partners", priority: openDays >= 7 ? "urgent" : "normal",
+        ownerRoles: [p.category === "trading" ? "coordinator" : "plant_manager"], plant: p.plants[0] || null,
+        dueOn: today(), amount: null, evidence: [`Registered ${p.createdAt.slice(0, 10)} by ${p.registeredByName}`],
       }));
     }
   }

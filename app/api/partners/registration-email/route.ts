@@ -17,7 +17,8 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const KIND_LABEL: Record<string, string> = {
-  biomass_vendor: "Biomass Vendor",
+  biomass_vendor: "Vendor",
+  client: "Client",
   transporter: "Transporter",
   other: "Business Partner",
 };
@@ -41,9 +42,7 @@ export async function POST(req: NextRequest) {
   }
 
   const kindLabel = KIND_LABEL[partner.kind] || "Business Partner";
-  const category = partner.kind === "biomass_vendor"
-    ? (partner.category === "trading" ? "Trading vendor" : "Raw material vendor")
-    : null;
+  const category = partner.category === "trading" ? "Trading" : "Manufacturing";
   const gaps = gapsFor(partner);
   const docLabel = (id: string) => PARTNER_DOCUMENT_TYPES.find((t) => t.id === id)?.label || id;
   const onFile = partner.documents.map((d) => `${docLabel(d.type)}${d.reference ? ` (${d.reference})` : ""}`);

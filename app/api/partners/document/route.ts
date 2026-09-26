@@ -127,6 +127,12 @@ export async function DELETE(req: NextRequest) {
   // signed agreement is not something any passing user should be able to
   // take off the file.
   const senior = user.role === "admin" || user.role === "accounts" || user.role === "developer";
+  if (partner.lockState === "submitted" && !senior) {
+    return NextResponse.json(
+      { error: "This registration is submitted and frozen — documents cannot be removed. Ask accounts, the admin or the developer to unlock it." },
+      { status: 423 }
+    );
+  }
   if (doc.uploadedBy !== user.id && !senior) {
     return NextResponse.json(
       { error: `${doc.uploadedByName} put this on file. Ask them, or ask accounts.` },

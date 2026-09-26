@@ -28,7 +28,7 @@ import crypto from "crypto";
 import path from "path";
 import { paths, readJson, writeJsonAtomic, ensureDir } from "@/lib/dataRoot";
 
-export type PartnerKind = "biomass_vendor" | "transporter" | "other";
+export type PartnerKind = "biomass_vendor" | "client" | "transporter" | "other";
 
 /**
  * A vendor is one of two kinds of business, and the business asked for a
@@ -45,9 +45,53 @@ export type PartnerKind = "biomass_vendor" | "transporter" | "other";
 export type VendorCategory = "trading" | "raw_material";
 
 export const VENDOR_CATEGORIES: { id: VendorCategory; label: string; help: string }[] = [
-  { id: "raw_material", label: "Raw material vendor", help: "Supplies the plant's own line. Registered by the plant manager of that site." },
-  { id: "trading", label: "Trading vendor", help: "Bought-and-sold material. Managed by the coordinator." },
+  // The id stays "raw_material" so years of stored records keep working;
+  // the business calls this side MANUFACTURING.
+  { id: "raw_material", label: "Manufacturing (plant)", help: "Vendors and clients of the plant's own manufacturing. Registered by the plant manager of that site." },
+  { id: "trading", label: "Trading", help: "Bought-and-sold material — vendors and clients. Registered by the coordinator." },
 ];
+
+/**
+ * What a vendor is handled for. Chosen at registration, several allowed,
+ * and read by the modules that pick a vendor: the stock module only offers
+ * vendors marked "spare_parts" / "consumables", coordination the biomass
+ * ones, and so on — one vendor master, filtered by what each vendor does.
+ */
+export type SupplyCategory =
+  | "biomass" | "spare_parts" | "consumables" | "machinery_service"
+  | "transport" | "packaging" | "fuel" | "civil_electrical" | "other";
+
+export const SUPPLY_CATEGORIES: { id: SupplyCategory; label: string }[] = [
+  { id: "biomass", label: "Biomass / raw material" },
+  { id: "spare_parts", label: "Machine spare parts" },
+  { id: "consumables", label: "Consumables & stores" },
+  { id: "machinery_service", label: "Machinery repair / service" },
+  { id: "transport", label: "Transport" },
+  { id: "packaging", label: "Packaging" },
+  { id: "fuel", label: "Fuel / lubricants" },
+  { id: "civil_electrical", label: "Civil / electrical work" },
+  { id: "other", label: "Other" },
+];
+
+/**
+ * SUBMIT & FREEZE.
+ *
+ * The coordinator (trading) or plant manager (manufacturing) fills the
+ * record, uploads the KYC and business documents, checks everything and
+ * presses "Submit & freeze". From then on THEY cannot change it. Accounts,
+ * admin and the developer can correct it, or unlock it and send it back
+ * for correction — every lock and unlock is on the record's own history
+ * and in the audit log.
+ */
+export type LockState = "open" | "submitted";
+
+export interface LockEvent {
+  at: string;
+  by: string;
+  byName: string;
+  action: "submitted" | "unlocked";
+  reason: string;
+}
 
 /**
  * How long a plant manager's submission stays editable.
@@ -68,7 +112,11 @@ export interface FreezeInfo {
   freezesOn: string;
 }
 
-export function freezeInfoFor(p: Pick<Partner, "submittedAt" | "createdAt">, now = new Date()): FreezeInfo {
+export function freezeInfoFor(p: Pick<Partner, "submittedAt" | "createdAt"> & Partial<Pick<Partner, "lockState" | "lockedAt">>, now = new Date()): FreezeInfo {
+  if (p.lockState) {
+    const frozen = p.lockState === "submitted";
+    return { frozen, daysLeft: frozen ? 0 : 999, freezesOn: frozen ? String(p.lockedAt || "").slice(0, 10) : "" };
+  }
   const started = new Date(p.submittedAt || p.createdAt);
   const closes = new Date(started.getTime() + PARTNER_FREEZE_DAYS * 24 * 60 * 60 * 1000);
   const msLeft = closes.getTime() - now.getTime();
@@ -80,7 +128,8 @@ export function freezeInfoFor(p: Pick<Partner, "submittedAt" | "createdAt">, now
 }
 
 export const PARTNER_KINDS: { id: PartnerKind; label: string; help: string }[] = [
-  { id: "biomass_vendor", label: "Biomass vendor", help: "Supplies material — husk, pellet, briquette, and so on." },
+  { id: "biomass_vendor", label: "Vendor / supplier", help: "Supplies material, parts or services — husk, pellet, spare parts, repairs." },
+  { id: "client", label: "Client / customer", help: "Buys from us. Their PO, GST and PAN go on file." },
   { id: "transporter", label: "Transporter", help: "Moves the material. Bilty and LR come from them." },
   { id: "other", label: "Other", help: "Contractors, service providers, anyone else on paper." },
 ];
@@ -118,13 +167,25 @@ export const PARTNER_DOCUMENT_TYPES: DocumentType[] = [
     help: "The signed agreement. Rate, quantity, period, payment terms." },
   { id: "transport_agreement", label: "Transport agreement", kinds: ["transporter"], required: true, expires: true,
     help: "The signed contract for movement — rate per tonne or per trip." },
+  { id: "sales_agreement", label: "Sales agreement / contract", kinds: ["client"], required: false, expires: true,
+    help: "The signed supply contract with the client." },
+  { id: "client_po", label: "Client purchase order", kinds: ["client"], required: false, expires: true,
+    help: "The client's PO / work order." },
   { id: "po", label: "Purchase order", kinds: ["biomass_vendor", "transporter", "other"], required: false, expires: true,
     help: "A PO raised against the agreement." },
   { id: "gst_certificate", label: "GST certificate", kinds: [], required: true, expires: false,
     help: "GST registration. Without it their invoice cannot be claimed." },
   { id: "pan", label: "PAN card", kinds: [], required: true, expires: false, help: "" },
-  { id: "cancelled_cheque", label: "Cancelled cheque", kinds: [], required: true, expires: false,
+  { id: "cancelled_cheque", label: "Cancelled cheque", kinds: ["biomass_vendor", "transporter", "other"], required: true, expires: false,
     help: "Proves the bank account before a payment is made to it." },
+  { id: "aadhaar", label: "Owner / proprietor Aadhaar", kinds: [], required: false, expires: false,
+    help: "For a proprietorship or a farmer-supplier." },
+  { id: "incorporation", label: "Incorporation / partnership deed", kinds: [], required: false, expires: false,
+    help: "COI, MOA, partnership deed or LLP agreement." },
+  { id: "trade_license", label: "Trade licence / shop act", kinds: [], required: false, expires: true, help: "" },
+  { id: "address_proof", label: "Business address proof", kinds: [], required: false, expires: false,
+    help: "Electricity bill, rent agreement or property paper." },
+  { id: "bank_letter", label: "Bank confirmation letter", kinds: [], required: false, expires: false, help: "" },
   { id: "msme", label: "MSME / Udyam certificate", kinds: [], required: false, expires: false,
     help: "Changes the payment window under the MSMED Act — worth having on file." },
   { id: "rc", label: "Vehicle RC", kinds: ["transporter"], required: false, expires: true, help: "" },
@@ -168,8 +229,15 @@ export interface Partner {
   kind: PartnerKind;
   /** Trading (coordinator's) or raw material (plant manager's). */
   category: VendorCategory;
-  /** When the record was first submitted — the freeze clock runs from here. */
+  /** When the record was first created. Kept for older code. */
   submittedAt: string;
+  /** What this vendor is handled for — spare parts, biomass, transport… */
+  supplies: SupplyCategory[];
+  /** Submit & freeze state. */
+  lockState: LockState;
+  lockedAt: string;
+  lockedByName: string;
+  lockHistory: LockEvent[];
   /** Set when a developer rewrote this record (stays highlighted). */
   devEdited?: { by: string; at: string; fields: string[]; note?: string } | null;
   /** Short code. Matches the operational vendor master where it exists. */
@@ -221,11 +289,23 @@ export function loadPartners(): Partner[] {
   // Records written before the trading/raw-material split carry neither
   // field. Everything old was registered from a plant, so raw_material is
   // the honest default; the freeze clock starts from when it was created.
-  return list.map((p: any) => ({
-    ...p,
-    category: p.category === "trading" ? "trading" : "raw_material",
-    submittedAt: p.submittedAt || p.createdAt || new Date().toISOString(),
-  }));
+  return list.map((p: any) => {
+    const submittedAt = p.submittedAt || p.createdAt || new Date().toISOString();
+    // Records from before Submit & freeze: the old rule froze a plant
+    // manager's record 7 days after registration. Honour that for anything
+    // already past it, so nothing that was frozen becomes editable again.
+    const legacyFrozen = !p.lockState && Date.now() - new Date(submittedAt).getTime() > PARTNER_FREEZE_DAYS * 86400000;
+    return {
+      ...p,
+      category: p.category === "trading" ? "trading" : "raw_material",
+      submittedAt,
+      supplies: Array.isArray(p.supplies) ? p.supplies : p.kind === "transporter" ? ["transport"] : p.kind === "biomass_vendor" ? ["biomass"] : [],
+      lockState: p.lockState === "submitted" || legacyFrozen ? "submitted" : "open",
+      lockedAt: p.lockedAt || (legacyFrozen ? submittedAt : ""),
+      lockedByName: p.lockedByName || (legacyFrozen ? "Auto-frozen (old 7-day rule)" : ""),
+      lockHistory: Array.isArray(p.lockHistory) ? p.lockHistory : [],
+    };
+  });
 }
 
 export function savePartners(partners: Partner[]): void {
@@ -238,6 +318,8 @@ export function blankPartner(by: { id: string; name: string }, kind: PartnerKind
   return {
     id: crypto.randomUUID(),
     kind, category: "raw_material", submittedAt: now,
+    supplies: kind === "transporter" ? ["transport"] : kind === "biomass_vendor" ? ["biomass"] : [],
+    lockState: "open", lockedAt: "", lockedByName: "", lockHistory: [],
     code: "", name: "", legalName: "", gstin: "", pan: "",
     plants: [], material: "", contactPerson: "", phone: "", email: "",
     addressLine: "", city: "", state: "", pincode: "",
@@ -295,7 +377,8 @@ export function gapsFor(p: Partner, today: string = new Date().toISOString().sli
   if (!p.pan.trim()) missingFields.push("PAN");
   // A payment made to an unverified account is the single most expensive
   // mistake this register can prevent.
-  if (!p.accountNumber.trim() || !p.ifsc.trim()) missingFields.push("Bank account and IFSC");
+  // A client is paid BY us never, so their bank details are optional.
+  if (p.kind !== "client" && (!p.accountNumber.trim() || !p.ifsc.trim())) missingFields.push("Bank account and IFSC");
 
   return {
     missing, expired, expiringSoon, missingFields,
