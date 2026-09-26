@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /**
  * AnimatedBackground
@@ -630,14 +630,32 @@ export default function AnimatedBackground() {
     };
   }, []);
 
+  // Light theme: a paper scene, not the forest floor. Watches the theme
+  // attribute so switching in Settings changes the backdrop immediately.
+  const [isLight, setIsLight] = useState(false);
+  useEffect(() => {
+    const read = () => { const t = document.documentElement.getAttribute("data-theme"); setIsLight(t === "light" || t === "sunrise"); };
+    read();
+    const mo = new MutationObserver(read);
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    return () => mo.disconnect();
+  }, []);
+  if (isLight) {
+    return (
+      <div aria-hidden="true" data-app-background="animated" className="pointer-events-none fixed inset-0 -z-10 overflow-hidden" style={{ background: "radial-gradient(60% 40% at 15% 0%, rgb(159 232 112 / .18) 0%, transparent 60%), radial-gradient(50% 35% at 100% 100%, rgb(22 51 0 / .08) 0%, transparent 60%), #fbfcf9" }} />
+    );
+  }
+
   return (
     <div
       aria-hidden="true"
+      data-app-background="animated"
       className="pointer-events-none fixed inset-0 -z-10 overflow-hidden bg-[#08130F]"
       style={{ willChange: "transform" }}
     >
       <canvas
-        ref={canvasRef}
+data-animated-background="true"
+              ref={canvasRef}
         className="block h-full w-full"
         style={{ transform: "translate3d(0,0,0)" }}
       />

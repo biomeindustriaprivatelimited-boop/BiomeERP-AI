@@ -1,0 +1,10 @@
+{
+  "name": "biome-tally-agent",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Runs on the Tally PC. Proxies password-protected requests from the Biome Platform app to Tally's local HTTP gateway.",
+  "main": "agent.js",
+  "scripts": {
+    "start": "node agent.js"
+  }
+}

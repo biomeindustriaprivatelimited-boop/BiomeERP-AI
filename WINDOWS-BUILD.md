@@ -26,14 +26,17 @@ baad `npm run dist:win` bhi 1-2 min lega.
 
 ## Option B — GitHub Actions se (cloud me, bina apne PC ke)
 
-Maine `.github/workflows/build-windows.yml` bhi add kar diya hai. Agar aap ye
-project GitHub par push kar dein (private repo bhi chalega, free tier me
-Windows runner minutes included hain):
+Workflow file: `.github/workflows/build-windows.yml` ("Build Windows installer").
 
-1. GitHub par naya repo banayein, ye poora folder push kar dein.
-2. GitHub repo → **Actions** tab → "Build Windows installer" → **Run workflow**.
-3. 3-5 minute me build complete hoga, "Biome-Windows-Installer" artifact se
-   `.exe` download kar lein.
+- **Har push / pull request par** GitHub khud TypeScript check, `npm run check`
+  aur production build chalata hai — PR page par ✓ ya ✗ dikh jaata hai.
+- **`main` par push hote hi** (ya Actions tab → "Build Windows installer" →
+  **Run workflow**) Windows installer bhi banta hai.
+- Download: repo → **Actions** → sabse upar wala green run → neeche
+  **Artifacts** → **Biome-Windows-Installer** (zip) → andar `Biome Setup <version>.exe`.
+  Artifact 14 din tak rehta hai.
+- Installer unsigned hai, isliye Windows "SmartScreen" warning de sakta hai →
+  **More info → Run anyway**.
 
 ## Notes
 

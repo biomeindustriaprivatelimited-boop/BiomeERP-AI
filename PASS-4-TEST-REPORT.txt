@@ -1,0 +1,54 @@
+BIOME ERP — IMPLEMENTATION PASS 4
+=================================
+
+Actual source changes in this pass:
+1. GST Compliance now supports GSTR-2A (legacy inward statement) in addition to GSTR-1 and GSTR-2B.
+2. GST Compliance now has a GSTR-3B Summary vs Books workflow with automatic column mapping and Excel export.
+3. Delivery Challan UI now explicitly reflects Mouda 3-page / Solapur 2-page PDF output.
+4. Delivery Challan Excel export date parsing now safely handles DD-MM-YYYY and ISO dates.
+5. Offline receiving/lab confidence is strengthened when structured evidence is present:
+   - Receiving: client + vehicle + date + weight => high confidence.
+   - Lab report: client + vehicle + sample/document date => high confidence.
+6. Existing FIFO receiving and lab-report date-range logic was regression-tested.
+
+TESTS RUN
+=========
+PASS — TypeScript/TSX transpile syntax check:
+  app/gst-compliance/page.tsx
+  lib/gstReturns.ts
+  lib/deliveryChallanExport.ts
+  app/delivery-challan/page.tsx
+  app/settings/page.tsx
+
+PASS — Offline document extraction:
+  Receiving -> receiving, confidence 85, client/vehicle/date/weight extracted.
+  Lab report -> lab_report, confidence 85, client/vehicle/sample date extracted.
+
+PASS — Receiving FIFO:
+  First vehicle supply matched to first receiving.
+  Second supply in the 3-day window matched to second receiving.
+
+PASS — Lab report date range:
+  01-Aug-2026 and 08-Aug-2026 -> 01-Aug-2026 To 08-Aug-2026.
+  Lab report remains separate from supply reference matching.
+
+PASS — GSTR-2A parser:
+  Sample B2B JSON parsed as GSTR2A with invoice, GSTIN, date, taxable value and tax.
+
+PASS — GSTR-3B summary reconciliation:
+  Equal books/return totals -> Matched.
+  Taxable-value difference -> Mismatch.
+
+PASS — Delivery Challan template integrity:
+  ntpc-mouda.xlsx ZIP integrity OK.
+  ntpc-solapur.xlsx ZIP integrity OK.
+
+NOT RUN IN THIS ENVIRONMENT
+===========================
+- Full Next.js production build: dependencies/node_modules are not installed in this runtime.
+- Live WhatsApp connection: requires the user's WhatsApp session/group access.
+- Live Tally connection: requires Tally running with the bridge/HTTP server.
+- Live GST portal connection: requires user-side portal export/session.
+- ExcelJS PDF/rendering visual verification: dependency installation unavailable here.
+
+No feature is marked production-certified solely from static inspection.

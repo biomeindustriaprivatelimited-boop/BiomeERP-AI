@@ -1,0 +1,60 @@
+BIOME ERP — LOGIN CINEMATIC IMPLEMENTATION REPORT
+Date: 2026-08-09
+
+SCOPE
+Only the Login Interface was changed for this task. ERP dashboard and other modules were not intentionally modified.
+
+REFERENCE VIDEO
+The supplied reference video is 720x1280, 30 FPS, ~7.57 seconds.
+The character animation and timing are preserved from the supplied video.
+The original orange animation canvas was chroma-keyed/removed and the character + suitcase were isolated.
+
+LOGIN SEQUENCE
+0.00s onward:
+- Character animation starts from the supplied reference.
+- Premium sky-blue biomass / renewable-energy environment is visible behind it.
+~5.55s:
+- Character intro is hidden after the main reference action.
+- Interactive BIOME ERP login card reveals with a premium slide/fade animation.
+- User ID / Password / Show password / Login remain functional.
+- Testing-mode authentication is preserved.
+
+BACKGROUND
+- Sky-blue premium gradient (orange removed).
+- Animated clouds and sun glow.
+- Green rolling landscape.
+- Animated biomass processing plant with silos, processing tower, conveyor, pipework, biomass pellet hoppers and clean steam.
+- Subtle wind turbine.
+- Green tree line.
+- Floating leaves and energy particles.
+- Subtle parallax/float motion.
+- Reduced-motion support.
+
+CHARACTER ASSET
+- Cropped from the supplied reference video.
+- Orange background removed using connected-region chroma key.
+- Additional lower-frame orange shadow cleanup.
+- Exported as an animated transparent APNG for browser compatibility.
+- 114 frames at ~15 FPS; ~7.6 seconds source sequence.
+- Verified visually by compositing a mid-action frame over sky blue; character and suitcase are visible without the original orange canvas.
+
+SOURCE CHECKS
+- app/login/page.tsx: TypeScript/JSX transpile check PASS.
+- components/brand/BiomassLoginScene.tsx: TypeScript/JSX transpile check PASS.
+- app/globals.css: brace/syntax structural check PASS (180 opening/180 closing braces).
+- Login source contains no old orange background or old reference-video asset references.
+- Old broken login assets were removed from public/login; only the new transparent character APNG remains.
+
+BUILD LIMITATION
+A complete Next.js production build could not be executed in this sandbox because project dependencies/node_modules are not installed and dependency installation is not available here. Therefore this package is NOT claimed as a production-certified build.
+On Windows, run:
+  npm install
+  npm run build
+  npm run dev
+
+EXPECTED RESULT
+Open /login:
+- Reference character animation is visible.
+- Orange background is gone.
+- Premium sky-blue biomass/green-energy environment is animated.
+- After the character action, the actual login interface appears.

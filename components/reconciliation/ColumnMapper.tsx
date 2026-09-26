@@ -41,7 +41,7 @@ export default function ColumnMapper({
                 onChange={(e) =>
                   onChange({ ...mapping, [field.key as FieldKey]: e.target.value || null })
                 }
-                className="w-full flex-1 rounded-lg border border-biome-line bg-white/5 px-2.5 py-1.5 text-xs text-biome-text outline-none focus:border-biome-leaf"
+                className="w-full flex-1 rounded-lg border border-biome-line bg-biome-hover px-2.5 py-1.5 text-xs text-biome-text outline-none focus:border-biome-leaf"
               >
                 <option value="" className="bg-biome-bgSoft">
                   — Not mapped —

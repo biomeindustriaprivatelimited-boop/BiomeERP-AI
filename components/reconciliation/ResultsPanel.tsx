@@ -207,12 +207,12 @@ export default function ResultsPanel({
                   className={`flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-medium transition-colors ${
                     active
                       ? "bg-biome-leaf/12 text-biome-leafBright"
-                      : "text-biome-muted hover:bg-white/5 hover:text-biome-text"
+                      : "text-biome-muted hover:bg-biome-hover hover:text-biome-text"
                   }`}
                 >
                   <Icon size={14} className={active ? t.color : ""} />
                   {t.label}
-                  <span className="rounded-full bg-white/10 px-1.5 py-0.5 text-[10px]">
+                  <span className="rounded-full bg-biome-hover px-1.5 py-0.5 text-[10px]">
                     {t.count}
                   </span>
                 </button>
@@ -221,7 +221,7 @@ export default function ResultsPanel({
           </div>
 
           <div className="flex items-center gap-2">
-            <div className="flex items-center gap-2 rounded-xl border border-biome-line bg-white/5 px-3 py-2 text-xs">
+            <div className="flex items-center gap-2 rounded-xl border border-biome-line bg-biome-hover px-3 py-2 text-xs">
               <Search size={14} className="text-biome-muted" />
               <input
                 value={query}
@@ -324,7 +324,7 @@ function MatchTable({
         {rows.map((m) => {
           const mismatchKeys = new Set(m.mismatches.map((x) => x.field));
           return (
-            <tr key={m.key} className="border-t border-biome-line/60 hover:bg-white/[0.03]">
+            <tr key={m.key} className="border-t border-biome-line/60 hover:bg-biome-hover">
               <Td className="font-mono">
                 {m.invoiceNo}
                 {m.matchedVia === "loose" && (
@@ -398,7 +398,7 @@ function EntryTable({
       </thead>
       <tbody>
         {rows.map((e) => (
-          <tr key={e.key} className="border-t border-biome-line/60 hover:bg-white/[0.03]">
+          <tr key={e.key} className="border-t border-biome-line/60 hover:bg-biome-hover">
             <Td className="font-mono">{e.invoiceNoDisplay}</Td>
             {fields.map((f) => (
               <Td key={f.key}>{formatField(e.fields[f.key], f.type)}</Td>

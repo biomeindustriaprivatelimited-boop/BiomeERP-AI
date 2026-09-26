@@ -14,6 +14,22 @@ export const FIELDS = [
       "invoice no", "invoice number", "invoice #", "inv no", "inv number",
       "bill no", "bill number", "voucher no", "ref no", "reference no",
       "document no", "doc no", "invoiceno",
+      // Tally and bank-style exports rarely say "Invoice No" outright.
+      "vch no", "vch number", "vchno", "voucher number", "vouchno",
+      "bill ref", "bill reference", "ref", "reference", "particulars",
+      "narration", "description", "supplier invoice", "supplier inv",
+      "party invoice", "document number", "txn id", "transaction id",
+    ],
+  },
+  {
+    key: "party",
+    label: "Party / Ledger",
+    type: "text",
+    required: false,
+    keywords: [
+      "party", "party name", "ledger", "ledger name", "customer", "customer name",
+      "supplier", "supplier name", "client", "client name", "vendor", "vendor name",
+      "account name", "account", "name", "particulars", "description",
     ],
   },
   {
@@ -187,7 +203,72 @@ function normalizeHeader(h: string): string {
     .replace(/\s+/g, " ");
 }
 
-export function autoDetectColumns(headers: string[]): ColumnMapping {
+/**
+ * Does this column LOOK like a set of invoice numbers?
+ *
+ * Header names are unreliable — a Tally export calls the column "Vch
+ * No.", a bank statement calls it "Particulars", and some ledgers put
+ * the number inside a description. But the VALUES are recognisable
+ * whatever the header says: short, mostly unique, containing digits,
+ * rarely repeated.
+ *
+ * Scored rather than decided, so a strong header match still wins and
+ * this only settles the cases the header couldn't.
+ */
+function looksLikeInvoiceNumbers(values: any[]): number {
+  const sample = values
+    .map((v) => String(v ?? "").trim())
+    .filter(Boolean)
+    .slice(0, 200);
+
+  if (sample.length < 3) return 0;
+
+  let score = 0;
+  const withDigits = sample.filter((v) => /\d/.test(v)).length / sample.length;
+  const unique = new Set(sample).size / sample.length;
+  const avgLength = sample.reduce((n, v) => n + v.length, 0) / sample.length;
+  const mostlyPlainNumbers = sample.filter((v) => /^[\d,.\s]+$/.test(v)).length / sample.length;
+
+  // An invoice number nearly always contains a digit.
+  if (withDigits > 0.85) score += 30;
+  // And is nearly always unique — that is what makes it an identifier.
+  if (unique > 0.9) score += 30;
+  else if (unique > 0.7) score += 15;
+  // Long enough to identify, short enough not to be a narration.
+  if (avgLength >= 3 && avgLength <= 24) score += 20;
+  // A column of pure amounts is a money column, not an identifier.
+  if (mostlyPlainNumbers > 0.9 && avgLength > 5) score -= 35;
+
+  // Dates are unique, contain digits and are the right length, so they
+  // score well on every other test — and matching invoices against a
+  // date column would be worse than not matching at all. Ruled out on
+  // their shape before anything else is considered.
+  const dateLike =
+    sample.filter((v) =>
+      /^\d{1,4}[-\/.]\d{1,2}[-\/.]\d{1,4}$/.test(v) ||
+      /^\d{1,2}[-\s][A-Za-z]{3,}[-\s]\d{2,4}$/.test(v)
+    ).length / sample.length;
+  if (dateLike > 0.5) return 0;
+  // A mix of letters and digits — BI-26-27-HR0840, SAI/26-27/0545 — is
+  // about as invoice-shaped as a value gets.
+  if (sample.filter((v) => /[A-Za-z]/.test(v) && /\d/.test(v)).length / sample.length > 0.6) {
+    score += 25;
+  }
+
+  return Math.max(0, score);
+}
+
+/**
+ * Map the columns without the user touching anything.
+ *
+ * `rows` is optional: given them, columns whose headers say nothing
+ * useful are identified from their contents instead. That is what makes
+ * this fully automatic on ledgers that were never labelled for us.
+ */
+export function autoDetectColumns(
+  headers: string[],
+  rows?: Record<string, any>[]
+): ColumnMapping {
   const mapping: ColumnMapping = {};
   const normalized = headers.map((h) => ({ raw: h, norm: normalizeHeader(h) }));
   const used = new Set<string>();
@@ -214,6 +295,24 @@ export function autoDetectColumns(headers: string[]): ColumnMapping {
       used.add(best.raw);
     } else {
       mapping[field.key] = null;
+    }
+  }
+
+  // ---- Fall back to the data for the one field that must be mapped ----
+  //
+  // Without an invoice number there is nothing to match on, so the whole
+  // run is blocked. If no header named it, look at what the columns
+  // actually contain.
+  if (!mapping.invoiceNo && rows?.length) {
+    let best: { raw: string; score: number } | null = null;
+    for (const h of normalized) {
+      if (used.has(h.raw)) continue;
+      const score = looksLikeInvoiceNumbers(rows.map((r) => r[h.raw]));
+      if (score >= 60 && (!best || score > best.score)) best = { raw: h.raw, score };
+    }
+    if (best) {
+      mapping.invoiceNo = best.raw;
+      used.add(best.raw);
     }
   }
 
@@ -354,11 +453,15 @@ export function buildLedgerIndex(
 ): Map<string, LedgerEntry> {
   const index = new Map<string, LedgerEntry>();
   const invoiceCol = mapping.invoiceNo;
-  if (!invoiceCol) return index;
 
-  for (const row of rows) {
-    const rawInvoice = row[invoiceCol];
-    const key = normalizeInvoiceKey(rawInvoice);
+  for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+    const row = rows[rowIndex];
+    const rawInvoice = invoiceCol ? row[invoiceCol] : "";
+    const party = mapping.party ? String(row[mapping.party] ?? "").trim() : "";
+    const date = mapping.invoiceDate ? parseDateValue(row[mapping.invoiceDate]) ?? "" : "";
+    const amountField = mapping.amount || mapping.sale || mapping.purchase || mapping.payment || mapping.receipt;
+    const amount = amountField ? parseNumberValue(row[amountField]) : null;
+    const key = normalizeInvoiceKey(rawInvoice) || `AUTO:${party.toUpperCase().replace(/\s+/g, " ")}|${date}|${amount ?? ""}|${rowIndex}`;
     if (!key) continue;
 
     const rowFields: Partial<Record<FieldKey, string | number | null>> = {};
@@ -412,7 +515,7 @@ export interface MatchResult {
   invoiceNo: string;
   a: LedgerEntry;
   b: LedgerEntry;
-  matchedVia: "exact" | "loose";
+  matchedVia: "exact" | "loose" | "party-amount-date";
   mismatches: FieldComparison[];
 }
 
@@ -504,13 +607,43 @@ export function reconcile(
 
   for (const entryA of indexA.values()) {
     let entryB = indexB.get(entryA.key);
-    let matchedVia: "exact" | "loose" = "exact";
+    // Widened to match the field it is assigned to on line 518. The
+    // narrower type meant the third strategy below could never compile,
+    // and it is the one that finds a payment entered on the wrong date.
+    let matchedVia: "exact" | "loose" | "party-amount-date" = "exact";
 
     if (!entryB) {
       const loose = looseMapB.get(entryA.looseKey);
       if (loose && !usedBKeys.has(loose.key)) {
         entryB = loose;
         matchedVia = "loose";
+      }
+    }
+
+    // Any-format ledger fallback: if invoice numbers are missing or exported
+    // differently, match by normalized party + date + amount within tolerance.
+    if (!entryB) {
+      const partyA = String(entryA.fields.party ?? "").trim().toUpperCase();
+      const dateA = entryA.fields.invoiceDate ?? null;
+      const amountA = Number(entryA.fields.amount ?? entryA.fields.sale ?? entryA.fields.purchase ?? entryA.fields.payment ?? entryA.fields.receipt ?? NaN);
+      if (partyA && Number.isFinite(amountA)) {
+        let best: LedgerEntry | null = null;
+        let bestDiff = Infinity;
+        for (const candidate of indexB.values()) {
+          if (usedBKeys.has(candidate.key)) continue;
+          const partyB = String(candidate.fields.party ?? "").trim().toUpperCase();
+          if (!partyB || partyB !== partyA) continue;
+          const dateB = candidate.fields.invoiceDate ?? null;
+          if (options.compareDate && dateA && dateB && dateA !== dateB) continue;
+          const amountB = Number(candidate.fields.amount ?? candidate.fields.sale ?? candidate.fields.purchase ?? candidate.fields.payment ?? candidate.fields.receipt ?? NaN);
+          if (!Number.isFinite(amountB)) continue;
+          const diff = Math.abs(amountA - amountB);
+          if (diff <= options.amountTolerance && diff < bestDiff) { best = candidate; bestDiff = diff; }
+        }
+        if (best) {
+          entryB = best;
+          matchedVia = "party-amount-date";
+        }
       }
     }
 
@@ -601,6 +734,8 @@ function matchRowToExport(
   }
   if (m.matchedVia === "loose") {
     row["Note"] = "Matched via approximate invoice number";
+  } else if (m.matchedVia === "party-amount-date") {
+    row["Note"] = "Matched by party + date + amount (invoice number unavailable/different format)";
   }
   return row;
 }
@@ -663,8 +798,8 @@ export function downloadCsv(rows: Record<string, any>[], fileName: string) {
   a.download = fileName;
   document.body.appendChild(a);
   a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+  // Released after the save has started, not on the same tick.
+  window.setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 4000);
 }
 
 export async function downloadReconciliationPdf(
@@ -716,7 +851,11 @@ export async function downloadReconciliationPdf(
   for (const [name, rows] of Object.entries(sheets)) {
     if (!rows.length) continue;
     const headers = Object.keys(rows[0]);
-    // @ts-expect-error - lastAutoTable is attached at runtime by the plugin
+    // @ts-ignore lastAutoTable is attached at runtime by the autoTable
+    // plugin, so it is absent from jsPDF's own types. Deliberately
+    // @ts-ignore rather than @ts-expect-error: if a future version of
+    // those types adds the property, an unused expect-error would fail
+    // the production build for no reason.
     const startY = (doc.lastAutoTable?.finalY ?? 28) + 12;
     doc.setFontSize(12);
     doc.setTextColor(20, 30, 45);

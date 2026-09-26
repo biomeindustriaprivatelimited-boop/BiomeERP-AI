@@ -7,7 +7,7 @@ node_modules/
 out/
 
 # Build
-build/
+/dist-build/
 dist/
 
 # Environment files
@@ -21,3 +21,7 @@ dist/
 # OS files
 .DS_Store
 Thumbs.db
+# TypeScript incremental
+*.tsbuildinfo
+# Electron-builder output
+/release/

@@ -48,7 +48,7 @@ export default function Dropzone({
       className={`relative flex min-h-[180px] flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed p-6 text-center transition-colors ${
         dragOver
           ? "border-biome-leafBright bg-biome-leaf/10"
-          : "border-biome-line bg-white/[0.02] hover:bg-white/[0.04]"
+          : "border-biome-line bg-biome-hover hover:bg-biome-hover"
       } ${!fileName ? "cursor-pointer" : ""}`}
     >
       <input
@@ -63,7 +63,7 @@ export default function Dropzone({
         <>
           <motion.div
             animate={dragOver ? { y: -4 } : { y: 0 }}
-            className={`rounded-xl bg-white/5 p-3 ${accentClass}`}
+            className={`rounded-xl bg-biome-hover p-3 ${accentClass}`}
           >
             <UploadCloud size={26} />
           </motion.div>
@@ -75,7 +75,7 @@ export default function Dropzone({
         </>
       ) : (
         <>
-          <div className={`rounded-xl bg-white/5 p-3 ${accentClass}`}>
+          <div className={`rounded-xl bg-biome-hover p-3 ${accentClass}`}>
             <FileSpreadsheet size={26} />
           </div>
           <p className="max-w-[220px] truncate font-display text-sm font-medium text-biome-text">

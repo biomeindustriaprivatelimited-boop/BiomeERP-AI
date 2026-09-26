@@ -15,7 +15,16 @@ export type OcrLanguage = "eng" | "eng+hin";
 function getWorker(lang: OcrLanguage): Promise<TesseractWorker> {
   let w = workers.get(lang);
   if (!w) {
-    w = createWorker(lang.split("+"));
+    // Engine and language data ship with the app (public/tesseract,
+    // public/tessdata). Left to its defaults, tesseract.js downloads both
+    // from a CDN on first use — which failed silently offline and was slow
+    // on a plant's mobile hotspot.
+    w = createWorker(lang.split("+"), 1, {
+      workerPath: "/tesseract/worker.min.js",
+      corePath: "/tesseract/core",
+      langPath: "/tessdata",
+      gzip: false,
+    });
     workers.set(lang, w);
   }
   return w;
@@ -119,7 +128,7 @@ async function recognizeOnce(
  *  squeezing out the last percentage point of accuracy. */
 export async function runOcr(
   image: string | HTMLCanvasElement | Blob,
-  lang: OcrLanguage = "eng"
+  lang: OcrLanguage = "eng+hin"
 ): Promise<OcrResult> {
   const worker = await getWorker(lang);
   return recognizeOnce(worker, image);
@@ -150,7 +159,7 @@ export interface ThoroughProgress {
  */
 export async function runOcrThorough(
   source: File | Blob | string,
-  lang: OcrLanguage = "eng",
+  lang: OcrLanguage = "eng+hin",
   onProgress?: (p: ThoroughProgress) => void
 ): Promise<OcrResult> {
   const worker = await getWorker(lang);
@@ -261,7 +270,28 @@ export function extractDocumentFields(result: OcrResult): Record<string, Extract
     fields.pan = { label: "PAN", value: panMatch[0], confidence: Math.min(95, result.confidence) };
   }
 
+  // OCR reads a GSTIN's digits as letters often enough to matter (O for 0,
+  // I or l for 1, S for 5, B for 8), and a wrong GSTIN fails a GST match
+  // silently. The format is fixed, so each position can be corrected to
+  // the character class it must be.
+  for (const f of Object.values(fields)) {
+    if (/gst/i.test(f.label)) f.value = normalizeGstin(f.value);
+  }
   return fields;
+}
+
+/** 15-char GSTIN: 2 digits, 5 letters, 4 digits, letter, alnum, 'Z', alnum. */
+export function normalizeGstin(raw: string): string {
+  const v = String(raw || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (v.length !== 15) return raw;
+  const toDigit: Record<string, string> = { O: "0", Q: "0", D: "0", I: "1", L: "1", Z: "2", S: "5", B: "8", G: "6", T: "7" };
+  const toLetter: Record<string, string> = { "0": "O", "1": "I", "2": "Z", "5": "S", "8": "B", "6": "G" };
+  const digitAt = new Set([0, 1, 7, 8, 9, 10]);
+  const letterAt = new Set([2, 3, 4, 5, 6, 11]);
+  return v
+    .split("")
+    .map((c, i) => (digitAt.has(i) ? toDigit[c] ?? c : letterAt.has(i) ? toLetter[c] ?? c : i === 13 ? "Z" : c))
+    .join("");
 }
 
 /* ------------------------------------------------------------------ */
@@ -641,8 +671,8 @@ export async function downloadOcrExcelReport(docs: OcrDocSummary[], fileName: st
   a.download = fileName;
   document.body.appendChild(a);
   a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+  // Released after the save has started, not on the same tick.
+  window.setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 4000);
 }
 
 export async function downloadOcrPdfReport(docs: OcrDocSummary[], fileName: string) {

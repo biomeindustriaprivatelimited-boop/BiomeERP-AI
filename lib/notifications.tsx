@@ -8,7 +8,9 @@ export interface AppNotification {
   detail?: string;
   time: Date;
   read: boolean;
-  kind: "success" | "info" | "warning";
+  // "error" is here because callers were already passing it — a failed
+  // export said nothing at all rather than saying it had failed.
+  kind: "success" | "info" | "warning" | "error";
 }
 
 interface NotificationsContextValue {

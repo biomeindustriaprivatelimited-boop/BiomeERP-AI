@@ -1,0 +1,802 @@
+/**
+ * Biome Platform — WhatsApp Agent / document understanding
+ * -------------------------------------------------------------------
+ * Takes one downloaded file (PDF or image) and works out:
+ *   - which of our supply document types it is
+ *   - the coordination reference (BDC/786/MHI/44)
+ *   - the key numbers we file and reconcile against
+ *
+ * Both Gemini and Anthropic accept PDFs natively, so we send the file
+ * as-is — no rasterising, no local OCR step, no quality loss.
+ *
+ * IMPORTANT: if no API key is configured this module does NOT guess.
+ * It returns { ok: false, reason: "NO_API_KEY" } and the caller files
+ * the document under "_Needs Review" so a human can classify it. A
+ * confident-looking wrong filing is far worse than an honest unknown.
+ */
+
+/** The document set from SOP section 3.3, split by who issued it. */
+const DOC_TYPES = [
+  "biome_tax_invoice",
+  "biome_delivery_challan",
+  "biome_eway_bill",
+  "vendor_tax_invoice",
+  "vendor_delivery_challan",
+  "vendor_eway_bill",
+  "bilty_lr",
+  "weight_slip",
+  "fast_tag",
+  "consignment_tag",
+  "coa",
+  "receiving",
+  "lab_report",
+  "biome_debit_note",
+  "vendor_debit_note",
+  "biome_credit_note",
+  "vendor_credit_note",
+  "other",
+];
+
+const DOC_TYPE_LABEL = {
+  biome_tax_invoice: "Biome Tax Invoice",
+  biome_delivery_challan: "Biome Delivery Challan",
+  biome_eway_bill: "Biome Eway Bill",
+  vendor_tax_invoice: "Vendor Tax Invoice",
+  vendor_delivery_challan: "Vendor Delivery Challan",
+  vendor_eway_bill: "Vendor Eway Bill",
+  bilty_lr: "Bilty / LR Copy",
+  weight_slip: "Weight Slip",
+  fast_tag: "Fast Tag Details",
+  consignment_tag: "Consignment Tag",
+  coa: "COA (Certificate of Analysis)",
+  receiving: "Receiving (client weight slip)",
+  lab_report: "Lab Report",
+  biome_debit_note: "Biome Debit Note",
+  vendor_debit_note: "Vendor Debit Note",
+  biome_credit_note: "Biome Credit Note",
+  vendor_credit_note: "Vendor Credit Note",
+  other: "Other",
+};
+
+/** Who issued the paper. The Bilty, weight slip, fast tag, consignment
+ *  tag and COA are the same physical documents used on both the vendor's
+ *  set and ours, so they count as shared. */
+const { extractOffline, extractWithLocalLlm } = require("./offlineExtract");
+const { extractPdfPages } = require("./pdfText");
+const { ocrScannedPdf } = require("./scannedPdf");
+const { parseFileName, applyFileNameHints } = require("./fileNameParser");
+const samples = require("./samples");
+const docRules = require("./docRules");
+const patterns = require("./patterns");
+
+const DOC_TYPE_SIDE = {
+  biome_tax_invoice: "biome",
+  biome_delivery_challan: "biome",
+  biome_eway_bill: "biome",
+  vendor_tax_invoice: "vendor",
+  vendor_delivery_challan: "vendor",
+  vendor_eway_bill: "vendor",
+  bilty_lr: "shared",
+  weight_slip: "shared",
+  fast_tag: "shared",
+  consignment_tag: "shared",
+  coa: "shared",
+  receiving: "client",
+  lab_report: "client",
+  biome_debit_note: "biome",
+  vendor_debit_note: "vendor",
+  biome_credit_note: "biome",
+  vendor_credit_note: "vendor",
+  other: "other",
+};
+
+function buildSystemPrompt(ctx) {
+  const vendorList = (ctx.vendors || [])
+    .slice(0, 400)
+    .map((v) => `${v.code} = ${v.name}`)
+    .join("\n");
+
+  const clientList = (ctx.clients || [])
+    .slice(0, 100)
+    .map((c) => {
+      const alt = [c.shortName, ...(c.aliases || [])].filter(Boolean).join(", ");
+      return alt ? `${c.name} (also called: ${alt})` : c.name;
+    })
+    .join("\n");
+
+  return `You are the document-understanding engine for BIOME INDUSTRIA PRIVATE LIMITED (GSTIN 06AAJCB1927H1ZS, Rewari, Haryana). You read documents that arrive on the company WhatsApp and classify + extract them so they can be filed automatically.
+
+Documents are photos or PDFs of real Indian commercial paperwork. They may be stamped, skewed, creased, low-resolution, partially handwritten, or mix Hindi and English. Read with maximum care.
+
+## Our business
+We supply biomass to power-plant clients in two ways:
+- TRADING: we buy from a vendor and supply straight to the client.
+- MANUFACTURING: we supply our own produced material.
+
+A single consignment ("supply set") produces these documents:
+- Vendor side: Vendor Tax Invoice, Vendor Eway Bill, Bill T, Weight Slip
+- Biome side:  Biome Tax Invoice OR Biome Delivery Challan, Biome Eway Bill, Bill T, Weight Slip
+Bill T and the Weight Slip are the SAME physical document used on both sides.
+
+## Telling "biome" documents from "vendor" documents — this is the single most important judgement
+- If the document is ISSUED BY Biome Industria Private Limited (Biome is the seller / consignor / the name in the letterhead), it is a biome_* type.
+- If the document is issued by someone else and Biome Industria appears as the BUYER / "Billed to" / "Bill To" party, it is a vendor_* type.
+Never decide this from the vendor code alone — decide it from who issued the paper.
+
+## Document types (pick exactly one)
+- "biome_tax_invoice"      — tax invoice issued BY Biome. Invoice numbers look like BI26-27-HR0786.
+- "biome_delivery_challan" — delivery note/challan issued BY Biome. Numbers look like BIPL/2026-27/884.
+- "biome_eway_bill"        — GST e-way bill where Biome is the consignor.
+- "vendor_tax_invoice"     — tax invoice issued by a supplier TO Biome.
+- "vendor_eway_bill"       — e-way bill where the vendor is the consignor and Biome/our client is the consignee.
+- "vendor_delivery_challan" — vehicle challan / delivery challan issued by a supplier.
+- "bilty_lr"               — the Bilty / LR (lorry receipt) copy issued by the transporter. Also written "Bill T" internally.
+- "weight_slip"            — weighbridge slip: gross / tare / net weight.
+- "fast_tag"               — FASTag details: a toll account statement, transaction list or tag screenshot for the vehicle.
+- "consignment_tag"        — the consignment tag / gate tag issued for the consignment.
+- "coa"                    — Certificate of Analysis, or any coal/biomass quality or combustion laboratory test report.
+- "biome_debit_note" / "vendor_debit_note"   — a debit note, e.g. numbered DN-BI-26-27-068. Issued when a rate or quality deduction is applied after the invoice.
+- "biome_credit_note" / "vendor_credit_note" — a credit note.
+- "other"                  — anything else (chat screenshot, payment receipt, random photo).
+
+## The coordination reference — read this very carefully
+Biome documents carry a reference in the "Other References" box shaped like:
+
+    BDC / 786 / MHI / 44
+
+  BDC = our company code
+  786 = OUR document number (our tax invoice no, or our challan no)
+  MHI = the VENDOR CODE of the supplier
+  44  = the VENDOR's document number (their tax invoice no, or their challan no)
+
+Copy it EXACTLY as printed into "referenceNo". Do not invent one. If the document does not print a reference, set referenceNo to null — a vendor's own tax invoice usually has NO reference on it, and that is expected.
+
+${vendorList ? `## Known vendor codes\n${vendorList}\n` : ""}
+${clientList ? `## Our clients (power plants we supply). Match the consignee / "Ship to" party on the document to one of these exact names when you can — the chat may abbreviate them (e.g. "JPL" = Jhajjar Power Limited):\n${clientList}\n` : ""}
+## Lab report rules
+- A client laboratory report is \`lab_report\`, not a generic \`coa\`.
+- Extract \`sampleCollectionDate\` from the report when printed.
+- A lab report may cover multiple vehicles; extract every readable vehicle number into \`transcription\` even if only one \`vehicleNo\` field is returned.
+- If the report shows a date range or several sample dates, preserve all dates in \`transcription\`; the filing engine will use the first and last detected sample date.
+- A client receiving weight slip is \`receiving\`; its \`vehicleNo\`, \`clientName\`, \`documentDate\` and \`netWeight\` are critical.
+
+## Output
+Respond with ONLY one JSON object, no markdown fences, no commentary:
+
+{
+  "documentType": one of ${DOC_TYPES.map((t) => `"${t}"`).join(" | ")},
+  "confidence": number 0-100,
+  "issuedBy": string | null,          // the party whose letterhead this is
+  "referenceNo": string | null,       // exactly as printed, e.g. "BDC/786/MHI/44"
+  "biomeDocNo": string | null,        // our invoice/challan no, e.g. "BI26-27-HR0786"
+  "vendorDocNo": string | null,       // vendor's invoice/challan no, e.g. "44"
+  "vendorName": string | null,
+  "vendorGstin": string | null,
+  "clientName": string | null,        // the consignee / buyer power plant
+  "clientGstin": string | null,
+  "documentDate": string | null,      // YYYY-MM-DD
+  "sampleCollectionDate": string | null, // YYYY-MM-DD; client lab sample date
+  "ewayBillNo": string | null,
+  "vehicleNo": string | null,         // e.g. "RJ29GC7686"
+  "grossWeight": string | null,
+  "tareWeight": string | null,
+  "netWeight": string | null,
+  "driverMobile": string | null,      // 10-digit Indian mobile if printed anywhere
+  "hasDigitalSignature": boolean,     // true if a Digital Signature Certificate (DSC) stamp/block is visible
+  "taxableValue": string | null,      // digits only, no symbols or commas
+  "totalAmount": string | null,       // digits only, no symbols or commas
+  "transcription": string             // full plain-text of everything legible
+}
+
+Rules:
+- Never fabricate a value you cannot actually read. Use null instead.
+- "confidence" is your honest self-assessment: under 50 = a guess, 50-80 = probably right but the scan is unclear, above 80 = the text is crisp and unambiguous.
+- Always fill "transcription" as completely as you can — it is what we re-scan the reference out of if you miss it.`;
+}
+
+const USER_INSTRUCTION =
+  "Classify and extract this document. Respond with ONLY the JSON object described in your instructions.";
+
+const MAX_INLINE_BYTES = 15 * 1024 * 1024; // both APIs reject much beyond this
+
+function stripFences(raw) {
+  return String(raw || "")
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/```\s*$/, "")
+    .trim();
+}
+
+function safeParse(raw) {
+  const cleaned = stripFences(raw);
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    // Models occasionally add a stray sentence before the object.
+    const start = cleaned.indexOf("{");
+    const end = cleaned.lastIndexOf("}");
+    if (start !== -1 && end > start) {
+      return JSON.parse(cleaned.slice(start, end + 1));
+    }
+    throw new Error("The AI response was not valid JSON.");
+  }
+}
+
+async function callGemini(apiKey, buffer, mimeType, systemPrompt, userText) {
+  const model = "gemini-flash-latest";
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(
+      apiKey
+    )}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: systemPrompt }] },
+        contents: [
+          {
+            role: "user",
+            parts: [
+              { inline_data: { mime_type: mimeType, data: buffer.toString("base64") } },
+              { text: userText },
+            ],
+          },
+        ],
+        generationConfig: { maxOutputTokens: 8192, temperature: 0, responseMimeType: "application/json" },
+      }),
+    }
+  );
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Gemini API error ${res.status}: ${body.slice(0, 300)}`);
+  }
+  const data = await res.json();
+  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+  return safeParse(text);
+}
+
+async function callAnthropic(apiKey, buffer, mimeType, systemPrompt, userText) {
+  const isPdf = mimeType === "application/pdf";
+  const block = isPdf
+    ? {
+        type: "document",
+        source: { type: "base64", media_type: "application/pdf", data: buffer.toString("base64") },
+      }
+    : {
+        type: "image",
+        source: { type: "base64", media_type: mimeType, data: buffer.toString("base64") },
+      };
+
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-6",
+      max_tokens: 8192,
+      system: systemPrompt,
+      messages: [{ role: "user", content: [block, { type: "text", text: userText }] }],
+    }),
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Anthropic API error ${res.status}: ${body.slice(0, 300)}`);
+  }
+  const data = await res.json();
+  const textBlock = (data.content || []).find((b) => b.type === "text");
+  return safeParse(textBlock?.text ?? "");
+}
+
+function coerce(result, ctx) {
+  const out = {
+    documentType: DOC_TYPES.includes(result?.documentType) ? result.documentType : "other",
+    confidence: Number.isFinite(Number(result?.confidence)) ? Number(result.confidence) : 0,
+  };
+
+  // ---- Deterministic rules outrank every fuzzy read ----
+  // Built from the company's own documents (see docRules.js). This is
+  // the single choke point every result passes through — AI and offline
+  // alike — so a delivery note that prints an "e-Way Bill No" column
+  // can never again leave here labelled as an e-way bill, and a file
+  // named "Consignment tag …" can never leave as a weight slip.
+  try {
+    const ruled = docRules.decideType({
+      text: result?.transcription || "",
+      fileName: ctx?.fileName || result?.fileName || "",
+      clients: ctx?.clients || [],
+      vendors: ctx?.vendors || [],
+    });
+    if (ruled && ruled.confidence >= 88 && ruled.documentType !== out.documentType) {
+      out.documentTypeFromReader = out.documentType;
+      out.documentType = ruled.documentType;
+      out.confidence = Math.max(out.confidence, ruled.confidence);
+      out.ruleReason = ruled.reason;
+    } else if (ruled && ruled.documentType === out.documentType) {
+      // Same answer from two independent witnesses — say so.
+      out.confidence = Math.max(out.confidence, ruled.confidence);
+      out.ruleReason = ruled.reason;
+    }
+  } catch {
+    /* rules are an aid, never a reason to fail the read */
+  }
+
+  const strFields = [
+    "issuedBy",
+    "referenceNo",
+    "biomeDocNo",
+    "vendorDocNo",
+    "vendorName",
+    "vendorGstin",
+    "clientName",
+    "clientGstin",
+    "documentDate",
+    "sampleCollectionDate",
+    "ewayBillNo",
+    "vehicleNo",
+    "grossWeight",
+    "tareWeight",
+    "netWeight",
+    "driverMobile",
+    // Added later for matching; without these the GR number and the
+    // unit-normalised quantity were silently dropped on the way out,
+    // so a bilty could never match and quantity never compared.
+    "grNumber",
+    "quantityKg",
+    "taxableValue",
+    "totalAmount",
+  ];
+  for (const f of strFields) {
+    const v = result?.[f];
+    out[f] = v === null || v === undefined || v === "" ? null : String(v).trim();
+  }
+  out.hasDigitalSignature = result?.hasDigitalSignature === true;
+  // Carried through so the supply-set checklist can credit every
+  // document inside a merged PDF, and so the UI can explain itself.
+  if (Array.isArray(result?.containedDocumentTypes)) out.containedDocumentTypes = result.containedDocumentTypes;
+  if (result?.isMergedDocument) out.isMergedDocument = true;
+  if (result?.pageCount) out.pageCount = result.pageCount;
+  if (result?.readMethod) out.readMethod = result.readMethod;
+  if (Array.isArray(result?.fileNameHints)) out.fileNameHints = result.fileNameHints;
+  out.transcription = typeof result?.transcription === "string" ? result.transcription : "";
+  return out;
+}
+
+/**
+ * @param {Buffer} buffer   the downloaded file
+ * @param {string} mimeType e.g. "application/pdf", "image/jpeg"
+ * @param {object} ctx      { geminiKey, anthropicKey, vendors }
+ */
+/**
+ * Read one document.
+ *
+ * Order matters, and it is deliberately offline-first:
+ *
+ *   1. OCR the file locally with Tesseract   — no network
+ *   2. Extract fields with the rule engine   — no network
+ *   3. If a local LLM (Ollama) is running, let it improve weak results
+ *   4. Only if a cloud key is configured AND offline confidence is low,
+ *      fall back to the cloud
+ *
+ * That means the whole pipeline works with the network unplugged, and a
+ * cloud key becomes an optional accuracy boost rather than a requirement.
+ *
+ * @param {Buffer} buffer
+ * @param {string} mimeType
+ * @param {object} ctx  { geminiKey, anthropicKey, vendors, clients,
+ *                        chatContext, caption, preferCloud, ocrText }
+ */
+async function classifyDocument(buffer, mimeType, ctx = {}) {
+  const rawGemini = (ctx.geminiKey || "").trim();
+  const rawAnthropic = (ctx.anthropicKey || "").trim();
+  // Google issues Gemini keys in two shapes — "AIza..." and "AQ..." —
+  // and both are valid. Rejecting the second cost a user a working key.
+  const geminiKey =
+    /^AIza[0-9A-Za-z_\-]{20,}$/.test(rawGemini) || /^AQ\.[0-9A-Za-z_\-]{20,}$/.test(rawGemini)
+      ? rawGemini
+      : "";
+  const anthropicKey = /^sk-ant-[0-9A-Za-z_\-]{20,}$/.test(rawAnthropic) ? rawAnthropic : "";
+
+  // ---- 0: the filename, which is free and often the most reliable
+  //         source of the vehicle number and document numbers ----
+  const nameHints = parseFileName(ctx.fileName || "", {
+    vendors: ctx.vendors || [],
+    companyCodes: ctx.companyCodes || ["BDC"],
+  });
+
+  // ---- 1 & 2: read and extract, entirely offline ----
+  let ocrText = ctx.ocrText || (Array.isArray(ctx.pages) ? ctx.pages.join("\n\n") : "");
+  let pages = Array.isArray(ctx.pages) && ctx.pages.length ? ctx.pages : (ocrText ? [ocrText] : []);
+  let ocrError = null;
+  let readMethod = ocrText ? "provided" : null;
+
+  if (!ocrText) {
+    try {
+      const read = await readLocally(buffer, mimeType, ctx.fileName);
+      ocrText = read.text;
+      pages = read.pages;
+      readMethod = read.method;
+    } catch (err) {
+      ocrError = err.message;
+    }
+  }
+
+  const extractCtx = {
+    vendors: ctx.vendors || [],
+    clients: ctx.clients || [],
+    companyCodes: ctx.companyCodes || ["BDC"],
+  };
+
+  let offline = null;
+  if (ocrText && ocrText.trim().length > 20) {
+    // Multi-page files get classified page by page so a merged vendor
+    // PDF is recognised as the four documents it actually contains.
+    offline =
+      pages.length > 1
+        ? combinePages(classifyPages(pages, extractCtx), ocrText, extractCtx)
+        : extractOffline(ocrText, extractCtx);
+    offline.readMethod = readMethod;
+
+    // ---- 3: a local model, if one happens to be running ----
+    if (offline.confidence < 70) {
+      const better = await extractWithLocalLlm(ocrText, ctx).catch(() => null);
+      if (better) {
+        // Keep whatever the rules found; the model only fills the gaps,
+        // because the rules are exact where they fire and the model isn't.
+        offline = {
+          ...offline,
+          ...Object.fromEntries(
+            Object.entries(better).filter(([k, v]) => v != null && offline[k] == null)
+          ),
+          confidence: Math.max(offline.confidence, 65),
+          engine: `${offline.engine}+${better.engine}`,
+        };
+      }
+    }
+  }
+
+  // The filename fills whatever the page didn't say. This is what turns
+  // a weight slip with an illegible plate into one with the right
+  // vehicle number attached.
+  if (offline) offline = applyFileNameHints(offline, nameHints);
+
+  // ---- What do the TAUGHT documents say this looks like? ----
+  // Uploaded exemplars are the strongest evidence about LAYOUT: the same
+  // half-dozen forms arrive every day, and a clear fingerprint match to
+  // a document a person labelled beats keyword guessing. A filename a
+  // person typed still outranks it (fileNameOverrode), because an
+  // explicit name is a direct human statement about THIS file.
+  if (offline && ocrText && !offline.fileNameOverrode) {
+    try {
+      const looked = samples.matchSamples(ocrText);
+      if (looked) {
+        offline.sampleMatch = looked;
+        const weak = !offline.documentType || offline.documentType === "other" || (Number(offline.confidence) || 0) < 75;
+        if (looked.decide && (weak || looked.documentType !== offline.documentType)) {
+          if (offline.documentType && offline.documentType !== looked.documentType) {
+            offline.documentTypeFromReader = offline.documentType;
+          }
+          offline.documentType = looked.documentType;
+          offline.confidence = Math.max(Number(offline.confidence) || 0, Math.round(70 + looked.similarity * 25));
+          offline.engine = `${offline.engine}+exemplar`;
+        }
+      }
+    } catch {
+      /* samples are an aid, never a reason to fail the read */
+    }
+  }
+
+  // ---- What have we learned from documents like this one? ----
+  // Applied when the reader is unsure, and it only ever RAISES
+  // confidence — a learned pattern never overrides a clear read.
+  if (offline && (offline.confidence < 70 || offline.documentType === "other")) {
+    const learned = patterns.suggest({
+      fileName: ctx.fileName,
+      senderName: ctx.senderName,
+      transcription: ocrText,
+      vendorName: offline.vendorName,
+    });
+    if (learned.documentType && learned.confidence > (offline.confidence || 0)) {
+      offline.documentType = learned.documentType;
+      offline.confidence = learned.confidence;
+      offline.learnedReasons = learned.reasons;
+      offline.engine = `${offline.engine}+learned`;
+    }
+    if (!offline.clientName && learned.clientName) {
+      offline.clientName = learned.clientName;
+      offline.learnedReasons = [...(offline.learnedReasons || []), ...learned.reasons];
+    }
+  }
+
+  // Even with no readable text, a filename alone can be enough to file
+  // a document correctly — far better than dropping it into review.
+  if (!offline && (nameHints.vehicleNo || nameHints.biomeDocNo || nameHints.referenceNo)) {
+    offline = applyFileNameHints(
+      {
+        documentType: "other",
+        confidence: 0,
+        transcription: ocrText || "",
+        engine: "filename-only",
+      },
+      nameHints
+    );
+  }
+
+  // A file we deliberately don't process is not an unclassified failure.
+  if (!offline && String(ocrError || "").startsWith("NOT_A_SUPPLY_DOCUMENT:")) {
+    return {
+      ok: true,
+      data: coerce({
+        documentType: "other",
+        confidence: 100,
+        summary: ocrError.split(":").slice(1).join(":"),
+        transcription: "",
+        engine: "not-a-document",
+      }),
+      provider: "not-a-document",
+      notADocument: true,
+    };
+  }
+
+  const goodEnough = offline && offline.confidence >= 60 && offline.documentType !== "other";
+  if (goodEnough && !ctx.preferCloud) {
+    return { ok: true, data: coerce(offline, ctx), provider: offline.engine };
+  }
+
+  // ---- 4: cloud, only if configured ----
+  if (!geminiKey && !anthropicKey) {
+    if (offline) {
+      // Return the offline result anyway — a low-confidence answer the
+      // user can correct beats nothing at all.
+      return {
+        ok: true,
+        data: coerce(offline),
+        provider: offline.engine,
+        lowConfidence: true,
+      };
+    }
+    return {
+      ok: false,
+      reason: "NO_TEXT",
+      message: ocrError
+        ? `Couldn't read any text from this file: ${ocrError}`
+        : "No readable text was found in this file, and no AI key is configured for a deeper read.",
+    };
+  }
+
+  if (buffer.length > MAX_INLINE_BYTES) {
+    if (offline) return { ok: true, data: coerce(offline, ctx), provider: offline.engine, lowConfidence: true };
+    return { ok: false, reason: "TOO_LARGE", message: `File is larger than ${MAX_INLINE_BYTES / 1048576} MB.` };
+  }
+
+  const supported =
+    mimeType === "application/pdf" ||
+    ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"].includes(mimeType);
+  if (!supported) {
+    if (offline) return { ok: true, data: coerce(offline, ctx), provider: offline.engine, lowConfidence: true };
+    return { ok: false, reason: "UNSUPPORTED_TYPE", message: `Cannot read files of type ${mimeType}.` };
+  }
+
+  const systemPrompt = buildSystemPrompt(ctx);
+  let userText = USER_INSTRUCTION;
+  const ctxBits = [];
+  if (ctx.caption) ctxBits.push(`Caption sent with this file: "${String(ctx.caption).slice(0, 400)}"`);
+  if (ctx.chatContext) ctxBits.push(`Recent messages in this WhatsApp group (newest first), for context only:\n${String(ctx.chatContext).slice(0, 1200)}`);
+  if (ctxBits.length) {
+    userText =
+      USER_INSTRUCTION +
+      "\n\n--- SURROUNDING CHAT (a hint about which client/consignment these papers belong to — the document itself always wins if they disagree) ---\n" +
+      ctxBits.join("\n\n");
+  }
+
+  const providers = [];
+  if (anthropicKey) providers.push(["anthropic", () => callAnthropic(anthropicKey, buffer, mimeType, systemPrompt, userText)]);
+  if (geminiKey) providers.push(["gemini", () => callGemini(geminiKey, buffer, mimeType, systemPrompt, userText)]);
+
+  let lastErr = null;
+  for (const [name, call] of providers) {
+    try {
+      const rawResult = await call();
+      return { ok: true, data: coerce(rawResult, ctx), provider: name };
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+
+  // Cloud failed — the offline answer is still better than nothing.
+  if (offline) return { ok: true, data: coerce(offline, ctx), provider: offline.engine, lowConfidence: true };
+  return { ok: false, reason: "AI_FAILED", message: lastErr ? lastErr.message : "All readers failed." };
+}
+
+/**
+ * Local OCR with Tesseract. Runs entirely on this machine.
+ *
+ * PDFs aren't rasterised here — Tesseract can't read them directly and
+ * pulling in a renderer would bloat the agent. A PDF with no text layer
+ * therefore falls through to the cloud path if one is configured, or to
+ * "needs review" if not. Photos and scans, which are the bulk of what
+ * arrives on WhatsApp, are handled fully offline.
+ */
+/**
+ * Read a file locally — no network, no API.
+ *
+ * PDFs go through pdfjs, which is what was missing: the agent could only
+ * OCR images, so every PDF fell through to "Needs Review" regardless of
+ * how clean it was. That one gap accounted for the bulk of the manual
+ * pile.
+ *
+ * Returns { text, pages, method }. `pages` matters because vendors send
+ * merged PDFs and each page is often a different document.
+ */
+async function readLocally(buffer, mimeType, fileName) {
+  // Spreadsheets, Word files and archives circulate in the group but are
+  // not supply paperwork. Running OCR on them yields nothing and they end
+  // up labelled "Unclassified", which reads like a failure when it isn't.
+  if (/\.(xlsx?|csv|docx?|pptx?|zip|rar|txt)$/i.test(fileName || "")) {
+    const kind = /\.(xlsx?|csv)$/i.test(fileName) ? "spreadsheet" : "office file";
+    throw new Error(`NOT_A_SUPPLY_DOCUMENT:This is a ${kind}, not supply paperwork.`);
+  }
+
+  const isPdf = mimeType === "application/pdf" || /\.pdf$/i.test(fileName || "");
+
+  if (isPdf) {
+    const result = await extractPdfPages(buffer, { maxPages: 20 });
+    if (result.hasTextLayer) {
+      return { text: result.text, pages: result.pages, method: "pdf_text" };
+    }
+    // No text layer — a phone-scanner PDF. The page images are embedded
+    // as ordinary JPEGs, so they can be lifted out and OCRd without any
+    // rasterising toolchain.
+    const scanned = await ocrScannedPdf(buffer, { maxPages: 5 });
+    return { text: scanned.text, pages: scanned.pages, method: "pdf_scan_ocr" };
+  }
+
+  if (!mimeType.startsWith("image/")) {
+    throw new Error(`Can't read files of type ${mimeType} locally.`);
+  }
+
+  let Tesseract;
+  try {
+    Tesseract = require("tesseract.js");
+  } catch {
+    throw new Error("tesseract.js isn't installed — run `npm install`.");
+  }
+  const worker = await Tesseract.createWorker("eng");
+  try {
+    // These slips are photographed sideways. A receiving printed on a
+    // narrow till roll is almost always shot in portrait and lands
+    // rotated 90°, and Tesseract reading a rotated page produces exactly
+    // the character soup we were getting — the page was legible all
+    // along, just not the way round it was being read.
+    //
+    // So it is read at each orientation and the best result kept.
+    // "Best" is judged by how much of it looks like the words these
+    // documents actually contain, not by raw character count: noise is
+    // long and meaningless.
+    const SIGNALS = [
+      /weighment/i, /nett?\s*weight/i, /gross\s*weight/i, /tare/i,
+      /supplier/i, /vehicle/i, /sample/i, /laboratory/i, /moisture/i,
+      /[A-Z]{2}\s?\d{1,2}\s?[A-Z]{1,3}\s?\d{3,4}/,
+      /\d{2}[\/-]\d{2}[\/-]\d{4}/,
+    ];
+    const scoreText = (t) => {
+      if (!t) return 0;
+      let score = SIGNALS.reduce((n, re) => n + (re.test(t) ? 10 : 0), 0);
+      // A little credit for length, so a page with no keywords but real
+      // words still beats one with none.
+      return score + Math.min(10, t.replace(/\s/g, "").length / 100);
+    };
+
+    let best = { text: "", score: -1, rotation: 0 };
+    for (const rotation of [0, 90, 270, 180]) {
+      let result;
+      try {
+        result = await worker.recognize(
+          buffer,
+          rotation === 0 ? {} : { rotateRadians: (rotation * Math.PI) / 180 }
+        );
+      } catch {
+        continue;
+      }
+      const text = result?.data?.text || "";
+      const score = scoreText(text);
+      if (score > best.score) best = { text, score, rotation };
+      // Good enough — stop turning the page.
+      if (score >= 40) break;
+    }
+
+    return {
+      text: best.text,
+      pages: [best.text],
+      method: best.rotation ? `image_ocr_rotated_${best.rotation}` : "image_ocr",
+    };
+  } finally {
+    await worker.terminate();
+  }
+}
+
+/**
+ * Classify a merged PDF page by page.
+ *
+ * A single vendor PDF routinely holds the tax invoice, the e-way bill,
+ * the Bill T and the weight slip. Reading it as one blob lets whichever
+ * document has the most text win and loses the rest — so each page is
+ * classified separately and the distinct types are reported together.
+ */
+function classifyPages(pages, ctx) {
+  const perPage = [];
+  for (let i = 0; i < pages.length; i++) {
+    const pageText = pages[i];
+    if (!pageText || pageText.replace(/\s/g, "").length < 30) continue;
+    const extracted = extractOffline(pageText, ctx);
+    perPage.push({ page: i + 1, ...extracted });
+  }
+  return perPage;
+}
+
+/** Merge page-level results into one record for the whole file. */
+function combinePages(perPage, wholeText, ctx) {
+  if (!perPage.length) return extractOffline(wholeText, ctx);
+
+  // The most confident page decides the file's primary type.
+  const primary = [...perPage].sort((a, b) => b.confidence - a.confidence)[0];
+  const combined = { ...primary };
+
+  // Fill any blank from whichever page did read it. A weight slip page
+  // carries the vehicle; the invoice page carries the reference — the
+  // file as a whole knows both.
+  const FILL = [
+    "referenceNo", "biomeDocNo", "vendorDocNo", "vendorName", "vendorGstin",
+    "clientName", "clientGstin", "documentDate", "ewayBillNo", "vehicleNo",
+    "grossWeight", "tareWeight", "netWeight", "totalAmount", "driverMobile",
+  ];
+  for (const page of perPage) {
+    for (const field of FILL) {
+      if (!combined[field] && page[field]) combined[field] = page[field];
+    }
+    if (page.hasDigitalSignature) combined.hasDigitalSignature = true;
+  }
+
+  // Record every distinct document found, so the supply-set checklist
+  // credits all four when one merged PDF delivers all four.
+  const types = [...new Set(perPage.map((p) => p.documentType).filter((t) => t && t !== "other"))];
+  // Resolve the client from the WHOLE document, not from whichever page
+  // happened to score highest.
+  //
+  // On a merged vendor PDF the invoice page names "Jhajjhar Power
+  // Limited" while the e-way bill page prints only the plant location,
+  // "Jharli" — which belongs to a different client entirely. Taking the
+  // primary page's answer meant a Jhajjar supply could be filed under
+  // Aravali Power depending on which page won.
+  try {
+    const { matchClient } = require("./clients");
+    const whole = matchClient(wholeText, ctx.clients && ctx.clients.length ? ctx.clients : undefined);
+    if (whole) combined.clientName = whole.name;
+  } catch {
+    /* keep whatever the pages agreed on */
+  }
+
+  combined.containedDocumentTypes = types;
+  combined.pageCount = perPage.length;
+  combined.transcription = wholeText;
+  if (types.length > 1) {
+    combined.isMergedDocument = true;
+  }
+  return combined;
+}
+
+
+
+module.exports = {
+  classifyPages,
+  combinePages,
+  classifyDocument,
+  readLocally,
+  DOC_TYPES,
+  DOC_TYPE_LABEL,
+  DOC_TYPE_SIDE,
+};

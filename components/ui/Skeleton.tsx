@@ -20,7 +20,7 @@ export function SkeletonBlock({ className = "" }: { className?: string }) {
 export function SkeletonTable({ rows = 4, cols = 5 }: { rows?: number; cols?: number }) {
   return (
     <div className="overflow-hidden rounded-2xl border border-biome-line">
-      <div className="flex gap-3 border-b border-biome-line bg-white/[0.02] px-4 py-3">
+      <div className="flex gap-3 border-b border-biome-line bg-biome-hover px-4 py-3">
         {Array.from({ length: cols }).map((_, i) => (
           <SkeletonLine key={i} className="w-full" />
         ))}

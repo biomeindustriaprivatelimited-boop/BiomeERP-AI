@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { FileCheck2, Sparkles, AlertCircle, SlidersHorizontal, Loader2 } from "lucide-react";
+import { FileCheck2, Sparkles, AlertCircle, SlidersHorizontal, Loader2, Database } from "lucide-react";
 import GlassCard from "@/components/GlassCard";
 import PremiumButton from "@/components/ui/PremiumButton";
 import { SkeletonTable } from "@/components/ui/Skeleton";
@@ -10,6 +10,8 @@ import { useNotifications } from "@/lib/notifications";
 import Dropzone from "@/components/reconciliation/Dropzone";
 import ColumnMapper from "@/components/reconciliation/ColumnMapper";
 import ResultsPanel from "@/components/reconciliation/ResultsPanel";
+import { getTallySettings } from "@/lib/preferences";
+import { tallyRowsToParsedFile } from "@/lib/tally";
 import {
   ParsedFile,
   ColumnMapping,
@@ -18,6 +20,15 @@ import {
   reconcile,
   ReconciliationResult,
 } from "@/lib/reconciliation";
+
+function defaultFromDate() {
+  const d = new Date();
+  d.setMonth(d.getMonth() - 3);
+  return d.toISOString().slice(0, 10);
+}
+function defaultToDate() {
+  return new Date().toISOString().slice(0, 10);
+}
 
 export default function ReconciliationPage() {
   const [fileA, setFileA] = useState<ParsedFile | null>(null);
@@ -33,10 +44,65 @@ export default function ReconciliationPage() {
   const [running, setRunning] = useState(false);
   const { notify } = useNotifications();
 
+  const [tallyFrom, setTallyFrom] = useState(defaultFromDate());
+  const [tallyTo, setTallyTo] = useState(defaultToDate());
+  const [tallyFetching, setTallyFetching] = useState<"A" | "B" | null>(null);
+
+  async function fetchFromTally(side: "A" | "B") {
+    setError(null);
+    setTallyFetching(side);
+    side === "A" ? setParsingA(true) : setParsingB(true);
+    try {
+      const settings = getTallySettings();
+      const res = await fetch("/api/tally/fetch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...settings,
+          companyName: settings.companyName || undefined,
+          fromDate: tallyFrom,
+          toDate: tallyTo,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        throw new Error(data.error || "Could not fetch from Tally.");
+      }
+      const parsed = tallyRowsToParsedFile(
+        data.rows,
+        `Tally (${tallyFrom} to ${tallyTo})`
+      );
+      const mapping = autoDetectColumns(parsed.headers, parsed.rows);
+      if (side === "A") {
+        setFileA(parsed);
+        setMappingA(mapping);
+      } else {
+        setFileB(parsed);
+        setMappingB(mapping);
+      }
+      setResult(null);
+      notify({
+        kind: "success",
+        title: "Fetched from Tally",
+        detail: `${data.rows.length} vouchers loaded into Ledger ${side}.`,
+      });
+    } catch (err: any) {
+      setError(
+        err?.message ||
+          "Could not fetch from Tally. Check Settings → Tally Integration and try Test Connection."
+      );
+    } finally {
+      setTallyFetching(null);
+      side === "A" ? setParsingA(false) : setParsingB(false);
+    }
+  }
+
   const nameA = fileA?.fileName.replace(/\.(csv|xlsx|xls)$/i, "") || "Ledger A";
   const nameB = fileB?.fileName.replace(/\.(csv|xlsx|xls)$/i, "") || "Ledger B";
 
-  const readyToRun = Boolean(fileA && fileB && mappingA.invoiceNo && mappingB.invoiceNo);
+  const hasMatchKey = (m: ColumnMapping) =>
+    Boolean(m.invoiceNo || (m.party && (m.amount || m.sale || m.purchase || m.payment || m.receipt)));
+  const readyToRun = Boolean(fileA && fileB && hasMatchKey(mappingA) && hasMatchKey(mappingB));
 
   async function handleFile(side: "A" | "B", file: File) {
     setError(null);
@@ -46,7 +112,7 @@ export default function ReconciliationPage() {
       if (!parsed.headers.length) {
         throw new Error(`"${file.name}" looks empty or unreadable.`);
       }
-      const mapping = autoDetectColumns(parsed.headers);
+      const mapping = autoDetectColumns(parsed.headers, parsed.rows);
       if (side === "A") {
         setFileA(parsed);
         setMappingA(mapping);
@@ -112,9 +178,7 @@ export default function ReconciliationPage() {
               Ledger Reconciliation
             </h1>
             <p className="mt-1 max-w-2xl text-sm text-biome-muted">
-              Upload Ledger A and Ledger B, confirm the auto-detected columns, and match every
-              invoice across Purchase, Sale, Payment, Receipt, TDS and Amount — entirely in your
-              browser. Nothing is uploaded to a server.
+              Upload Ledger A and Ledger B. The app auto-detects invoice, party, date and amount columns and can reconcile even when invoice numbers are absent or exported differently. Everything runs locally in your browser.
             </p>
           </div>
         </div>
@@ -126,6 +190,53 @@ export default function ReconciliationPage() {
           {error}
         </div>
       )}
+
+      {/* Fetch from Tally */}
+      <GlassCard delay={0.03} className="p-4">
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="flex items-center gap-2 text-biome-muted">
+            <Database size={15} className="text-biome-leafBright" />
+            <span className="text-xs">Fetch vouchers straight from Tally:</span>
+          </div>
+          <label className="text-[11px] text-biome-muted">
+            From
+            <input
+              type="date"
+              value={tallyFrom}
+              onChange={(e) => setTallyFrom(e.target.value)}
+              className="mt-0.5 block rounded-lg border border-biome-line bg-biome-hover px-2 py-1.5 text-xs text-biome-text outline-none focus:border-biome-leaf/40"
+            />
+          </label>
+          <label className="text-[11px] text-biome-muted">
+            To
+            <input
+              type="date"
+              value={tallyTo}
+              onChange={(e) => setTallyTo(e.target.value)}
+              className="mt-0.5 block rounded-lg border border-biome-line bg-biome-hover px-2 py-1.5 text-xs text-biome-text outline-none focus:border-biome-leaf/40"
+            />
+          </label>
+          <PremiumButton
+            variant="ghost"
+            onClick={() => fetchFromTally("A")}
+            disabled={tallyFetching !== null}
+          >
+            {tallyFetching === "A" ? <Loader2 size={13} className="animate-spin" /> : <Database size={13} />}
+            Fetch into Ledger A
+          </PremiumButton>
+          <PremiumButton
+            variant="ghost"
+            onClick={() => fetchFromTally("B")}
+            disabled={tallyFetching !== null}
+          >
+            {tallyFetching === "B" ? <Loader2 size={13} className="animate-spin" /> : <Database size={13} />}
+            Fetch into Ledger B
+          </PremiumButton>
+        </div>
+        <p className="mt-2 text-[10px] text-biome-muted/70">
+          Needs the TDL loaded in Tally and connection details set once in Settings → Tally Integration. You can also upload CSV, Excel or PDF ledgers from any accounting software. If invoice numbers differ, the offline engine falls back to party + date + amount matching.
+        </p>
+      </GlassCard>
 
       {/* Upload */}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -190,7 +301,7 @@ export default function ReconciliationPage() {
                   step={0.5}
                   value={tolerance}
                   onChange={(e) => setTolerance(Math.max(0, Number(e.target.value)))}
-                  className="w-16 rounded-lg border border-biome-line bg-white/5 px-2 py-1 text-center text-xs text-biome-text outline-none focus:border-biome-leaf"
+                  className="w-16 rounded-lg border border-biome-line bg-biome-hover px-2 py-1 text-center text-xs text-biome-text outline-none focus:border-biome-leaf"
                 />
                 <span>₹</span>
               </label>

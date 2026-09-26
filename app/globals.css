@@ -3,9 +3,103 @@
 @tailwind utilities;
 
 :root {
+  /* ---- Surfaces & text (dark, the default) ----
+     Space-separated RGB channels so Tailwind can apply opacity to them. */
+  /* Wise-derived "deep moss" dark: a green-tinted obsidian rather than a
+     blue-tinted navy. Cards sit one step lighter on the forest floor. */
+  --c-bg: 13 16 11;
+  --c-bg-soft: 19 25 15;
+  --c-surface: 24 33 19;
+  --c-text: 240 244 237;
+  --c-muted: 156 166 150;
+  /* Borders are pre-blended against the dark background rather than
+     relying on alpha, so `border-biome-line` looks right on its own AND
+     still accepts /50, /60 modifiers where the code uses them. */
+  --c-line: 44 54 38;
+  --c-hover: 255 255 255;
+
+  /* ---- Accent trio (overridden by the presets below) ---- */
+  --c-leaf: 124 179 66;
+  --c-leaf-bright: 156 204 101;
+  --c-sky: 74 122 156;
+  --c-sky-bright: 91 155 213;
+  --c-bolt: 253 224 71;
+  --c-bolt-deep: 244 196 48;
+
+  /* Legacy hex vars kept for the few places that use them directly. */
   --biome-leaf: #7cb342;
   --biome-sky: #5b9bd5;
   --biome-bolt: #fde047;
+
+  /* The one electric note in the whole system. Fills, rings, active
+     pills, and indicator edges only — never body text on light. */
+  --c-volt: 159 232 112;
+
+  --app-bg: rgb(var(--c-bg));
+  --app-text: rgb(var(--c-text));
+  --glass-from: rgb(var(--c-surface) / 0.72);
+  --glass-to: rgb(var(--c-bg-soft) / 0.62);
+  --glass-border: rgb(var(--c-line) / 0.9);
+}
+
+/* ================= ACCENT PRESETS ================= */
+html[data-accent="leaf"] {
+  /* On dark: a mid-forest fill that carries white text, with Lime
+     Voltage (#9fe870) as the text/indicator accent — lime TEXT is only
+     legible on the dark moss, exactly where Wise uses it. */
+  --c-leaf: 82 130 40;
+  --c-leaf-bright: 159 232 112;
+  --c-sky: 74 122 156;
+  --c-sky-bright: 91 155 213;
+  --c-bolt: 253 224 71;
+  --c-bolt-deep: 244 196 48;
+  --biome-leaf: #7cb342;
+  --biome-sky: #5b9bd5;
+  --biome-bolt: #fde047;
+}
+html[data-accent="ocean"] {
+  --c-leaf: 45 158 163;
+  --c-leaf-bright: 94 205 205;
+  --c-sky: 63 110 176;
+  --c-sky-bright: 99 155 224;
+  --c-bolt: 99 210 206;
+  --c-bolt-deep: 60 168 168;
+  --biome-leaf: #2d9ea3;
+  --biome-sky: #639be0;
+  --biome-bolt: #63d2ce;
+}
+html[data-accent="sunset"] {
+  --c-leaf: 224 128 52;
+  --c-leaf-bright: 245 166 92;
+  --c-sky: 196 84 104;
+  --c-sky-bright: 224 116 134;
+  --c-bolt: 245 196 81;
+  --c-bolt-deep: 224 166 48;
+  --biome-leaf: #e08034;
+  --biome-sky: #e07486;
+  --biome-bolt: #f5c451;
+}
+html[data-accent="violet"] {
+  --c-leaf: 139 111 214;
+  --c-leaf-bright: 172 150 236;
+  --c-sky: 109 139 208;
+  --c-sky-bright: 140 168 228;
+  --c-bolt: 200 143 230;
+  --c-bolt-deep: 170 110 205;
+  --biome-leaf: #8b6fd6;
+  --biome-sky: #8ca8e4;
+  --biome-bolt: #c88fe6;
+}
+html[data-accent="slate"] {
+  --c-leaf: 100 116 139;
+  --c-leaf-bright: 148 163 184;
+  --c-sky: 110 125 148;
+  --c-sky-bright: 148 163 184;
+  --c-bolt: 160 174 192;
+  --c-bolt-deep: 130 145 165;
+  --biome-leaf: #64748b;
+  --biome-sky: #94a3b8;
+  --biome-bolt: #a0aec0;
 }
 
 html {
@@ -13,8 +107,9 @@ html {
 }
 
 body {
-  background-color: #0a0f1a;
-  color: #e8edf5;
+  background-color: var(--app-bg);
+  color: var(--app-text);
+  transition: background-color 0.3s ease, color 0.3s ease;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -37,19 +132,20 @@ html.reduce-motion *::after {
   transition-duration: 0.001ms !important;
 }
 
-/* Focus visibility for keyboard nav */
+/* Focus visibility for keyboard nav — the lime voltage ring, the same
+   single accent Wise reserves for "you are here". */
 :focus-visible {
-  outline: 2px solid var(--biome-leaf);
+  outline: 2px solid rgb(var(--c-volt));
   outline-offset: 2px;
-  border-radius: 6px;
+  border-radius: 8px;
 }
 
 /* Glassmorphism surface */
 .glass {
-  background: linear-gradient(160deg, rgba(17, 26, 46, 0.72) 0%, rgba(14, 21, 36, 0.62) 100%);
+  background: linear-gradient(160deg, var(--glass-from) 0%, var(--glass-to) 100%);
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
-  border: 1px solid rgba(140, 170, 210, 0.14);
+  border: 1px solid var(--glass-border);
 }
 
 /* Signature element: Energy Pulse Border — a slow-travelling gradient
@@ -114,3 +210,1557 @@ html.reduce-motion *::after {
   background-size: 200% 100%;
   animation: skeleton-shimmer 1.6s ease-in-out infinite;
 }
+
+/* ---- Typography ----
+   Tighter tracking on display text and proper optical sizing make the
+   headings feel designed rather than defaulted. */
+.font-display {
+  letter-spacing: -0.022em;
+  font-feature-settings: "kern" 1, "liga" 1, "calt" 1;
+}
+h1.font-display { letter-spacing: -0.032em; }
+body {
+  font-feature-settings: "kern" 1, "liga" 1;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+/* Numbers line up in columns instead of jittering as they change. */
+.tabular-nums { font-variant-numeric: tabular-nums; }
+
+/* ═══════════════════════════════════════════════════════════════════
+   NOCTURNE — the platform's dark identity
+   ───────────────────────────────────────────────────────────────────
+   Tokens taken directly from the brief. Applied as CSS variables so a
+   component never hard-codes a colour and the whole surface can shift
+   from one place.
+   ═══════════════════════════════════════════════════════════════════ */
+
+html[data-theme="dark"] {
+  --n-canvas: 8 12 20;          /* #080c14 deep slate-indigo */
+  --n-surface: 15 23 42;        /* slate-900 */
+  --n-indigo: 99 102 241;       /* #6366f1 electric indigo */
+  --n-cyan: 6 182 212;          /* #06b6d4 cyber cyan */
+  --n-emerald: 16 185 129;      /* #10b981 matched */
+  --n-rose: 244 63 94;          /* #f43f5e mismatch */
+  --n-amber: 245 158 11;        /* #f59e0b pending */
+}
+
+html[data-theme="dark"] body {
+  background-color: rgb(var(--n-canvas));
+  color: rgb(226 232 240);
+  /* Two slow radial glows, indigo and cyan, drifting behind everything.
+     Fixed attachment so they read as atmosphere rather than as objects
+     that scroll with the content. */
+  background-image:
+    radial-gradient(ellipse 70% 50% at 15% -5%, rgb(var(--n-indigo) / 0.10) 0%, transparent 60%),
+    radial-gradient(ellipse 60% 45% at 90% 5%, rgb(var(--n-cyan) / 0.10) 0%, transparent 60%),
+    radial-gradient(ellipse 80% 50% at 50% 105%, rgb(var(--n-indigo) / 0.06) 0%, transparent 65%);
+  background-attachment: fixed;
+}
+
+/* The one ambient motion in the system. Slow enough to be felt rather
+   than watched, and switched off entirely for reduced-motion users. */
+html[data-theme="dark"] body::before {
+  content: "";
+  position: fixed;
+  inset: -20%;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(circle at 30% 40%, rgb(var(--n-indigo) / 0.07) 0%, transparent 45%),
+    radial-gradient(circle at 70% 60%, rgb(var(--n-cyan) / 0.06) 0%, transparent 45%);
+  animation: nocturne-drift 34s ease-in-out infinite alternate;
+}
+
+@keyframes nocturne-drift {
+  from { transform: translate3d(-2%, -1%, 0) scale(1); }
+  to   { transform: translate3d(2%, 2%, 0) scale(1.06); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-theme="dark"] body::before { animation: none; }
+}
+
+/* Glass: blur, a micro-border that catches light, and a shadow deep
+   enough to lift the card off the canvas without a visible edge. */
+html[data-theme="dark"] .glass {
+  background: rgb(var(--n-surface) / 0.6);
+  border: 1px solid rgb(255 255 255 / 0.10);
+  box-shadow: 0 25px 50px -12px rgb(30 27 75 / 0.45);
+  backdrop-filter: blur(20px) saturate(1.25);
+  -webkit-backdrop-filter: blur(20px) saturate(1.25);
+  border-radius: 1rem;
+  position: relative;
+  z-index: 1;
+  transition: transform 300ms cubic-bezier(0.4, 0, 0.2, 1),
+              border-color 300ms ease,
+              box-shadow 300ms ease;
+}
+
+html[data-theme="dark"] .glass:hover {
+  
+  border-color: rgb(var(--n-indigo) / 0.35);
+  box-shadow:
+    0 30px 60px -12px rgb(30 27 75 / 0.55),
+    0 0 0 1px rgb(var(--n-indigo) / 0.15);
+}
+
+html[data-theme="dark"] aside,
+html[data-theme="dark"] header {
+  background: rgb(var(--n-surface) / 0.55);
+  border-color: rgb(255 255 255 / 0.08);
+  backdrop-filter: blur(24px) saturate(1.3);
+  -webkit-backdrop-filter: blur(24px) saturate(1.3);
+}
+
+/* The active nav item: a pill that glows rather than merely fills. */
+html[data-theme="dark"] .nav-active {
+  background: linear-gradient(
+    90deg,
+    rgb(var(--n-indigo) / 0.20),
+    rgb(var(--n-cyan) / 0.10)
+  );
+  border: 1px solid rgb(var(--n-indigo) / 0.30);
+  box-shadow: 0 0 20px -4px rgb(var(--n-indigo) / 0.45);
+}
+
+/* Focus is never invisible — a glowing ring, not a browser outline. */
+html[data-theme="dark"] :focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgb(var(--n-canvas)), 0 0 0 4px rgb(var(--n-indigo) / 0.6);
+  border-radius: 0.75rem;
+}
+
+html[data-theme="dark"] input,
+html[data-theme="dark"] select,
+html[data-theme="dark"] textarea {
+  background: rgb(255 255 255 / 0.04);
+  border-color: rgb(255 255 255 / 0.10);
+  color: rgb(226 232 240);
+}
+html[data-theme="dark"] input:focus,
+html[data-theme="dark"] select:focus,
+html[data-theme="dark"] textarea:focus {
+  border-color: rgb(var(--n-indigo) / 0.55);
+}
+
+/* Status colours, named by what they mean rather than by hue, so a
+   badge cannot drift out of step with the system. */
+html[data-theme="dark"] .status-matched  { color: rgb(var(--n-emerald)); background: rgb(var(--n-emerald) / 0.12); }
+html[data-theme="dark"] .status-mismatch { color: rgb(var(--n-rose));    background: rgb(var(--n-rose) / 0.12); }
+html[data-theme="dark"] .status-pending  { color: rgb(var(--n-amber));   background: rgb(var(--n-amber) / 0.12); }
+
+/* Money and identifiers line up in columns instead of jittering. */
+html[data-theme="dark"] .tabular-nums,
+html[data-theme="dark"] .font-mono {
+  font-variant-numeric: tabular-nums;
+}
+
+/* A live system pulse — used once, in the header. */
+@keyframes nocturne-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgb(var(--n-emerald) / 0.55); }
+  50%      { opacity: 0.75; box-shadow: 0 0 0 6px rgb(var(--n-emerald) / 0); }
+}
+.pulse-live { animation: nocturne-pulse 2.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .pulse-live { animation: none; }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   BRAND BACKDROP — splash and login
+   Defined here rather than injected from the component, so the
+   animations cannot fail because a style block did not mount or a
+   Tailwind arbitrary class was not generated.
+   ═══════════════════════════════════════════════════════════════════ */
+
+@keyframes brand-spin {
+  from { transform: translateY(-50%) rotate(0deg); }
+  to   { transform: translateY(-50%) rotate(360deg); }
+}
+
+@keyframes brand-fly {
+  from { transform: translateX(0) translateY(0); }
+  50%  { transform: translateX(55vw) translateY(-18px); }
+  to   { transform: translateX(118vw) translateY(6px); }
+}
+
+@keyframes brand-flap {
+  0%, 100% { transform: scaleY(1); }
+  50%      { transform: scaleY(0.35); }
+}
+
+@keyframes brand-fall {
+  from { transform: translateY(0) translateX(0) rotate(0deg); }
+  to   { transform: translateY(112vh) translateX(var(--drift, 0px)) rotate(var(--spin, 360deg)); }
+}
+
+.brand-globe { animation: brand-spin 90s linear infinite; }
+.brand-bird  { animation: brand-fly var(--dur, 26s) linear infinite; animation-delay: var(--delay, 0s); }
+.brand-wing  { animation: brand-flap 0.7s ease-in-out infinite; transform-origin: 16px 8px; }
+.brand-leaf  { animation: brand-fall var(--dur, 16s) linear infinite; animation-delay: var(--delay, 0s); }
+
+/* Anyone who has asked their system for less motion gets a still image. */
+@media (prefers-reduced-motion: reduce) {
+  .brand-globe, .brand-bird, .brand-wing, .brand-leaf { animation: none; }
+}
+
+/* ================= PREMIUM BIOME LOGIN =================
+   Login Interface only. The rest of the ERP is intentionally untouched.
+   Visual language: sky-blue daylight + deep teal + renewable green + glass.
+*/
+
+.biome-login-page { font-family: inherit; }
+.biome-login-scene { isolation: isolate; background: #bfeafa; }
+.biome-login-sky {
+  background:
+    radial-gradient(circle at 78% 17%, rgba(255,255,255,.96) 0 2%, rgba(255,255,255,.25) 8%, transparent 18%),
+    linear-gradient(180deg, #78c9ee 0%, #a7def3 43%, #d9f2f8 73%, #eaf6ef 100%);
+}
+.biome-login-sun {
+  right: 10%; top: 7%; width: clamp(170px, 18vw, 280px); height: clamp(170px, 18vw, 280px);
+  border-radius: 999px;
+  background: radial-gradient(circle, rgba(255,255,255,.95) 0 14%, rgba(255,255,255,.4) 34%, transparent 70%);
+  filter: blur(1px); opacity: .72; animation: biome-sun-breathe 7s ease-in-out infinite;
+}
+.biome-login-glow {
+  left: 27%; top: 19%; width: 36vw; height: 36vw; max-width: 520px; max-height: 520px;
+  border-radius: 999px; background: rgba(185,246,218,.23); filter: blur(45px);
+}
+.biome-login-sunbeam {
+  width: 55vw; height: 75vh; transform: rotate(17deg); transform-origin: top left;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.16), transparent); filter: blur(18px); opacity: .55;
+  animation: biome-sunbeam 12s ease-in-out infinite alternate;
+}
+.biome-login-cloud {
+  width: 300px; height: 72px; border-radius: 999px; background: rgba(255,255,255,.5); filter: blur(8px);
+  animation: biome-cloud-drift 42s linear infinite;
+}
+.biome-login-cloud::before,.biome-login-cloud::after { content:""; position:absolute; border-radius:999px; background:inherit; }
+.biome-login-cloud::before { width:130px;height:100px;left:45px;top:-44px; }
+.biome-login-cloud::after { width:100px;height:78px;right:38px;top:-25px; }
+.biome-login-cloud-a { left:-18%; top:12%; }
+.biome-login-cloud-b { left:43%; top:25%; transform:scale(.65); opacity:.35; animation-duration:54s; animation-delay:-17s; }
+.biome-login-horizon {
+  background: linear-gradient(180deg, rgba(220,244,236,0) 0%, rgba(89,151,119,.28) 20%, #3c825d 100%);
+}
+.biome-login-hills { overflow:hidden; }
+.biome-login-hills-far {
+  background:
+    radial-gradient(ellipse at 14% 100%, #77b98c 0 29%, transparent 30%),
+    radial-gradient(ellipse at 44% 100%, #6cac83 0 37%, transparent 38%),
+    radial-gradient(ellipse at 79% 100%, #79b98d 0 34%, transparent 35%),
+    linear-gradient(180deg, transparent 0 50%, #5d9f76 51% 100%); opacity:.72;
+}
+.biome-login-hills-near {
+  background:
+    radial-gradient(ellipse at 4% 120%, #2e7b54 0 38%, transparent 39%),
+    radial-gradient(ellipse at 36% 120%, #347f57 0 41%, transparent 42%),
+    radial-gradient(ellipse at 73% 120%, #276f4c 0 44%, transparent 45%),
+    linear-gradient(180deg, transparent 0 35%, #2d744f 36% 100%);
+}
+.biome-login-plant { animation: biome-plant-breathe 7s ease-in-out infinite alternate; transform-origin:center bottom; }
+.biome-login-silo { animation: biome-silo-float 5.5s ease-in-out infinite alternate; }
+.biome-login-conveyor-svg { animation: biome-conveyor 3s ease-in-out infinite alternate; }
+.biome-login-steam path { animation: biome-steam 4s ease-in-out infinite; transform-origin:450px 70px; }
+.biome-login-turbine { opacity:.68; }
+.biome-login-turbine-blades { animation: biome-turbine-spin 8s linear infinite; }
+.biome-login-turbine-blades span { position:absolute; left:50%; top:50%; width:42px; height:4px; border-radius:99px; background:rgba(255,255,255,.72); transform-origin:left center; }
+.biome-login-turbine-blades span:nth-child(1){ transform:rotate(0deg); }
+.biome-login-turbine-blades span:nth-child(2){ transform:rotate(120deg); }
+.biome-login-turbine-blades span:nth-child(3){ transform:rotate(240deg); }
+.biome-login-data-line { text-shadow:0 1px 10px rgba(18,73,61,.28); }
+.biome-login-leaf {
+  position:absolute; top:-8%; z-index:22; border-radius:100% 0 100% 0;
+  background:linear-gradient(135deg,#8bcf70,#277b4f); box-shadow:0 5px 14px rgba(28,95,63,.18); opacity:.72;
+  animation: biome-leaf-fall var(--leaf-duration,15s) linear infinite; animation-delay:var(--leaf-delay,0s);
+}
+.biome-login-leaf::after { content:""; position:absolute; left:49%; top:8%; width:1px; height:84%; background:rgba(240,255,245,.72); transform:rotate(-35deg); }
+.biome-login-vignette {
+  background:
+    linear-gradient(90deg, rgba(8,48,56,.03) 0%, transparent 38%, rgba(8,42,50,.11) 100%),
+    linear-gradient(180deg, rgba(255,255,255,.03), transparent 50%, rgba(9,63,53,.16));
+}
+.biome-login-divider { width:1px; background:linear-gradient(180deg,transparent,rgba(255,255,255,.4),transparent); }
+
+.biome-login-card { transform-origin:center right; }
+.biome-login-card::before { content:""; position:absolute; inset:0; border-radius:inherit; background:linear-gradient(135deg,rgba(255,255,255,.72),transparent 35%,rgba(255,255,255,.25)); pointer-events:none; }
+.biome-login-card-shine { position:absolute; left:-30%; top:-40%; width:65%; height:170%; transform:rotate(18deg); background:linear-gradient(90deg,transparent,rgba(255,255,255,.45),transparent); filter:blur(14px); animation:biome-card-shine 7s ease-in-out infinite; pointer-events:none; }
+.biome-login-input {
+  width:100%; border-radius:16px; border:1px solid #dbe5e8; background:rgba(248,251,252,.95); padding:13px 14px 13px 42px;
+  color:#0f172a; font-size:13px; outline:none; transition:.2s ease; box-shadow:inset 0 1px 0 rgba(255,255,255,.9);
+}
+.biome-login-input::placeholder { color:#a0adb4; }
+.biome-login-input:focus { border-color:#43a877; background:#fff; box-shadow:0 0 0 4px rgba(67,168,119,.11), 0 8px 25px rgba(24,74,60,.06); }
+.biome-login-button {
+  background:linear-gradient(110deg,#17664d 0%,#25845b 45%,#267fa8 100%);
+  box-shadow:0 16px 28px -14px rgba(20,91,72,.75), inset 0 1px 0 rgba(255,255,255,.2);
+}
+.biome-login-button::before { content:""; position:absolute; inset:0; transform:translateX(-110%); background:linear-gradient(100deg,transparent,rgba(255,255,255,.24),transparent); transition:transform .7s ease; }
+.biome-login-button:hover::before { transform:translateX(110%); }
+.biome-login-button:hover { box-shadow:0 20px 34px -14px rgba(20,91,72,.8), inset 0 1px 0 rgba(255,255,255,.25); transform:translateY(-1px); }
+
+@keyframes biome-sun-breathe { 0%,100%{transform:scale(.94);opacity:.66;} 50%{transform:scale(1.06);opacity:.86;} }
+@keyframes biome-sunbeam { from{transform:translateX(-3%) rotate(17deg);opacity:.25;} to{transform:translateX(13%) rotate(17deg);opacity:.62;} }
+@keyframes biome-cloud-drift { from{transform:translateX(-20vw);} to{transform:translateX(120vw);} }
+@keyframes biome-plant-breathe { from{transform:translateY(0);} to{transform:translateY(-3px);} }
+@keyframes biome-silo-float { from{transform:translateY(0);} to{transform:translateY(-2px);} }
+@keyframes biome-conveyor { from{transform:translateX(0);} to{transform:translateX(8px);} }
+@keyframes biome-steam { 0%,100%{opacity:.25;transform:translateY(3px) scale(.92);} 50%{opacity:.78;transform:translateY(-9px) scale(1.06);} }
+@keyframes biome-turbine-spin { from{transform:translate(-50%,-50%) rotate(0deg);} to{transform:translate(-50%,-50%) rotate(360deg);} }
+@keyframes biome-leaf-fall { 0%{transform:translate3d(0,-12vh,0) rotate(0);opacity:0;} 10%{opacity:.78;} 52%{transform:translate3d(var(--leaf-drift),55vh,0) rotate(calc(var(--leaf-rotate) * .5));} 100%{transform:translate3d(calc(var(--leaf-drift) * -.35),118vh,0) rotate(var(--leaf-rotate));opacity:0;} }
+@keyframes biome-card-shine { 0%,55%{transform:translateX(-30%) rotate(18deg);opacity:0;} 65%{opacity:.65;} 82%,100%{transform:translateX(280%) rotate(18deg);opacity:0;} }
+
+@media (max-width: 1280px) {
+  .biome-login-plant { left:2%; width:57vw; min-width:520px; }
+}
+@media (max-width: 1024px) {
+  .biome-login-plant { left:-8%; width:76vw; min-width:520px; opacity:.8; }
+  .biome-login-brand { left:4vw; top:4vh; max-width:340px; }
+}
+@media (max-width: 760px) {
+  .biome-login-brand { left:20px; top:18px; max-width:290px; }
+  .biome-login-brand p { display:none; }
+  .biome-login-plant { left:-34%; bottom:9%; width:110vw; min-width:0; opacity:.52; }
+  .biome-login-turbine { display:none; }
+  .biome-login-card { margin-top:95px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .biome-login-sun,.biome-login-sunbeam,.biome-login-cloud,.biome-login-plant,.biome-login-silo,.biome-login-conveyor-svg,.biome-login-steam path,.biome-login-turbine-blades,.biome-login-leaf,.biome-login-card-shine { animation:none !important; }
+}
+html.reduce-motion .biome-login-sun,html.reduce-motion .biome-login-sunbeam,html.reduce-motion .biome-login-cloud,html.reduce-motion .biome-login-plant,html.reduce-motion .biome-login-silo,html.reduce-motion .biome-login-conveyor-svg,html.reduce-motion .biome-login-steam path,html.reduce-motion .biome-login-turbine-blades,html.reduce-motion .biome-login-leaf,html.reduce-motion .biome-login-card-shine { animation:none !important; }
+
+/* ================= FINAL BIOME SPLASH + LOGIN POLISH ================= */
+.biome-splash-sky{background:radial-gradient(circle at 74% 16%,rgba(160,238,255,.18),transparent 18%),linear-gradient(180deg,#062a3c 0%,#0a4555 48%,#0b2d34 100%)}
+.biome-splash-glow{border-radius:999px;filter:blur(70px);pointer-events:none}.biome-splash-glow-a{width:420px;height:420px;right:6%;top:8%;background:rgba(69,209,190,.14);animation:splash-glow 6s ease-in-out infinite}.biome-splash-glow-b{width:360px;height:360px;left:8%;bottom:8%;background:rgba(74,181,113,.1);animation:splash-glow 8s ease-in-out infinite reverse}.biome-splash-ground{background:linear-gradient(180deg,transparent,#061f27 40%,#05171f 100%)}
+@keyframes splash-glow{0%,100%{transform:scale(.92);opacity:.6}50%{transform:scale(1.08);opacity:1}}
+.brand-globe-wrap{filter:drop-shadow(0 30px 70px rgba(36,177,183,.12));animation:brand-globe-float 9s ease-in-out infinite}.brand-globe{animation:brand-spin 80s linear infinite}.brand-globe-halo{background:radial-gradient(circle,rgba(95,227,218,.12),transparent 66%);filter:blur(12px)}
+.brand-orbit{border:1px solid rgba(156,245,225,.16);transform:rotate(-20deg) perspective(400px) rotateX(65deg);animation:brand-orbit 13s linear infinite}.brand-orbit-b{transform:rotate(40deg) perspective(400px) rotateX(65deg);animation-duration:17s;animation-direction:reverse}.brand-splash-globe{animation:splash-globe-pulse 6s ease-in-out infinite}.biome-splash-orbit{animation:splash-orbit 14s linear infinite}
+@keyframes brand-globe-float{0%,100%{transform:translateY(-50%) translateY(0)}50%{transform:translateY(-50%) translateY(-10px)}}
+@keyframes brand-orbit{from{transform:rotate(-20deg) perspective(400px) rotateX(65deg) rotate(0deg)}to{transform:rotate(-20deg) perspective(400px) rotateX(65deg) rotate(360deg)}}
+@keyframes splash-orbit{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+@keyframes splash-globe-pulse{0%,100%{box-shadow:inset -25px -25px 55px rgba(0,0,0,.35),0 0 55px rgba(103,232,249,.12)}50%{box-shadow:inset -25px -25px 55px rgba(0,0,0,.28),0 0 85px rgba(103,232,249,.24)}}
+
+.biome-login-ambient-grid{opacity:.11;background-image:linear-gradient(rgba(255,255,255,.4) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.4) 1px,transparent 1px);background-size:72px 72px;mask-image:linear-gradient(90deg,transparent 0%,black 30%,black 70%,transparent 100%)}
+.biome-login-worker{animation:biome-worker-float 3.8s ease-in-out infinite}.biome-worker-arm{transform-origin:114px 118px;animation:biome-worker-arm 1.8s ease-in-out infinite}.biome-worker-tool{transform-origin:120px 116px;animation:biome-worker-tool 1.8s ease-in-out infinite}.biome-login-solar{animation:biome-solar-glow 4s ease-in-out infinite}
+@keyframes biome-worker-float{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}
+@keyframes biome-worker-arm{0%,100%{transform:rotate(0deg)}50%{transform:rotate(-18deg)}}
+@keyframes biome-worker-tool{0%,100%{transform:rotate(0deg)}50%{transform:rotate(20deg)}}
+@keyframes biome-solar-glow{0%,100%{filter:brightness(.95)}50%{filter:brightness(1.15)}}
+.biome-login-card{background:linear-gradient(145deg,rgba(4,48,60,.86),rgba(5,38,48,.78));border-color:rgba(255,255,255,.24)}
+.biome-login-card-noise{background:radial-gradient(circle at 20% 0%,rgba(111,235,203,.12),transparent 35%),radial-gradient(circle at 100% 100%,rgba(76,180,222,.12),transparent 38%)}
+.biome-login-card-topline{background:linear-gradient(90deg,transparent,rgba(111,231,183,.75),rgba(125,211,252,.65),transparent)}
+.biome-login-input-dark{border:1px solid rgba(255,255,255,.11)!important;background:rgba(255,255,255,.055)!important;color:#fff!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.04)!important}.biome-login-input-dark::placeholder{color:rgba(255,255,255,.3)}.biome-login-input-dark:focus{border-color:rgba(110,231,183,.65)!important;background:rgba(255,255,255,.08)!important;box-shadow:0 0 0 4px rgba(110,231,183,.08),0 10px 30px rgba(0,0,0,.12)!important}
+.biome-login-button{background:linear-gradient(110deg,#1b805d 0%,#20a06d 45%,#2188a9 100%);box-shadow:0 20px 40px -18px rgba(32,160,109,.8),inset 0 1px 0 rgba(255,255,255,.22)}
+@media(max-width:900px){.biome-login-brand{max-width:330px}.biome-login-brand p{display:none}.biome-login-worker{left:20%}.biome-login-plant{left:-12%;width:82vw;min-width:540px;opacity:.75}.biome-login-card{margin-top:100px;background:rgba(4,42,52,.9)}}
+@media(max-width:760px){.biome-login-brand{left:18px;top:18px}.biome-login-brand>p{display:none}.biome-login-worker{left:5%;bottom:13%;opacity:.5}.biome-login-plant{left:-35%;bottom:7%;width:120vw;min-width:0}.biome-login-turbine{display:none}.biome-login-card{margin-top:140px}.biome-splash .grid{grid-template-columns:1fr}.biome-splash .biome-splash-globe-card{display:none}}
+@media(prefers-reduced-motion:reduce){.brand-globe-wrap,.brand-globe,.brand-orbit,.brand-splash-globe,.biome-splash-orbit,.biome-splash-glow-a,.biome-splash-glow-b,.biome-login-worker,.biome-worker-arm,.biome-worker-tool,.biome-login-solar{animation:none!important}}
+html.reduce-motion .brand-globe-wrap,html.reduce-motion .brand-globe,html.reduce-motion .brand-orbit,html.reduce-motion .brand-splash-globe,html.reduce-motion .biome-splash-orbit,html.reduce-motion .biome-splash-glow-a,html.reduce-motion .biome-splash-glow-b,html.reduce-motion .biome-login-worker,html.reduce-motion .biome-worker-arm,html.reduce-motion .biome-worker-tool,html.reduce-motion .biome-login-solar{animation:none!important}
+
+/* ================= BIOME FUTURE GATEWAY — FINAL LOGIN =================
+   Login-only override. Immersive industrial photography + telemetry HUD.
+*/
+.biome-login-page{background:#06131a!important}
+.biome-login-scene{isolation:isolate;background:#06131a}
+.biome-login-photo{background-image:url('/assets/biomass-login-premium.jpg');background-size:cover;background-position:center 58%;filter:saturate(.82) contrast(1.05) brightness(.78);transform:scale(1.035);animation:biome-photo-drift 18s ease-in-out infinite alternate}
+.biome-login-photo-tint{background:
+  linear-gradient(90deg,rgba(4,22,29,.12) 0%,rgba(4,22,29,.18) 38%,rgba(3,15,22,.78) 72%,rgba(3,12,18,.94) 100%),
+  linear-gradient(180deg,rgba(5,31,42,.18) 0%,rgba(4,25,32,.02) 46%,rgba(3,15,20,.72) 100%),
+  radial-gradient(circle at 35% 34%,rgba(66,213,223,.18),transparent 30%),
+  radial-gradient(circle at 58% 64%,rgba(50,188,132,.12),transparent 28%)}
+.biome-login-vignette{background:radial-gradient(circle at 42% 44%,transparent 0 34%,rgba(0,7,12,.24) 70%,rgba(0,6,10,.75) 100%)}
+.biome-login-scan{opacity:.14;background:repeating-linear-gradient(180deg,transparent 0,transparent 5px,rgba(155,245,255,.035) 6px,transparent 7px);mix-blend-mode:screen;animation:biome-scan 10s linear infinite}
+.biome-login-orb{border-radius:999px;filter:blur(55px);pointer-events:none}.biome-login-orb-a{width:320px;height:320px;left:26%;top:18%;background:rgba(50,204,222,.10);animation:biome-orb 8s ease-in-out infinite}.biome-login-orb-b{width:260px;height:260px;left:8%;bottom:5%;background:rgba(46,179,123,.10);animation:biome-orb 10s ease-in-out infinite reverse}
+.biome-login-brandmark{filter:drop-shadow(0 10px 24px rgba(0,0,0,.25))}
+.biome-live-dot{animation:biome-live 2s ease-in-out infinite;box-shadow:0 0 0 0 rgba(110,231,183,.5)}
+.biome-micro-chip{box-shadow:inset 0 1px 0 rgba(255,255,255,.04),0 10px 28px rgba(0,0,0,.08)}
+.biome-telemetry{box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 20px 50px rgba(0,0,0,.16)}
+.biome-telemetry-wave{background:linear-gradient(90deg,transparent 0%,rgba(74,222,190,.15) 10%,rgba(74,222,190,.8) 18%,rgba(103,232,249,.3) 28%,rgba(74,222,190,.8) 42%,rgba(103,232,249,.2) 56%,rgba(74,222,190,.7) 72%,rgba(103,232,249,.15) 84%,transparent 100%);clip-path:polygon(0 62%,5% 55%,10% 65%,15% 38%,20% 58%,25% 28%,30% 61%,35% 48%,40% 68%,45% 33%,50% 55%,55% 40%,60% 64%,65% 30%,70% 57%,75% 43%,80% 67%,85% 34%,90% 55%,95% 41%,100% 58%,100% 100%,0 100%);animation:biome-wave 3.2s linear infinite}
+.biome-energy-ring{box-shadow:inset 0 0 30px rgba(63,220,192,.05),0 0 50px rgba(63,220,192,.08);animation:biome-ring 6s ease-in-out infinite}
+.biome-energy-particle{position:absolute;z-index:14;border-radius:999px;background:rgba(139,246,215,.8);box-shadow:0 0 10px rgba(103,232,249,.55);animation:biome-particle 6s ease-in-out infinite}
+.biome-login-leaf{position:absolute;top:-8%;z-index:18;border-radius:100% 0 100% 0;background:linear-gradient(135deg,#a7e69a,#2e9b6a);box-shadow:0 6px 16px rgba(20,86,66,.18);opacity:.72;animation:biome-leaf-fall var(--leaf-duration,15s) linear infinite;animation-delay:var(--leaf-delay,0s)}
+.biome-login-card{background:linear-gradient(145deg,rgba(6,24,33,.90),rgba(4,17,25,.86));border-color:rgba(147,231,240,.18)!important;box-shadow:0 35px 100px -25px rgba(0,0,0,.76),inset 0 1px 0 rgba(255,255,255,.08),0 0 0 1px rgba(70,218,209,.04);backdrop-filter:blur(28px) saturate(1.18);-webkit-backdrop-filter:blur(28px) saturate(1.18)}
+.biome-login-card::before{background:linear-gradient(135deg,rgba(161,246,255,.09),transparent 34%,rgba(61,220,171,.035) 78%,transparent)!important}
+.biome-login-card-glow{background:radial-gradient(circle,rgba(57,219,224,.16),transparent 66%);filter:blur(8px)}
+.biome-login-card-line{background:linear-gradient(90deg,transparent,rgba(103,232,249,.55),rgba(110,231,183,.55),transparent);box-shadow:0 0 14px rgba(103,232,249,.2)}
+.biome-login-input-dark{border:1px solid rgba(157,223,230,.13)!important;background:rgba(255,255,255,.035)!important;border-radius:14px!important;padding:14px 14px 14px 42px!important;color:#f5fbfc!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.04),0 6px 22px rgba(0,0,0,.08)!important}
+.biome-login-input-dark:focus{border-color:rgba(103,232,249,.52)!important;background:rgba(103,232,249,.055)!important;box-shadow:0 0 0 3px rgba(103,232,249,.08),inset 0 1px 0 rgba(255,255,255,.05),0 10px 30px rgba(0,0,0,.16)!important}
+.biome-login-button{background:linear-gradient(110deg,#0f6b5a 0%,#108b76 42%,#117a9a 100%)!important;box-shadow:0 18px 38px -18px rgba(29,205,171,.62),inset 0 1px 0 rgba(255,255,255,.18)!important}
+.biome-login-button::after{content:"";position:absolute;inset:0;background:linear-gradient(110deg,transparent 25%,rgba(164,255,245,.18) 50%,transparent 75%);transform:translateX(-120%);animation:biome-button-sheen 5.5s ease-in-out infinite}
+@keyframes biome-photo-drift{from{transform:scale(1.035) translate3d(0,0,0)}to{transform:scale(1.065) translate3d(-.8%,.4%,0)}}
+@keyframes biome-scan{from{transform:translateY(-6%)}to{transform:translateY(6%)}}
+@keyframes biome-orb{0%,100%{transform:scale(.92);opacity:.55}50%{transform:scale(1.08);opacity:1}}
+@keyframes biome-live{0%,100%{box-shadow:0 0 0 0 rgba(110,231,183,.45);opacity:1}50%{box-shadow:0 0 0 5px rgba(110,231,183,0);opacity:.72}}
+@keyframes biome-wave{from{transform:translateX(-6%)}to{transform:translateX(6%)}}
+@keyframes biome-ring{0%,100%{transform:rotate(0deg) scale(.98)}50%{transform:rotate(8deg) scale(1.03)}}
+@keyframes biome-particle{0%,100%{transform:translate3d(0,10px,0);opacity:0}15%{opacity:.55}55%{transform:translate3d(18px,-28px,0);opacity:.8}90%{opacity:0}}
+@keyframes biome-button-sheen{0%,52%{transform:translateX(-120%);opacity:0}62%{opacity:1}78%,100%{transform:translateX(120%);opacity:0}}
+@media(max-width:1024px){.biome-login-photo{background-position:43% 58%}.biome-login-photo-tint{background:linear-gradient(90deg,rgba(4,22,29,.18),rgba(3,15,22,.72) 68%,rgba(3,12,18,.9)),linear-gradient(180deg,rgba(5,31,42,.18),rgba(3,15,20,.72))}.biome-login-card{max-width:410px}}
+@media(max-width:760px){.biome-login-photo{background-position:46% 56%;filter:saturate(.76) contrast(1.04) brightness(.62)}.biome-login-photo-tint{background:linear-gradient(180deg,rgba(4,22,29,.18),rgba(3,15,22,.82) 66%,rgba(3,12,18,.96)),linear-gradient(90deg,rgba(4,22,29,.08),rgba(3,15,22,.48))}.biome-login-card{margin-top:80px}.biome-login-brandmark{transform:scale(.9);transform-origin:left top}.biome-login-page main>div{padding-top:20px}.biome-login-scene .absolute.left-\[5vw\].top-\[25\%\]{display:none}}
+@media(prefers-reduced-motion:reduce){.biome-login-photo,.biome-login-scan,.biome-login-orb,.biome-live-dot,.biome-energy-ring,.biome-energy-particle,.biome-login-leaf,.biome-login-button::after,.biome-telemetry-wave{animation:none!important}}
+html.reduce-motion .biome-login-photo,html.reduce-motion .biome-login-scan,html.reduce-motion .biome-login-orb,html.reduce-motion .biome-live-dot,html.reduce-motion .biome-energy-ring,html.reduce-motion .biome-energy-particle,html.reduce-motion .biome-login-leaf,html.reduce-motion .biome-telemetry-wave{animation:none!important}
+
+/* ═══════════════════════════════════════════════════════════════════
+   BIOME COMMAND — third application theme
+   -------------------------------------------------------------------
+   Visual language shared with the premium BIOME INDUSTRIA splash/login:
+   sky-cyan atmosphere, deep teal industrial glass, emerald sustainability,
+   precise telemetry lines and restrained motion. Existing Light and Dark
+   themes remain intact; this is additive only.
+   ═══════════════════════════════════════════════════════════════════ */
+
+html[data-theme="command"] {
+  --c-bg: 5 18 28;
+  --c-bg-soft: 7 27 39;
+  --c-surface: 10 35 48;
+  --c-text: 232 250 250;
+  --c-muted: 145 181 190;
+  --c-line: 35 78 91;
+
+  --c-leaf: 42 211 145;
+  --c-leaf-bright: 110 231 183;
+  --c-sky: 69 201 236;
+  --c-sky-bright: 103 232 249;
+  --c-bolt: 224 245 180;
+  --c-bolt-deep: 166 216 108;
+
+  --biome-leaf: #2ad391;
+  --biome-sky: #45c9ec;
+  --biome-bolt: #e0f5b4;
+
+  --app-bg: rgb(var(--c-bg));
+  --app-text: rgb(var(--c-text));
+  --glass-from: rgb(13 50 64 / 0.78);
+  --glass-to: rgb(6 27 39 / 0.64);
+  --glass-border: rgb(104 224 229 / 0.18);
+}
+
+html[data-theme="command"] body {
+  position: relative;
+  overflow-x: hidden;
+  background-color: rgb(var(--c-bg));
+  color: rgb(var(--c-text));
+  background-image:
+    radial-gradient(ellipse 75% 55% at 8% -8%, rgb(69 201 236 / 0.20) 0%, transparent 58%),
+    radial-gradient(ellipse 65% 52% at 92% 3%, rgb(42 211 145 / 0.16) 0%, transparent 60%),
+    radial-gradient(ellipse 75% 55% at 52% 110%, rgb(17 87 78 / 0.34) 0%, transparent 64%),
+    linear-gradient(180deg, #061b28 0%, #071d2a 48%, #06151f 100%);
+  background-attachment: fixed;
+}
+
+html[data-theme="command"] body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.38;
+  background-image:
+    linear-gradient(rgb(103 232 249 / 0.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(103 232 249 / 0.045) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: linear-gradient(to bottom, black 0%, rgba(0,0,0,.65) 48%, transparent 100%);
+  animation: biome-command-grid 24s linear infinite;
+}
+
+html[data-theme="command"] body::after {
+  content: "";
+  position: fixed;
+  inset: -25%;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(circle at 20% 30%, rgb(103 232 249 / 0.10) 0%, transparent 25%),
+    radial-gradient(circle at 76% 24%, rgb(42 211 145 / 0.09) 0%, transparent 24%),
+    radial-gradient(circle at 58% 78%, rgb(42 211 145 / 0.07) 0%, transparent 30%);
+  filter: blur(12px);
+  animation: biome-command-atmosphere 28s ease-in-out infinite alternate;
+}
+
+/* Lift in-flow page content above the command-theme sky layers — but
+   never touch fixed/absolute layers. The old rule set EVERY body child to
+   position:relative, which turned the fixed particle canvas and cursor
+   into 900px of normal flow and pushed the whole app below the screen:
+   the "blank" Command theme. */
+html[data-theme="command"] body > *:not(.fixed):not(.absolute):not(canvas):not(script):not(next-route-announcer) {
+  position: relative;
+  z-index: 1;
+}
+
+/* The legacy canvas backdrop is intentionally hidden in Command mode so
+   its forest/navy palette cannot fight the new sky-cyan command atmosphere. */
+html[data-theme="command"] [data-app-background="animated"] {
+  display: none !important;
+}
+
+html[data-theme="command"] .glass {
+  position: relative;
+  overflow: hidden;
+  background:
+    linear-gradient(145deg, rgb(18 63 76 / 0.80), rgb(6 30 43 / 0.70)),
+    radial-gradient(circle at 100% 0%, rgb(103 232 249 / 0.08), transparent 38%);
+  border: 1px solid rgb(110 231 183 / 0.14);
+  box-shadow:
+    0 24px 70px -28px rgb(0 0 0 / 0.62),
+    inset 0 1px 0 rgb(255 255 255 / 0.055),
+    0 0 0 1px rgb(69 201 236 / 0.025);
+  backdrop-filter: blur(22px) saturate(1.25);
+  -webkit-backdrop-filter: blur(22px) saturate(1.25);
+  transition: transform 280ms ease, border-color 280ms ease, box-shadow 280ms ease;
+}
+
+html[data-theme="command"] .glass::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(110deg, transparent 0%, rgb(103 232 249 / 0.035) 42%, transparent 65%);
+  transform: translateX(-100%);
+  transition: transform 900ms ease;
+}
+
+html[data-theme="command"] .glass:hover {
+  
+  border-color: rgb(103 232 249 / 0.25);
+  box-shadow:
+    0 30px 78px -28px rgb(0 0 0 / 0.70),
+    0 0 34px -18px rgb(42 211 145 / 0.35),
+    inset 0 1px 0 rgb(255 255 255 / 0.07);
+}
+
+html[data-theme="command"] .glass:hover::after {
+  transform: translateX(100%);
+}
+
+html[data-theme="command"] .energy-pulse-border::before {
+  opacity: 0.16;
+}
+
+html[data-theme="command"] .energy-pulse-border:hover::before,
+html[data-theme="command"] .energy-pulse-border.is-active::before {
+  opacity: 0.72;
+}
+
+html[data-theme="command"] aside,
+html[data-theme="command"] header {
+  background:
+    linear-gradient(180deg, rgb(10 42 55 / 0.88), rgb(5 25 36 / 0.82));
+  border-color: rgb(103 232 249 / 0.11);
+  backdrop-filter: blur(24px) saturate(1.3);
+  -webkit-backdrop-filter: blur(24px) saturate(1.3);
+  box-shadow: 0 12px 45px -30px rgb(0 0 0 / 0.65);
+}
+
+
+
+html[data-theme="command"] header {
+  border-bottom-color: rgb(103 232 249 / 0.12);
+}
+
+html[data-theme="command"] .nav-active {
+  background: linear-gradient(100deg, rgb(42 211 145 / 0.18), rgb(69 201 236 / 0.11));
+  border: 1px solid rgb(103 232 249 / 0.16);
+  box-shadow: 0 0 28px -10px rgb(42 211 145 / 0.55);
+}
+
+html[data-theme="command"] input,
+html[data-theme="command"] select,
+html[data-theme="command"] textarea {
+  background: rgb(2 18 27 / 0.50);
+  border-color: rgb(103 232 249 / 0.14);
+  color: rgb(232 250 250);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.035);
+}
+
+html[data-theme="command"] input::placeholder,
+html[data-theme="command"] textarea::placeholder {
+  color: rgb(145 181 190 / 0.62);
+}
+
+html[data-theme="command"] input:focus,
+html[data-theme="command"] select:focus,
+html[data-theme="command"] textarea:focus {
+  border-color: rgb(103 232 249 / 0.48);
+  box-shadow: 0 0 0 3px rgb(103 232 249 / 0.08), 0 12px 34px -20px rgb(42 211 145 / 0.55);
+}
+
+html[data-theme="command"] :focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgb(var(--c-bg)), 0 0 0 4px rgb(103 232 249 / 0.48);
+  border-radius: 0.75rem;
+}
+
+/* Re-skin the faint utility fills used throughout existing pages without
+   touching the components themselves. This keeps every feature intact. */
+html[data-theme="command"] .bg-white\/5 { background-color: rgb(255 255 255 / 0.035); }
+html[data-theme="command"] .bg-white\/10 { background-color: rgb(103 232 249 / 0.07); }
+html[data-theme="command"] .bg-white\/20 { background-color: rgb(103 232 249 / 0.10); }
+html[data-theme="command"] .bg-white\/30 { background-color: rgb(103 232 249 / 0.14); }
+html[data-theme="command"] .bg-white\/\[0\.02\] { background-color: rgb(255 255 255 / 0.022); }
+html[data-theme="command"] .bg-white\/\[0\.03\] { background-color: rgb(255 255 255 / 0.032); }
+html[data-theme="command"] .bg-white\/\[0\.04\] { background-color: rgb(103 232 249 / 0.045); }
+html[data-theme="command"] .bg-white\/\[0\.06\] { background-color: rgb(103 232 249 / 0.065); }
+html[data-theme="command"] .bg-white\/\[0\.08\] { background-color: rgb(103 232 249 / 0.085); }
+html[data-theme="command"] .hover\:bg-white\/5:hover { background-color: rgb(103 232 249 / 0.055); }
+html[data-theme="command"] .hover\:bg-white\/10:hover { background-color: rgb(103 232 249 / 0.09); }
+
+html[data-theme="command"] .border-white\/10 { border-color: rgb(103 232 249 / 0.10); }
+html[data-theme="command"] .border-white\/20 { border-color: rgb(103 232 249 / 0.16); }
+html[data-theme="command"] .border-white\/30 { border-color: rgb(103 232 249 / 0.22); }
+
+html[data-theme="command"] .bg-aurora {
+  background-image:
+    radial-gradient(55% 48% at 18% 0%, rgb(69 201 236 / 0.15) 0%, transparent 60%),
+    radial-gradient(50% 42% at 86% 8%, rgb(42 211 145 / 0.13) 0%, transparent 60%),
+    radial-gradient(42% 38% at 50% 100%, rgb(224 245 180 / 0.05) 0%, transparent 60%);
+}
+
+html[data-theme="command"] .shadow-glow {
+  box-shadow: 0 0 34px -8px rgb(42 211 145 / 0.52);
+}
+
+html[data-theme="command"] .pulse-live {
+  animation: biome-command-pulse 2.2s ease-in-out infinite;
+}
+
+html[data-theme="command"] .font-display {
+  letter-spacing: -0.028em;
+  text-shadow: 0 0 28px rgb(103 232 249 / 0.06);
+}
+
+html[data-theme="command"] ::-webkit-scrollbar-thumb {
+  background: rgb(103 232 249 / 0.18);
+}
+html[data-theme="command"] ::-webkit-scrollbar-thumb:hover {
+  background: rgb(110 231 183 / 0.32);
+}
+
+@keyframes biome-command-grid {
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(48px, 48px, 0); }
+}
+
+@keyframes biome-command-atmosphere {
+  from { transform: translate3d(-2%, -1%, 0) scale(1); opacity: 0.78; }
+  to { transform: translate3d(2%, 2%, 0) scale(1.06); opacity: 1; }
+}
+
+@keyframes biome-command-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgb(42 211 145 / 0.45); }
+  50% { opacity: 0.78; box-shadow: 0 0 0 7px rgb(42 211 145 / 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-theme="command"] body::before,
+  html[data-theme="command"] body::after,
+  html[data-theme="command"] .pulse-live { animation: none !important; }
+}
+
+html.reduce-motion[data-theme="command"] body::before,
+html.reduce-motion[data-theme="command"] body::after,
+html.reduce-motion[data-theme="command"] .pulse-live { animation: none !important; }
+
+/* ================= BIOME SPLASH v2 — plant-line sequence =================
+   The splash now shows the thing the company actually does: biomass rides a
+   conveyor into a turbine, and the energy that comes out drives the loading
+   bar. Motifs (silo, belt, turbine, leaves, steam) are deliberately the same
+   ones the login scene uses, so the two screens read as one place.
+
+   These animations answer only to the operating system's reduced-motion
+   setting, not to the app's own `html.reduce-motion` class. That class
+   switches off every animation in the product at once, and an accidental
+   toggle of it has already frozen this app for the owner twice.
+   ======================================================================== */
+
+.bsx-stage { position:relative; }
+
+/* Slow ambient haze behind the plant line */
+@keyframes bsx-haze {
+  0%,100% { transform:translate3d(0,0,0) scale(1); opacity:.42; }
+  50%     { transform:translate3d(2.5%,-1.5%,0) scale(1.06); opacity:.62; }
+}
+.bsx-haze { animation:bsx-haze 14s ease-in-out infinite; will-change:transform,opacity; }
+
+/* Conveyor belt: the tread slides, the pellets ride it */
+@keyframes bsx-belt { to { background-position-x:-56px; } }
+.bsx-belt {
+  background-image:repeating-linear-gradient(90deg,
+    rgba(190,240,255,.20) 0 3px, transparent 3px 14px);
+  animation:bsx-belt 1.1s linear infinite;
+}
+
+@keyframes bsx-pellet {
+  0%   { transform:translateX(0) translateY(0) rotate(0deg); opacity:0; }
+  8%   { opacity:1; }
+  84%  { opacity:1; }
+  92%  { transform:translateX(230px) translateY(-26px) rotate(190deg); opacity:0; }
+  100% { transform:translateX(230px) translateY(-26px) rotate(200deg); opacity:0; }
+}
+.bsx-pellet { animation:bsx-pellet 3.1s cubic-bezier(.5,0,.55,1) infinite; will-change:transform; }
+
+/* Turbine driven by what the belt delivers */
+@keyframes bsx-spin { to { transform:rotate(360deg); } }
+.bsx-rotor { transform-origin:50% 50%; animation:bsx-spin 3.4s linear infinite; }
+
+@keyframes bsx-steam {
+  0%   { transform:translateY(0) scale(.85); opacity:0; }
+  25%  { opacity:.5; }
+  100% { transform:translateY(-58px) scale(1.5); opacity:0; }
+}
+.bsx-steam { animation:bsx-steam 4.2s ease-out infinite; }
+
+/* The energy pulse: turbine -> readout. This is the splash's signature. */
+@keyframes bsx-pulse {
+  0%   { offset-distance:0%;  opacity:0; }
+  12%  { opacity:1; }
+  88%  { opacity:1; }
+  100% { offset-distance:100%; opacity:0; }
+}
+@keyframes bsx-wire {
+  0%,100% { stroke-dashoffset:0; }
+  50%     { stroke-dashoffset:-24; }
+}
+.bsx-wire { stroke-dasharray:4 8; animation:bsx-wire 2.4s linear infinite; }
+
+@keyframes bsx-spark {
+  0%   { transform:translateX(0) scale(.6); opacity:0; }
+  15%  { opacity:1; transform:translateX(18px) scale(1); }
+  100% { transform:translateX(190px) scale(.5); opacity:0; }
+}
+.bsx-spark { animation:bsx-spark 2.2s cubic-bezier(.35,0,.2,1) infinite; }
+
+/* Leaves drifting across, echoing the login scene */
+@keyframes bsx-leaf {
+  0%   { transform:translate(0,0) rotate(0deg); opacity:0; }
+  10%  { opacity:.65; }
+  90%  { opacity:.35; }
+  100% { transform:translate(46vw,42vh) rotate(280deg); opacity:0; }
+}
+.bsx-leaf { animation:bsx-leaf 17s linear infinite; will-change:transform; }
+
+/* Readout card: a single slow sweep, nothing more */
+@keyframes bsx-sweep {
+  0%   { transform:translateX(-130%); }
+  60%,100% { transform:translateX(230%); }
+}
+.bsx-sweep { animation:bsx-sweep 5.5s ease-in-out infinite; }
+
+@keyframes bsx-dot { 0%,100% { opacity:.25; } 50% { opacity:1; } }
+.bsx-dot { animation:bsx-dot 1.5s ease-in-out infinite; }
+
+/* Module rows tick over as the boot sequence advances */
+@keyframes bsx-rowin {
+  from { opacity:0; transform:translateY(7px); }
+  to   { opacity:1; transform:translateY(0); }
+}
+.bsx-rowin { animation:bsx-rowin .5s cubic-bezier(.22,1,.36,1) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .bsx-haze,.bsx-belt,.bsx-pellet,.bsx-rotor,.bsx-steam,
+  .bsx-wire,.bsx-spark,.bsx-leaf,.bsx-sweep,.bsx-dot,.bsx-rowin {
+    animation:none !important;
+  }
+}
+
+/* ==========================================================================
+   BIOME LIVING SCENE — motion system for the SPLASH and LOGIN screens only
+   --------------------------------------------------------------------------
+   Scope is deliberate: nothing here is used by the dashboard or any module.
+   Every class is `bmx-` prefixed so it cannot collide with existing styles.
+
+   These animations answer ONLY to the operating system's reduced-motion
+   setting. They are intentionally NOT wired to the app's own
+   `html.reduce-motion` class, because that class disables every animation
+   in the product at once and an accidental toggle has frozen these screens
+   before.
+
+   Rhythm is layered on purpose (spec §26/§27):
+     very slow  — sky, clouds, haze, globe, factory
+     slow       — workers, silo, lamps
+     medium     — leaves, particles, telemetry
+     fast       — hover, focus, press, spinners
+   ========================================================================== */
+
+/* ---------- 1. Sky, clouds, light ---------- */
+@keyframes bmx-cloud {
+  from { transform:translate3d(-14%,0,0); }
+  to   { transform:translate3d(114%,0,0); }
+}
+.bmx-cloud { animation:bmx-cloud linear infinite; will-change:transform; }
+
+@keyframes bmx-ray {
+  0%,100% { opacity:.16; transform:translate3d(0,0,0) rotate(var(--ray-tilt,0deg)) scaleY(1); }
+  50%     { opacity:.34; transform:translate3d(1.5%,0,0) rotate(var(--ray-tilt,0deg)) scaleY(1.05); }
+}
+.bmx-ray { animation:bmx-ray 11s ease-in-out infinite; will-change:opacity,transform; }
+
+@keyframes bmx-haze {
+  0%,100% { transform:translate3d(0,0,0) scale(1);    opacity:.40; }
+  50%     { transform:translate3d(2%,-1%,0) scale(1.05); opacity:.62; }
+}
+.bmx-haze { animation:bmx-haze 16s ease-in-out infinite; will-change:transform,opacity; }
+
+/* Daylight creeping across the scene — never a time-lapse, just a drift */
+@keyframes bmx-daylight {
+  0%,100% { opacity:.55; }
+  50%     { opacity:.85; }
+}
+.bmx-daylight { animation:bmx-daylight 20s ease-in-out infinite; }
+
+/* ---------- 2. Biomass field ---------- */
+/* Wind arrives in gusts rather than a metronome, so the loop never reads */
+@keyframes bmx-sway {
+  0%,100% { transform:rotate(var(--sway-a,2deg)); }
+  28%     { transform:rotate(calc(var(--sway-a,2deg) * -.55)); }
+  54%     { transform:rotate(calc(var(--sway-a,2deg) * 1.35)); }
+  76%     { transform:rotate(calc(var(--sway-a,2deg) * .2)); }
+}
+.bmx-blade { transform-box:fill-box; transform-origin:50% 100%; animation:bmx-sway ease-in-out infinite; will-change:transform; }
+
+@keyframes bmx-gust {
+  0%,100% { transform:translate3d(0,0,0); }
+  45%     { transform:translate3d(4px,-1px,0); }
+}
+.bmx-gust { animation:bmx-gust 7s ease-in-out infinite; }
+
+/* ---------- 3. Workers (spec §2 — believable, unsynchronised) ---------- */
+@keyframes bmx-bob {
+  0%,100% { transform:translateY(0); }
+  50%     { transform:translateY(-1.6px); }
+}
+.bmx-worker { animation:bmx-bob ease-in-out infinite; will-change:transform; }
+
+@keyframes bmx-walk-lead { 0%,100% { transform:rotate(20deg); } 50% { transform:rotate(-20deg); } }
+@keyframes bmx-walk-trail { 0%,100% { transform:rotate(-20deg); } 50% { transform:rotate(20deg); } }
+.bmx-leg-a { transform-box:fill-box; transform-origin:50% 0%; animation:bmx-walk-lead ease-in-out infinite; }
+.bmx-leg-b { transform-box:fill-box; transform-origin:50% 0%; animation:bmx-walk-trail ease-in-out infinite; }
+
+@keyframes bmx-arm-fwd { 0%,100% { transform:rotate(-24deg); } 50% { transform:rotate(22deg); } }
+@keyframes bmx-arm-back { 0%,100% { transform:rotate(22deg); } 50% { transform:rotate(-24deg); } }
+.bmx-arm-a { transform-box:fill-box; transform-origin:50% 0%; animation:bmx-arm-fwd ease-in-out infinite; }
+.bmx-arm-b { transform-box:fill-box; transform-origin:50% 0%; animation:bmx-arm-back ease-in-out infinite; }
+
+/* Bending to cut and gather — a long hold at the bottom, like real work */
+@keyframes bmx-bend {
+  0%,12%   { transform:rotate(4deg) translateY(0); }
+  34%,58%  { transform:rotate(38deg) translateY(1.5px); }
+  80%,100% { transform:rotate(4deg) translateY(0); }
+}
+.bmx-torso-bend { transform-box:fill-box; transform-origin:50% 100%; animation:bmx-bend ease-in-out infinite; }
+
+@keyframes bmx-reach {
+  0%,14%   { transform:rotate(10deg); }
+  36%,56%  { transform:rotate(74deg); }
+  78%,100% { transform:rotate(10deg); }
+}
+.bmx-arm-reach { transform-box:fill-box; transform-origin:50% 0%; animation:bmx-reach ease-in-out infinite; }
+
+/* Carrying a bundle: weight shifts side to side */
+@keyframes bmx-carry {
+  0%,100% { transform:rotate(-2.5deg) translateY(0); }
+  50%     { transform:rotate(2.5deg) translateY(-1px); }
+}
+.bmx-carry { transform-box:fill-box; transform-origin:50% 100%; animation:bmx-carry ease-in-out infinite; }
+
+@keyframes bmx-head {
+  0%,100% { transform:rotate(-4deg); }
+  40%     { transform:rotate(5deg); }
+  70%     { transform:rotate(-1deg); }
+}
+.bmx-head { transform-box:fill-box; transform-origin:50% 100%; animation:bmx-head ease-in-out infinite; }
+
+/* Walking across the field, then recycled from the far side */
+@keyframes bmx-traverse {
+  0%   { transform:translateX(0); opacity:0; }
+  6%   { opacity:1; }
+  92%  { opacity:1; }
+  100% { transform:translateX(var(--walk-dist,120px)); opacity:0; }
+}
+.bmx-traverse { animation:bmx-traverse linear infinite; will-change:transform; }
+
+/* ---------- 4. Leaves (spec §4 — each one independent, recycled) ---------- */
+@keyframes bmx-leaf {
+  0%   { transform:translate3d(0,-8vh,0) rotate(0deg) scale(var(--leaf-s,1)); opacity:0; }
+  7%   { opacity:var(--leaf-o,.7); }
+  35%  { transform:translate3d(calc(var(--leaf-x,60px) * .38), 32vh, 0) rotate(calc(var(--leaf-r,300deg) * .34)) scale(var(--leaf-s,1)); }
+  68%  { transform:translate3d(calc(var(--leaf-x,60px) * .72), 66vh, 0) rotate(calc(var(--leaf-r,300deg) * .7)) scale(var(--leaf-s,1)); }
+  93%  { opacity:var(--leaf-o,.7); }
+  100% { transform:translate3d(var(--leaf-x,60px), 112vh, 0) rotate(var(--leaf-r,300deg)) scale(var(--leaf-s,1)); opacity:0; }
+}
+.bmx-leaf { position:absolute; animation:bmx-leaf linear infinite; will-change:transform,opacity; pointer-events:none; }
+
+/* A second axis so leaves tumble rather than spin flat */
+@keyframes bmx-tumble {
+  0%,100% { transform:rotateY(0deg); }
+  50%     { transform:rotateY(160deg); }
+}
+.bmx-leaf-inner { animation:bmx-tumble ease-in-out infinite; transform-style:preserve-3d; }
+
+/* ---------- 5. Factory ---------- */
+@keyframes bmx-belt { to { background-position-x:-48px; } }
+.bmx-belt {
+  background-image:repeating-linear-gradient(90deg, rgba(190,240,255,.22) 0 3px, transparent 3px 12px);
+  animation:bmx-belt 1.4s linear infinite;
+}
+
+@keyframes bmx-spin { to { transform:rotate(360deg); } }
+.bmx-wheel { transform-box:fill-box; transform-origin:50% 50%; animation:bmx-spin linear infinite; }
+
+@keyframes bmx-piston {
+  0%,100% { transform:translateY(0); }
+  50%     { transform:translateY(-2.5px); }
+}
+.bmx-piston { animation:bmx-piston 1.9s ease-in-out infinite; }
+
+@keyframes bmx-smoke {
+  0%   { transform:translate3d(0,0,0) scale(.7);  opacity:0; }
+  18%  { opacity:.42; }
+  100% { transform:translate3d(14px,-72px,0) scale(2.1); opacity:0; }
+}
+.bmx-smoke { animation:bmx-smoke ease-out infinite; will-change:transform,opacity; }
+
+/* Plant lamps drift in intensity — never a blink */
+@keyframes bmx-lamp {
+  0%,100% { opacity:.45; }
+  30%     { opacity:.95; }
+  62%     { opacity:.6; }
+}
+.bmx-lamp { animation:bmx-lamp ease-in-out infinite; }
+
+/* Occasional vehicle on the plant road */
+@keyframes bmx-vehicle {
+  0%,58%   { transform:translateX(0); opacity:0; }
+  62%      { opacity:.75; }
+  96%      { opacity:.75; }
+  100%     { transform:translateX(var(--veh-dist,150px)); opacity:0; }
+}
+.bmx-vehicle { animation:bmx-vehicle linear infinite; }
+
+/* ---------- 6. Particles ---------- */
+@keyframes bmx-float {
+  0%   { transform:translate3d(0,0,0) scale(.6); opacity:0; }
+  15%  { opacity:var(--p-o,.55); }
+  85%  { opacity:var(--p-o,.55); }
+  100% { transform:translate3d(var(--p-x,14px), var(--p-y,-70px), 0) scale(1.1); opacity:0; }
+}
+.bmx-particle { position:absolute; border-radius:9999px; animation:bmx-float linear infinite; will-change:transform,opacity; pointer-events:none; }
+
+/* ---------- 7. Globe (spec §7) ---------- */
+@keyframes bmx-globe-map { to { background-position-x:-560px; } }
+.bmx-globe-map { animation:bmx-globe-map 46s linear infinite; }
+
+@keyframes bmx-atmo {
+  0%,100% { opacity:.35; transform:scale(1); }
+  50%     { opacity:.62; transform:scale(1.035); }
+}
+.bmx-atmo { animation:bmx-atmo 7.5s ease-in-out infinite; }
+
+@keyframes bmx-node {
+  0%,100% { opacity:.2;  r:1.4; }
+  50%     { opacity:1;   r:2.4; }
+}
+.bmx-node { animation:bmx-node ease-in-out infinite; }
+
+@keyframes bmx-arc {
+  0%   { stroke-dashoffset:120; opacity:0; }
+  20%  { opacity:.85; }
+  80%  { opacity:.55; }
+  100% { stroke-dashoffset:-120; opacity:0; }
+}
+.bmx-arc { stroke-dasharray:26 120; animation:bmx-arc ease-in-out infinite; }
+
+@keyframes bmx-orbit { to { transform:rotate(360deg); } }
+.bmx-orbit { animation:bmx-orbit linear infinite; }
+
+@keyframes bmx-globe-pulse {
+  0%,72%,100% { transform:scale(1);    opacity:0; }
+  76%         { opacity:.5; }
+  92%         { transform:scale(1.22); opacity:0; }
+}
+.bmx-globe-pulse { animation:bmx-globe-pulse 9s ease-out infinite; }
+
+/* ---------- 8. Telemetry (spec §8 — five layers at five speeds) ---------- */
+@keyframes bmx-wave { to { transform:translateX(-50%); } }
+.bmx-wave { animation:bmx-wave linear infinite; will-change:transform; }
+
+@keyframes bmx-wave-lift {
+  0%,100% { transform:translateY(0)    scaleY(1); }
+  50%     { transform:translateY(-2px) scaleY(1.14); }
+}
+.bmx-wave-lift { animation:bmx-wave-lift 5.5s ease-in-out infinite; }
+
+@keyframes bmx-tele-dot {
+  0%   { transform:translateX(0)   scale(.5); opacity:0; }
+  12%  { opacity:1; }
+  88%  { opacity:.7; }
+  100% { transform:translateX(240px) scale(.6); opacity:0; }
+}
+.bmx-tele-dot { animation:bmx-tele-dot linear infinite; }
+
+/* The light pulse that ties the login panel to the plant (spec §17) */
+@keyframes bmx-tele-pulse {
+  0%,66%,100% { transform:translateX(-30%); opacity:0; }
+  70%         { opacity:.75; }
+  99%         { transform:translateX(340%); opacity:0; }
+}
+.bmx-tele-pulse { animation:bmx-tele-pulse 8s cubic-bezier(.4,0,.3,1) infinite; }
+
+@keyframes bmx-tick { 0%,100% { opacity:.3; } 50% { opacity:1; } }
+.bmx-tick { animation:bmx-tick 1.6s ease-in-out infinite; }
+
+/* ---------- 9. Parallax (spec §18/§19) ---------- */
+/* One rAF-driven listener writes --mx/--my; each layer reads it at its own
+   depth. Kept tiny on purpose — the UI must never chase the cursor. */
+.bmx-par {
+  transform:translate3d(calc(var(--mx,0) * var(--depth,1) * 1px), calc(var(--my,0) * var(--depth,1) * 1px), 0);
+  transition:transform .5s cubic-bezier(.22,1,.36,1);
+  will-change:transform;
+}
+
+/* ---------- 10. Entrances (spec §10/§12) ---------- */
+@keyframes bmx-rise {
+  from { opacity:0; transform:translateY(14px); filter:blur(7px); }
+  to   { opacity:1; transform:translateY(0);    filter:blur(0); }
+}
+.bmx-rise { animation:bmx-rise .85s cubic-bezier(.22,1,.36,1) backwards; }
+
+@keyframes bmx-logo-in {
+  from { opacity:0; transform:scale(.975); filter:blur(5px); }
+  to   { opacity:1; transform:scale(1);    filter:blur(0); }
+}
+.bmx-logo-in { animation:bmx-logo-in 1s cubic-bezier(.22,1,.36,1) backwards; }
+
+/* A single sweep across the logo as it settles, then never again */
+@keyframes bmx-logo-sheen {
+  0%   { transform:translateX(-160%); opacity:0; }
+  25%  { opacity:.75; }
+  70%,100% { transform:translateX(260%); opacity:0; }
+}
+.bmx-logo-sheen { animation:bmx-logo-sheen 1.9s cubic-bezier(.3,0,.2,1) .55s both; }
+
+@keyframes bmx-panel-in {
+  from { opacity:0; transform:translateY(22px) scale(.985); filter:blur(9px); }
+  to   { opacity:1; transform:translateY(0)    scale(1);    filter:blur(0); }
+}
+.bmx-panel-in { animation:bmx-panel-in .95s cubic-bezier(.22,1,.36,1) backwards; }
+
+/* Slow travelling highlight on glass panels */
+@keyframes bmx-sheen {
+  0%       { transform:translateX(-130%); }
+  55%,100% { transform:translateX(240%); }
+}
+.bmx-sheen { animation:bmx-sheen 6.5s ease-in-out infinite; }
+
+/* ---------- 11. Form micro-interactions (spec §13/§14/§15/§16) ---------- */
+.bmx-field { position:relative; transition:transform .28s cubic-bezier(.22,1,.36,1); }
+.bmx-field:hover { transform:translateY(-1px); }
+
+.bmx-input {
+  transition:border-color .25s ease, box-shadow .3s ease, background-color .25s ease;
+}
+.bmx-input:hover { border-color:rgba(190,240,255,.26); }
+.bmx-input:focus {
+  outline:none;
+  border-color:rgba(103,232,249,.55);
+  box-shadow:0 0 0 3px rgba(103,232,249,.10), inset 0 1px 0 rgba(219,250,255,.14), 0 6px 22px -12px rgba(103,232,249,.5);
+  background-color:rgba(219,250,255,.05);
+}
+/* Keyboard focus must read as clearly as hover (spec §21) */
+.bmx-input:focus-visible { box-shadow:0 0 0 3px rgba(103,232,249,.22), 0 6px 22px -12px rgba(103,232,249,.55); }
+
+/* An underline that grows from the centre as the field takes focus */
+.bmx-field-line {
+  position:absolute; left:12px; right:12px; bottom:0; height:1px;
+  background:linear-gradient(90deg, transparent, rgba(103,232,249,.85), transparent);
+  transform:scaleX(0); transform-origin:50% 50%;
+  transition:transform .45s cubic-bezier(.22,1,.36,1);
+  pointer-events:none;
+}
+.bmx-field:focus-within .bmx-field-line { transform:scaleX(1); }
+
+.bmx-icon { transition:color .25s ease, transform .3s cubic-bezier(.22,1,.36,1); }
+.bmx-field:focus-within .bmx-icon-lead { color:rgba(165,243,252,.9); transform:scale(1.08); }
+
+.bmx-toggle { transition:transform .25s cubic-bezier(.22,1,.36,1), color .2s ease, background-color .2s ease; }
+.bmx-toggle:hover { transform:translateY(-50%) scale(1.12); }
+.bmx-toggle:active { transform:translateY(-50%) scale(.94); }
+
+/* Filled fields get a quiet confirmation, not a badge */
+@keyframes bmx-filled { from { opacity:0; transform:scale(.4); } to { opacity:1; transform:scale(1); } }
+.bmx-filled-dot { animation:bmx-filled .35s cubic-bezier(.22,1,.36,1) both; }
+
+/* Error: a small controlled nudge, never a shake (spec §13) */
+@keyframes bmx-nudge {
+  0%,100% { transform:translateX(0); }
+  22%     { transform:translateX(-4px); }
+  48%     { transform:translateX(3px); }
+  74%     { transform:translateX(-1.5px); }
+}
+.bmx-nudge { animation:bmx-nudge .42s cubic-bezier(.36,.07,.19,.97) both; }
+
+@keyframes bmx-msg-in {
+  from { opacity:0; transform:translateY(-5px); }
+  to   { opacity:1; transform:translateY(0); }
+}
+/* No max-height and no overflow:hidden on purpose — an animated height cap
+   clips any message longer than the cap, and this class sits on error
+   blocks and diagnostic lists that are routinely longer. */
+.bmx-msg-in { animation:bmx-msg-in .4s cubic-bezier(.22,1,.36,1) backwards; }
+
+/**
+ * Full-screen panel entrance.
+ *
+ * Deliberately separate from bmx-msg-in: that one animates max-height to
+ * 120px for a small inline notice, and using it on a panel collapses the
+ * whole screen into a strip. Nothing here touches size.
+ */
+@keyframes bmx-screen-in {
+  from { opacity:0; transform:scale(.995); filter:blur(6px); }
+  to   { opacity:1; transform:scale(1);    filter:blur(0); }
+}
+.bmx-screen-in { animation:bmx-screen-in .28s cubic-bezier(.22,1,.36,1) backwards; }
+
+/* Buttons */
+.bmx-btn {
+  transition:transform .2s cubic-bezier(.22,1,.36,1), box-shadow .3s ease, filter .25s ease;
+  will-change:transform;
+}
+.bmx-btn:hover:not(:disabled) {
+  transform:translateY(-2px);
+  box-shadow:0 18px 40px -20px rgba(103,232,249,.55), 0 0 0 1px rgba(165,243,252,.16) inset;
+  filter:brightness(1.06);
+}
+.bmx-btn:active:not(:disabled) { transform:translateY(0) scale(.988); transition-duration:.09s; }
+.bmx-btn:focus-visible { outline:none; box-shadow:0 0 0 3px rgba(103,232,249,.3); }
+.bmx-btn:disabled { cursor:wait; }
+
+/* Light running across the primary button on hover */
+@keyframes bmx-btn-sheen { from { transform:translateX(-120%); } to { transform:translateX(260%); } }
+.bmx-btn-sheen { opacity:0; transition:opacity .25s ease; }
+.bmx-btn:hover .bmx-btn-sheen { opacity:1; animation:bmx-btn-sheen 1.15s cubic-bezier(.3,0,.2,1); }
+
+/* Secondary controls and links */
+.bmx-link { transition:color .22s ease, opacity .22s ease; }
+.bmx-link:hover { color:rgba(165,243,252,.95); }
+.bmx-link:focus-visible { outline:none; text-decoration:underline; text-underline-offset:3px; }
+
+.bmx-chip { transition:border-color .3s ease, background-color .3s ease, transform .3s cubic-bezier(.22,1,.36,1); }
+.bmx-chip:hover { transform:translateY(-1.5px); border-color:rgba(190,240,255,.24); }
+
+@keyframes bmx-status { 0%,100% { opacity:.45; box-shadow:0 0 0 0 rgba(52,211,153,.5); } 50% { opacity:1; box-shadow:0 0 0 4px rgba(52,211,153,0); } }
+.bmx-status-dot { animation:bmx-status 2.4s ease-in-out infinite; }
+
+@keyframes bmx-spin-fast { to { transform:rotate(360deg); } }
+.bmx-spin { animation:bmx-spin-fast .8s linear infinite; }
+
+@keyframes bmx-ok { from { stroke-dashoffset:26; } to { stroke-dashoffset:0; } }
+.bmx-ok { stroke-dasharray:26; animation:bmx-ok .5s cubic-bezier(.22,1,.36,1) both; }
+
+/* ---------- 12. Respect the operating system ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .bmx-cloud,.bmx-ray,.bmx-haze,.bmx-daylight,.bmx-blade,.bmx-gust,.bmx-worker,
+  .bmx-leg-a,.bmx-leg-b,.bmx-arm-a,.bmx-arm-b,.bmx-torso-bend,.bmx-arm-reach,
+  .bmx-carry,.bmx-head,.bmx-traverse,.bmx-leaf,.bmx-leaf-inner,.bmx-belt,
+  .bmx-wheel,.bmx-piston,.bmx-smoke,.bmx-lamp,.bmx-vehicle,.bmx-particle,
+  .bmx-globe-map,.bmx-atmo,.bmx-node,.bmx-arc,.bmx-orbit,.bmx-globe-pulse,
+  .bmx-wave,.bmx-wave-lift,.bmx-tele-dot,.bmx-tele-pulse,.bmx-tick,
+  .bmx-rise,.bmx-logo-in,.bmx-logo-sheen,.bmx-panel-in,.bmx-sheen,
+  .bmx-btn-sheen,.bmx-status-dot,.bmx-spin,.bmx-ok,.bmx-nudge,.bmx-msg-in,.bmx-screen-in,
+  .bmx-filled-dot {
+    animation:none !important;
+  }
+  .bmx-par { transform:none !important; transition:none !important; }
+  .bmx-rise,.bmx-logo-in,.bmx-panel-in,.bmx-msg-in { opacity:1 !important; filter:none !important; }
+}
+
+/* --------------------------------------------------------------------
+ * Coordination — register tabs, cards and panels
+ *
+ * Rules kept from a bug that cost a day: nothing here animates height or
+ * max-height, and every entrance uses `backwards` rather than `both`.
+ * `both` pins the final transform and then beats every hover transition
+ * that follows, which reads as "the hover stopped working".
+ * ------------------------------------------------------------------ */
+
+/* The sliding pill behind the active register tab. */
+.bmx-seg { position:relative; isolation:isolate; }
+.bmx-seg-pill {
+  position:absolute; inset:4px auto 4px 4px; z-index:-1; border-radius:12px;
+  background:linear-gradient(135deg, rgb(var(--c-leaf) / .95), rgb(var(--c-sky) / .78));
+  box-shadow:0 8px 24px -12px rgb(var(--c-leaf) / .8), inset 0 1px 0 rgba(255,255,255,.22);
+  transition:transform .42s cubic-bezier(.22,1,.36,1), width .42s cubic-bezier(.22,1,.36,1);
+  will-change:transform,width;
+}
+.bmx-seg-btn { transition:color .3s ease, opacity .3s ease; }
+
+/* A card that answers the mouse without shouting — and without moving.
+   No transform and no will-change:transform here on purpose: either one
+   makes the card the positioning parent of any fixed overlay opened
+   inside it, which is what cut modals off and made them jump. */
+.bmx-card {
+  transition:border-color .34s ease, box-shadow .34s ease;
+}
+.bmx-card:hover {
+  
+  box-shadow:0 18px 40px -28px rgb(var(--c-leaf) / .55);
+}
+
+/* Row entrance, staggered by index from the component. */
+@keyframes bmx-row-in {
+  from { opacity:0; transform:translateY(9px) scale(.996); filter:blur(3px); }
+  to   { opacity:1; transform:none; filter:blur(0); }
+}
+.bmx-row-in { animation:bmx-row-in .5s cubic-bezier(.22,1,.36,1) backwards; }
+
+/* The number about to be issued — a slow breath so it reads as live. */
+@keyframes bmx-next-breathe {
+  0%,100% { opacity:.72; }
+  50%     { opacity:1; }
+}
+.bmx-next { animation:bmx-next-breathe 3.4s ease-in-out infinite; }
+
+/* A frozen row carries a faint diagonal grain rather than a grey wash —
+   it must look deliberate, not disabled-by-accident. */
+.bmx-frozen {
+  background-image:repeating-linear-gradient(
+    135deg, rgb(var(--c-line) / .5) 0 1px, transparent 1px 9px
+  );
+}
+
+/* Progress sweep used on the import preview. */
+@keyframes bmx-sweep-x { from { transform:translateX(-100%); } to { transform:translateX(100%); } }
+.bmx-sweep-x { animation:bmx-sweep-x 1.25s cubic-bezier(.4,0,.2,1) infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .bmx-seg-pill, .bmx-card { transition:none; }
+  .bmx-row-in, .bmx-next, .bmx-sweep-x { animation:none; }
+}
+
+/* ==================================================================
+   PREMIUM MOTION LAYER — pass 8
+   ------------------------------------------------------------------
+   One orchestrated feel across the app rather than scattered effects:
+   pages rise in once, cards catch a light sweep on hover, the phone
+   sheet arrives like a native bottom sheet, and anything frozen or
+   flagged breathes just enough to be noticed. Everything here honours
+   prefers-reduced-motion and the app's own .reduce-motion switch.
+   ================================================================== */
+
+/* ---- Page entrance: every routed screen rises in as one piece. ---- */
+@keyframes bmx-page-in {
+  from { opacity:0; transform:translateY(14px); filter:blur(5px); }
+  to   { opacity:1; transform:none; filter:blur(0); }
+}
+main > * { animation:bmx-page-in .55s cubic-bezier(.22,1,.36,1) backwards; }
+
+/* ---- Card light sweep: a sheen that crosses on hover, once. ---- */
+.bmx-card, .glass { position:relative; overflow:hidden; }
+.bmx-card::after, .glass::after {
+  content:""; position:absolute; inset:0; pointer-events:none;
+  background:linear-gradient(105deg, transparent 38%, rgb(255 255 255 / .07) 48%, rgb(var(--c-leaf) / .10) 52%, transparent 62%);
+  transform:translateX(-120%);
+  transition:none; opacity:0;
+}
+.bmx-card:hover::after, .glass:hover::after {
+  opacity:1; transform:translateX(120%);
+  transition:transform .9s cubic-bezier(.22,1,.36,1), opacity .2s ease;
+}
+
+/* ---- Gradient hairline that wakes on hover — the premium border. ---- */
+.bmx-card { border-color:rgb(var(--c-line) / .9); }
+.bmx-card:hover { border-color:rgb(var(--c-leaf) / .35); }
+
+/* ---- Bottom sheet (phone): arrives with weight, like a native sheet. */
+@keyframes bmx-sheet-up {
+  from { transform:translateY(48px); opacity:.4; }
+  to   { transform:none; opacity:1; }
+}
+.bmx-sheet-up { animation:bmx-sheet-up .42s cubic-bezier(.22,1,.36,1); }
+
+/* ---- Tile numbers: count-in pop for summary tiles. ---- */
+@keyframes bmx-pop-in {
+  0% { opacity:0; transform:scale(.92) translateY(4px); }
+  60% { opacity:1; transform:scale(1.015); }
+  100% { transform:none; }
+}
+.bmx-pop-in { animation:bmx-pop-in .5s cubic-bezier(.22,1,.36,1) backwards; }
+
+/* ---- Attention breathe: missing-document chips pulse gently. ---- */
+@keyframes bmx-attn {
+  0%,100% { box-shadow:0 0 0 0 rgb(244 63 94 / 0); }
+  50%     { box-shadow:0 0 0 4px rgb(244 63 94 / .12); }
+}
+.bmx-attn { animation:bmx-attn 2.6s ease-in-out infinite; }
+
+/* ---- Sidebar item micro-slide. ---- */
+aside nav a { transition:transform .28s cubic-bezier(.22,1,.36,1), background-color .28s ease, color .28s ease; }
+aside nav a:hover { transform:translateX(3px); }
+
+/* ---- Focus ring, everywhere, consistently. ---- */
+:where(button, a, input, select, textarea):focus-visible {
+  outline:none;
+  box-shadow:0 0 0 3px rgb(var(--c-leaf) / .28);
+  border-radius:inherit;
+}
+
+/* ---- Reduced motion: the whole layer steps aside. ---- */
+@media (prefers-reduced-motion: reduce) {
+  main > * { animation:none; }
+  .bmx-card::after, .glass::after { display:none; }
+  .bmx-sheet-up, .bmx-pop-in, .bmx-attn { animation:none; }
+  aside nav a:hover { transform:none; }
+}
+.reduce-motion main > *,
+.reduce-motion .bmx-sheet-up, .reduce-motion .bmx-pop-in, .reduce-motion .bmx-attn { animation:none !important; }
+.reduce-motion .bmx-card::after, .reduce-motion .glass::after { display:none; }
+
+/* ==================================================================
+   DEEP MOSS × LIME VOLTAGE — the Wise-grade system pass
+   ------------------------------------------------------------------
+   Adapted from wise.com's design language for an enterprise app:
+   Forest Ink carries the weight, one lime note punctuates it, pills
+   are the default shape for anything pressable, surfaces are flat
+   with hairline borders, and motion is crisp rather than floaty.
+   ================================================================== */
+
+/* ---- Pills are foundational, not decorative. One rule turns every
+   button and chip in 49 screens into the system's shape language. ---- */
+.bmx-btn, .bmx-chip { border-radius: 9999px !important; }
+.bmx-btn { letter-spacing: -0.005em; }
+
+/* ---- Flat premium: cards drop the glass blur for a Fog surface and a
+   hairline. The sheen sweep from the motion layer stays — it is the one
+   permitted flourish, light on a flat surface rather than depth. ---- */
+.glass {
+  background: rgb(var(--c-bg-soft)) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  border: 1px solid rgb(var(--c-line) / .9) !important;
+  box-shadow: rgb(var(--c-text) / .04) 0 1px 2px !important;
+}
+.glass:hover { border-color: rgb(var(--c-leaf) / .35) !important; }
+
+/* ---- The voltage edge: pressable things answer with the lime note,
+   never with a glow cloud. ---- */
+.bmx-btn:hover:not(:disabled) {
+  box-shadow: 0 0 0 2px rgb(var(--c-volt) / .55), 0 6px 18px -12px rgb(var(--c-leaf) / .6);
+}
+.bmx-btn:active:not(:disabled) { box-shadow: 0 0 0 2px rgb(var(--c-volt) / .8); }
+.bmx-btn:focus-visible { box-shadow: 0 0 0 3px rgb(var(--c-volt) / .7); }
+.bmx-input:focus {
+  border-color: rgb(var(--c-leaf) / .6) !important;
+  box-shadow: 0 0 0 3px rgb(var(--c-volt) / .28) !important;
+}
+
+/* ---- Display voice: Inter Black, tightly tracked — the "shout"
+   reserved for brand moments (sidebar mark, splash, login, page h1). */
+.biome-shout {
+  font-family: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  font-weight: 900;
+  letter-spacing: -0.035em;
+}
+main h1 { letter-spacing: -0.03em !important; }
+
+/* ---- The forest rail: the sidebar is the app's inverted section —
+   Forest Ink in BOTH themes, so the brand's gravity anchors every
+   screen the way Wise's dark sections anchor its pages. ---- */
+.forest-rail {
+  background: linear-gradient(180deg, #14300a 0%, #0e2405 60%, #0b1d04 100%);
+  border-right: 1px solid rgb(159 232 112 / .14);
+}
+.forest-rail::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(90% 40% at 50% 0%, rgb(159 232 112 / .07) 0%, transparent 70%);
+}
+.forest-rail, .forest-rail * { --tw-text-opacity: 1; }
+.rail-label { color: rgb(226 246 213 / .55); }
+.rail-item { color: rgb(226 246 213 / .78); border-radius: 9999px; }
+.rail-item:hover { color: #ffffff; background: rgb(255 255 255 / .07); }
+.rail-item.is-active {
+  background: rgb(159 232 112);
+  color: #163300;
+  font-weight: 700;
+  box-shadow: 0 6px 20px -10px rgb(159 232 112 / .7);
+}
+.rail-item.is-active svg { color: #163300 !important; }
+.rail-item.is-active .rail-tint { background: rgb(22 51 0 / .14) !important; color: #163300 !important; }
+
+/* ---- Attention + status accents re-tuned to the palette ---- */
+.bmx-attn { animation-name: bmx-attn; }
+@keyframes bmx-attn {
+  0%,100% { box-shadow: 0 0 0 0 rgb(203 39 47 / 0); }
+  50%     { box-shadow: 0 0 0 4px rgb(203 39 47 / .14); }
+}
+
+/* ---- Crisper motion curve for the whole chrome ---- */
+.bmx-btn, .bmx-chip, .bmx-card, .rail-item {
+  transition-timing-function: cubic-bezier(.19, 1, .22, 1);
+}
+
+/* ---- Selection + scrollbar carry the brand quietly ---- */
+::selection { background: rgb(var(--c-volt) / .45); color: #163300; }
+* { scrollbar-width: thin; scrollbar-color: rgb(var(--c-leaf) / .45) transparent; }
+
+@media (prefers-reduced-motion: reduce) {
+  .bmx-btn:hover:not(:disabled) { box-shadow: 0 0 0 2px rgb(var(--c-volt) / .55); }
+}
+
+/* ==================================================================
+   VISIBILITY REPAIR — pass 12
+   ------------------------------------------------------------------
+   Two real complaints, two root causes:
+   1. Native <select> popups opened WHITE on the dark theme, because
+      color-scheme was never declared — the OS painted its own light
+      controls. Declaring it is the fix; the option styling below is
+      the belt to that suspender.
+   2. Form fields were invisible: inputs used bg-biome-bg INSIDE panels
+      that are also bg-biome-bg — a black field on a black page with a
+      hairline border. Fields now sit one surface step lighter than
+      whatever they are on, globally, without touching 49 screens.
+   ================================================================== */
+
+/* ---- 1. Tell the browser which world it is painting ---- */
+:root, html[data-theme="command"] { color-scheme: dark; }
+
+/* Native dropdown lists follow the theme even where the OS ignores
+   color-scheme (Chromium on Windows honours these on <option>). */
+select { background-color: rgb(var(--c-surface)); color: rgb(var(--c-text)); }
+select option, select optgroup {
+  background-color: rgb(var(--c-bg-soft));
+  color: rgb(var(--c-text));
+}
+
+/* ---- 2. Fields step OFF the surface they sit on ---- */
+input.bmx-input, select.bmx-input, textarea.bmx-input,
+.bmx-input input, .bmx-input select, .bmx-input textarea {
+  background-color: rgb(var(--c-surface)) !important;
+  border-color: rgb(var(--c-line)) !important;
+}
+.bmx-input::placeholder { color: rgb(var(--c-muted) / .65); }
+
+/* ---- 3. Dark-theme contrast raised to readable ----
+   Text and hairlines were technically present, practically invisible.
+   Same names, brighter values; light theme untouched. */
+:root, html[data-theme="command"] {
+  --c-text: 238 244 234;
+  --c-muted: 178 188 170;
+  --c-line: 58 70 50;
+  --c-bg-soft: 22 28 18;
+  --c-surface: 31 40 25;
+}
+
+/* ---- 4. Cards separate from the page: a lifted surface, a real
+   border, and a faint top light — flat, but no longer camouflaged. */
+.glass, .bmx-card {
+  border-color: rgb(var(--c-line)) !important;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / .04),
+    0 1px 2px rgb(0 0 0 / .35) !important;
+}
+
+/* ---- 5. The page-entrance blur read as "washed out" — motion stays,
+   fog goes. ---- */
+@keyframes bmx-page-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: none; }
+}
+
+
+/* ==================================================================
+   FONT CHOICES + TYPOGRAPHY HYGIENE — pass 19
+   ================================================================== */
+html[data-font="inter"]   { --font-body-active: var(--font-inter);      --font-display-active: var(--font-space-grotesk); }
+html[data-font="manrope"] { --font-body-active: var(--font-manrope);    --font-display-active: var(--font-manrope); }
+html[data-font="jakarta"] { --font-body-active: var(--font-jakarta);    --font-display-active: var(--font-jakarta); }
+html[data-font="plex"]    { --font-body-active: var(--font-plex-sans);  --font-display-active: var(--font-plex-sans); }
+html[data-font="sora"]    { --font-body-active: var(--font-sora);       --font-display-active: var(--font-sora); }
+html[data-font="grotesk"] { --font-body-active: var(--font-space-grotesk); --font-display-active: var(--font-space-grotesk); }
+body { font-family: var(--font-body-active, var(--font-inter)), ui-sans-serif, system-ui, sans-serif; font-feature-settings: "cv11", "ss01", "tnum"; }
+.biome-shout { font-family: var(--font-display-active, var(--font-inter)), ui-sans-serif, system-ui, sans-serif; }
+
+/* Enum values rendered as chips ("low_balance", "auto", "renewal_due")
+   read as proper labels: first letter capitalised, underscores gone in
+   the markup where possible; this covers what the markup missed. */
+span.rounded-full:not(.uppercase):not(.normal-case) { text-transform: capitalize; }
+h1, h2, h3, th, label > span:first-child { text-transform: none; }
+
+
+/* ==================================================================
+   FONTS — bundled families (pass 21). The variables the font picker
+   switches now point at real @font-face names shipped with the app.
+   ================================================================== */
+:root {
+  --font-inter: "Inter"; --font-manrope: "Manrope"; --font-jakarta: "Plus Jakarta Sans";
+  --font-plex-sans: "IBM Plex Sans"; --font-sora: "Sora"; --font-space-grotesk: "Space Grotesk"; --font-plex-mono: "IBM Plex Mono";
+}
+body, input, select, textarea, button { font-family: var(--font-body-active, "Inter"), "Inter", ui-sans-serif, system-ui, sans-serif; }
+.font-mono, code, kbd, pre { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+
+/* ==================================================================
+   BIOME OS 3 — premium surface layer (pass 21)
+   ------------------------------------------------------------------
+   Gradient hairline borders (background-clip trick), primary buttons
+   with an inner lime glow, active-pill glow, and depth on hover. Reads
+   the same tokens the themes already set, so light/dark both benefit.
+   ================================================================== */
+.glass, .bmx-card {
+  border: 1px solid transparent !important;
+  background:
+    linear-gradient(rgb(var(--c-bg-soft)), rgb(var(--c-bg-soft))) padding-box,
+    linear-gradient(135deg, rgb(var(--c-line)) 0%, rgb(var(--c-leaf) / .45) 55%, rgb(var(--c-line)) 100%) border-box !important;
+  transition: transform .35s cubic-bezier(.19,1,.22,1), box-shadow .35s cubic-bezier(.19,1,.22,1);
+}
+.glass:hover, .bmx-card:hover { box-shadow: 0 18px 40px -24px rgb(0 0 0 / .55), 0 0 0 1px rgb(var(--c-volt) / .18) !important; }
+
+.bmx-btn.bg-biome-leaf, .bmx-btn[class*="bg-biome-leaf"] {
+  background-image: linear-gradient(180deg, rgb(var(--c-leaf) / 1), rgb(var(--c-leaf) / .85)) !important;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .18), 0 8px 24px -12px rgb(var(--c-leaf) / .9);
+}
+.rail-item.is-active { box-shadow: 0 0 0 1px rgb(159 232 112 / .6), 0 10px 30px -12px rgb(159 232 112 / .9); }
+h1.biome-shout { text-shadow: 0 1px 0 rgb(0 0 0 / .08); }
+html[data-theme="dark"] body, html[data-theme="command"] body { background: radial-gradient(80% 60% at 10% 0%, rgb(var(--c-leaf) / .10) 0%, transparent 55%), rgb(var(--c-bg)); }
+
+
+/* ==================================================================
+   FX LAYER (pass 23) — ripples, HUD frames, shimmer, live borders
+   ================================================================== */
+.fx-ripple { position: absolute; border-radius: 9999px; background: radial-gradient(circle, rgb(var(--c-volt) / .45) 0%, rgb(var(--c-volt) / 0) 70%); transform: scale(0); animation: fx-ripple .65s cubic-bezier(.2,.8,.2,1) forwards; pointer-events: none; }
+@keyframes fx-ripple { to { transform: scale(1); opacity: 0; } }
+
+/* HUD corner brackets on cards — appear on hover, game-style */
+.bmx-card, .glass { position: relative; }
+.bmx-card::before, .glass::before { content: ""; position: absolute; inset: 6px; border-radius: inherit; pointer-events: none; opacity: 0; transition: opacity .35s;
+  background:
+    linear-gradient(rgb(var(--c-volt)), rgb(var(--c-volt))) top left / 14px 1.5px no-repeat, linear-gradient(rgb(var(--c-volt)), rgb(var(--c-volt))) top left / 1.5px 14px no-repeat,
+    linear-gradient(rgb(var(--c-volt)), rgb(var(--c-volt))) top right / 14px 1.5px no-repeat, linear-gradient(rgb(var(--c-volt)), rgb(var(--c-volt))) top right / 1.5px 14px no-repeat,
+    linear-gradient(rgb(var(--c-volt)), rgb(var(--c-volt))) bottom left / 14px 1.5px no-repeat, linear-gradient(rgb(var(--c-volt)), rgb(var(--c-volt))) bottom left / 1.5px 14px no-repeat,
+    linear-gradient(rgb(var(--c-volt)), rgb(var(--c-volt))) bottom right / 14px 1.5px no-repeat, linear-gradient(rgb(var(--c-volt)), rgb(var(--c-volt))) bottom right / 1.5px 14px no-repeat; }
+.bmx-card:hover::before, .glass:hover::before { opacity: .9; }
+
+/* Live conic border on hover (rotating light around the card) */
+@property --fx-angle { syntax: "<angle>"; initial-value: 0deg; inherits: false; }
+.bmx-card:hover, .glass:hover { --fx-angle: 0deg; animation: fx-spin 3s linear infinite;
+  background: linear-gradient(rgb(var(--c-bg-soft)), rgb(var(--c-bg-soft))) padding-box, conic-gradient(from var(--fx-angle), rgb(var(--c-line)) 0%, rgb(var(--c-volt)) 12%, rgb(var(--c-line)) 30%, rgb(var(--c-line)) 100%) border-box !important; }
+@keyframes fx-spin { to { --fx-angle: 360deg; } }
+
+/* Shimmer skeletons */
+.animate-pulse { background-image: linear-gradient(90deg, rgb(var(--c-line) / .6) 0%, rgb(var(--c-volt) / .25) 50%, rgb(var(--c-line) / .6) 100%) !important; background-size: 200% 100%; animation: fx-shimmer 1.4s linear infinite !important; }
+@keyframes fx-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+/* Primary buttons: glow breath + press */
+.bmx-btn { transition: transform .15s cubic-bezier(.2,.8,.2,1), box-shadow .3s, filter .3s; }
+.bmx-btn:hover { transform: translateY(-1px); filter: saturate(1.15); box-shadow: var(--glow); }
+.bmx-btn:active { transform: translateY(0) scale(.98); }
+
+/* Headline glow per theme and the eyebrow line */
+h1.biome-shout span.text-biome-leafBright { text-shadow: 0 0 22px rgb(var(--c-volt) / .45); }
+
+/* Sidebar rail items: icon tile pops */
+.rail-item .rail-tint { transition: transform .25s cubic-bezier(.2,.8,.2,1), box-shadow .25s; }
+.rail-item:hover .rail-tint { transform: translateY(-1px) scale(1.08) rotate(-3deg); box-shadow: 0 6px 16px -8px rgb(var(--c-volt) / .8); }
+
+/* Cursor: the native arrow ALWAYS stays visible. The glow is decoration
+   that follows it — never a replacement. Hiding the arrow (cursor:none) left
+   the Command/Midnight themes with no pointer at all whenever the glow was
+   switched off (reduce-motion, phone pages, modals above z-9998). */
+html[data-theme="midnight"] body, html[data-theme="command"] body { cursor: auto; }

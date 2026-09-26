@@ -1,0 +1,44 @@
+BIOME ERP — LOGIN INTERFACE ANIMATION
+Implementation / Test Report
+Date: 2026-08-09
+
+SCOPE
+- Changes in this pass are scoped to the Login Interface.
+- Existing authentication/testing behavior is preserved.
+- Dashboard and ERP module UI were not intentionally modified for this animation task.
+
+IMPLEMENTED
+1. Supplied reference video character animation extracted from the original video.
+2. Orange reference background removed from the character animation using chroma-key processing.
+3. Character animation packaged as a transparent GIF for browser compatibility.
+4. Biomass-themed background added: orange/golden environment, biomass plant, trees, birds, leaves and industrial atmosphere.
+5. Background receives slow parallax/pan movement.
+6. Animated leaves, light glow and atmospheric particles added with CSS.
+7. Login card redesigned as a premium BIOME ERP login interface.
+8. Existing testing-mode authentication preserved: any credentials continue to enter the ERP.
+9. Reduced-motion handling included for the new login animation.
+
+VERIFICATION PERFORMED
+PASS — app/login/page.tsx transpile/syntax check.
+PASS — components/brand/BiomassLoginScene.tsx transpile/syntax check.
+PASS — extracted character GIF has RGBA transparency.
+PASS — GIF is 20 FPS and loops continuously.
+PASS — supplied source video duration/frames inspected.
+PASS — static composite preview visually inspected.
+PASS — login-specific assets exist under public/login/.
+
+NOT VERIFIED IN THIS ENVIRONMENT
+- Full `npm run build` could not be executed because the project dependencies/node_modules are not installed in this execution environment and dependency installation could not complete here.
+- Live Windows/Chrome runtime of the Next.js application was therefore not certified from this environment.
+
+RECOMMENDED LOCAL TEST
+npm install
+npm run build
+npm run dev
+Then open /login and verify:
+- reference character animation
+- biomass background movement
+- login inputs/button
+- Enter key login
+- password show/hide
+- login -> dashboard transition

@@ -1,0 +1,5 @@
+import { FileText, MessageSquareText, ListChecks, FlaskConical, FolderOpen, Building2, FolderSearch, ScanLine, Table2, Truck, Package, Factory, Map, Handshake, Users, FileSignature, Wallet, BookOpen, BarChart3, ShieldCheck, CalendarDays, Activity, Radar, Gavel, Sparkles, Settings, Cloud, LifeBuoy, Wrench, Inbox, Camera, Mic, ClipboardList, MessageSquare, Network, GraduationCap, LayoutDashboard, type LucideIcon } from "lucide-react";
+
+/** lucide icons by the names used in lib/featureMap.ts */
+export const ICONS: Record<string, LucideIcon> = { FileText, MessageSquareText, ListChecks, FlaskConical, FolderOpen, Building2, FolderSearch, ScanLine, Table2, Truck, Package, Factory, Map, Handshake, Users, FileSignature, Wallet, BookOpen, BarChart3, ShieldCheck, CalendarDays, Activity, Radar, Gavel, Sparkles, Settings, Cloud, LifeBuoy, Wrench, Inbox, Camera, Mic, ClipboardList, MessageSquare, Network, GraduationCap, LayoutDashboard };
+export function Icon({ name, size = 18, className = "" }: { name: string; size?: number; className?: string }) { const C = ICONS[name] || FileText; return <C size={size} className={className} />; }

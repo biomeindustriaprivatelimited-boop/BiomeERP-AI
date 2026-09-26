@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requirePermission } from "@/lib/authServer";
+import { runVision, extractJson as extractJsonShared, diagnoseKeys, AiError } from "@/lib/aiProvider";
 
 // This must stay a server-side route: it's the only place API keys ever
 // touch the network. The browser never sees them.
@@ -83,111 +85,25 @@ interface ParsedImage {
 function parseImages(rawImages: string[]): ParsedImage[] {
   const parsed: ParsedImage[] = [];
   for (const dataUrl of rawImages) {
-    const match = dataUrl.match(/^data:(image\/[a-zA-Z+.-]+);base64,(.+)$/);
+    // Accept both images and PDFs — both providers read PDFs natively, so
+    // a user can drop a multi-page bill straight in without splitting it.
+    const match = dataUrl.match(/^data:(image\/[a-zA-Z+.-]+|application\/pdf);base64,(.+)$/);
     if (match) parsed.push({ mediaType: match[1], data: match[2] });
   }
   return parsed;
 }
 
-function extractJson(raw: string): unknown {
-  const cleaned = raw
-    .trim()
-    .replace(/^```(?:json)?\s*/i, "")
-    .replace(/```\s*$/, "")
-    .trim();
-  return JSON.parse(cleaned);
-}
-
-class UpstreamError extends Error {
-  status: number;
-  constructor(message: string, status: number) {
-    super(message);
-    this.status = status;
-  }
-}
-
-/** Google Gemini — tried first when configured, since it has a genuine
- *  no-credit-card-required free tier that includes image understanding. */
-async function callGemini(apiKey: string, images: ParsedImage[]): Promise<unknown> {
-  const parts: any[] = [];
-  images.forEach((img, i) => {
-    if (images.length > 1) parts.push({ text: `Page ${i + 1} of ${images.length}:` });
-    parts.push({ inline_data: { mime_type: img.mediaType, data: img.data } });
-  });
-  parts.push({ text: USER_INSTRUCTION });
-
-  const model = "gemini-flash-latest";
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-        contents: [{ role: "user", parts }],
-        generationConfig: { maxOutputTokens: 4096, responseMimeType: "application/json" },
-      }),
-    }
-  );
-
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new UpstreamError(`Gemini API error (${res.status}): ${errText.slice(0, 400)}`, 502);
-  }
-
-  const data = await res.json();
-  const text: string = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
-  return extractJson(text);
-}
-
-/** Anthropic — used when GEMINI_API_KEY isn't set but ANTHROPIC_API_KEY is,
- *  for anyone who prefers Claude or already has API credits. */
-async function callAnthropic(apiKey: string, images: ParsedImage[]): Promise<unknown> {
-  const content: any[] = [];
-  images.forEach((img, i) => {
-    if (images.length > 1) content.push({ type: "text", text: `Page ${i + 1} of ${images.length}:` });
-    content.push({ type: "image", source: { type: "base64", media_type: img.mediaType, data: img.data } });
-  });
-  content.push({ type: "text", text: USER_INSTRUCTION });
-
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-6",
-      max_tokens: 4096,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: "user", content }],
-    }),
-  });
-
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new UpstreamError(`Anthropic API error (${res.status}): ${errText.slice(0, 400)}`, 502);
-  }
-
-  const data = await res.json();
-  const textBlock = (data.content ?? []).find((b: any) => b.type === "text");
-  return extractJson(textBlock?.text ?? "");
-}
+// PDFs are supported by both providers natively; images too. The
+// provider module handles which model actually runs and falls back when
+// one fails, so this route just assembles the request.
 
 export async function POST(req: NextRequest) {
-  const geminiKey = process.env.GEMINI_API_KEY;
-  const anthropicKey = process.env.ANTHROPIC_API_KEY;
+  const auth = await requirePermission(req, "documents");
+  if ("response" in auth) return auth.response;
 
-  if (!geminiKey && !anthropicKey) {
-    return NextResponse.json(
-      {
-        error:
-          "No AI API key is configured. Add GEMINI_API_KEY (free — get one at aistudio.google.com/apikey) or ANTHROPIC_API_KEY to a .env.local file in the project root (see .env.local.example) and restart `npm run dev`.",
-        code: "NO_API_KEY",
-      },
-      { status: 500 }
-    );
+  const diag = diagnoseKeys();
+  if (!diag.configured) {
+    return NextResponse.json({ error: diag.problem, code: "NO_API_KEY" }, { status: 400 });
   }
 
   let body: { images?: string[] };
@@ -201,9 +117,9 @@ export async function POST(req: NextRequest) {
   if (!rawImages.length) {
     return NextResponse.json({ error: "No images provided." }, { status: 400 });
   }
-  if (rawImages.length > 6) {
+  if (rawImages.length > 10) {
     return NextResponse.json(
-      { error: "Too many pages — please send at most 6 images per document." },
+      { error: "Too many pages — please send at most 10 images per document." },
       { status: 400 }
     );
   }
@@ -214,18 +130,24 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const result = geminiKey ? await callGemini(geminiKey, images) : await callAnthropic(anthropicKey!, images);
-    return NextResponse.json({ result });
+    const { text, provider } = await runVision({
+      system: SYSTEM_PROMPT,
+      userText: USER_INSTRUCTION,
+      parts: images.map((img) => ({ mediaType: img.mediaType, data: img.data })),
+      maxTokens: 8192,
+    });
+    const result = extractJsonShared(text);
+    return NextResponse.json({ result, provider });
   } catch (err: any) {
-    if (err instanceof UpstreamError) {
-      return NextResponse.json({ error: err.message }, { status: err.status });
+    if (err instanceof AiError) {
+      return NextResponse.json({ error: err.message, provider: err.provider }, { status: err.status });
     }
-    if (err instanceof SyntaxError) {
+    if (err instanceof SyntaxError || /JSON/.test(err?.message || "")) {
       return NextResponse.json(
-        { error: "The AI's response could not be parsed as JSON." },
+        { error: "The AI's response could not be parsed. Please try again." },
         { status: 502 }
       );
     }
-    return NextResponse.json({ error: err?.message || "Request to the AI API failed." }, { status: 500 });
+    return NextResponse.json({ error: err?.message || "Request to the AI failed." }, { status: 500 });
   }
 }

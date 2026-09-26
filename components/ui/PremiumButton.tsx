@@ -74,7 +74,7 @@ export default function PremiumButton({
       {ripples.map((r) => (
         <span
           key={r.id}
-          className="pointer-events-none absolute rounded-full bg-white/30"
+          className="pointer-events-none absolute rounded-full bg-biome-hover"
           style={{
             left: r.x,
             top: r.y,

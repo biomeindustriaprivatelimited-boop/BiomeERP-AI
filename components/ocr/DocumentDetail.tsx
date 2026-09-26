@@ -85,7 +85,7 @@ export default function DocumentDetail({
                 <Sparkles size={10} /> AI-read
               </span>
             ) : doc.engine === "tesseract" ? (
-              <span className="flex items-center gap-1 rounded-full bg-white/8 px-2 py-0.5 text-[10px] font-medium text-biome-muted">
+              <span className="flex items-center gap-1 rounded-full bg-biome-hover px-2 py-0.5 text-[10px] font-medium text-biome-muted">
                 <ScanLine size={10} /> Offline OCR
               </span>
             ) : null}
@@ -167,7 +167,7 @@ export default function DocumentDetail({
           {doc.labReport.table && doc.labReport.table.headers.length > 0 && (
             <div className="mb-3 max-h-40 overflow-auto rounded-lg border border-biome-line/60">
               <table className="w-full text-left text-[10px]">
-                <thead className="bg-white/5 text-biome-muted">
+                <thead className="bg-biome-hover text-biome-muted">
                   <tr>
                     {doc.labReport.table.headers.map((h) => (
                       <th key={h} className="whitespace-nowrap px-2 py-1.5 font-medium">
@@ -226,7 +226,7 @@ export default function DocumentDetail({
           </div>
           <div className="max-h-40 overflow-auto rounded-lg border border-biome-line/60">
             <table className="w-full text-left text-[10px]">
-              <thead className="bg-white/5 text-biome-muted">
+              <thead className="bg-biome-hover text-biome-muted">
                 <tr>
                   {doc.table.headers.map((h) => (
                     <th key={h} className="whitespace-nowrap px-2 py-1.5 font-medium">
@@ -272,7 +272,7 @@ export default function DocumentDetail({
                 <input
                   value={field.value}
                   onChange={(e) => onFieldChange(doc.id, key, e.target.value)}
-                  className="w-full rounded-lg border border-biome-line bg-white/5 px-2.5 py-1.5 text-xs text-biome-text outline-none placeholder:text-biome-muted/50 focus:border-biome-leaf"
+                  className="w-full rounded-lg border border-biome-line bg-biome-hover px-2.5 py-1.5 text-xs text-biome-text outline-none placeholder:text-biome-muted/50 focus:border-biome-leaf"
                 />
               </div>
             ))}

@@ -36,7 +36,7 @@ export default function MultiDropzone({
       className={`flex min-h-[160px] cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed p-6 text-center transition-colors ${
         dragOver
           ? "border-biome-leafBright bg-biome-leaf/10"
-          : "border-biome-line bg-white/[0.02] hover:bg-white/[0.04]"
+          : "border-biome-line bg-biome-hover hover:bg-biome-hover"
       }`}
     >
       <input
@@ -52,7 +52,7 @@ export default function MultiDropzone({
       />
       <motion.div
         animate={dragOver ? { y: -4 } : { y: 0 }}
-        className="rounded-xl bg-white/5 p-3 text-biome-leafBright"
+        className="rounded-xl bg-biome-hover p-3 text-biome-leafBright"
       >
         <UploadCloud size={26} />
       </motion.div>
