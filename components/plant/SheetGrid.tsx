@@ -263,6 +263,19 @@ export default function SheetGrid({
     };
   }, [kind, plant]);
 
+  // Coordination match (transport only): for each of THIS plant's
+  // dispatches, whether the coordination team's manufacturing register has
+  // the same vehicle on that date. Only a verdict — never their data.
+  const [match, setMatch] = useState<{ statuses: Record<string, string>; summary: any } | null>(null);
+  const loadMatch = useCallback(async () => {
+    if (kind !== "transport") return;
+    try {
+      const res = await fetch(`/api/plant-match?side=plant&plant=${plant}`, { cache: "no-store" });
+      if (res.ok) setMatch(await res.json());
+    } catch { /* a hint, not a blocker */ }
+  }, [kind, plant]);
+  useEffect(() => { loadMatch(); }, [loadMatch]);
+
   const save = useCallback(
     async (next: Record<string, any>[]) => {
       setSaving(true);
@@ -272,14 +285,14 @@ export default function SheetGrid({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ kind, plant, rows: next }),
         });
-        if (res.ok) setSavedAt(new Date());
+        if (res.ok) { setSavedAt(new Date()); loadMatch(); }
       } catch {
         /* the next edit tries again */
       } finally {
         setSaving(false);
       }
     },
-    [kind, plant]
+    [kind, plant, loadMatch]
   );
 
   // Saved shortly after typing stops, rather than on every keystroke.
@@ -425,6 +438,14 @@ export default function SheetGrid({
         <div>
           <h1 className="font-display text-xl font-semibold text-biome-text">{title}</h1>
           <p className="mt-1 max-w-2xl text-xs leading-relaxed text-biome-muted">{subtitle}</p>
+          {kind === "transport" && match?.summary && (
+            <p className="mt-1.5 flex flex-wrap gap-3 text-[11px]">
+              <span className="font-semibold text-biome-text">Coordination match:</span>
+              <span className="text-emerald-600">✓ {match.summary.matched} matched</span>
+              <span className="text-amber-600">⚠ {match.summary.weightDiffers} weight differs</span>
+              <span className="text-rose-500">✗ {match.summary.unmatched} not in coordination</span>
+            </p>
+          )}
         </div>
         <div className="flex flex-wrap gap-2">
           {kind === "biomass" && (
@@ -710,6 +731,7 @@ export default function SheetGrid({
                       </td>
                     ))}
                     <td className="whitespace-nowrap px-2 py-1">
+                      {kind === "transport" && match && <CoordMatch row={row} statuses={match.statuses} />}
                       {columns.some((c) => c.kind === "upload") && (
                         <button
                           onClick={() => verifyRow(i, row)}
@@ -781,4 +803,19 @@ export default function SheetGrid({
       </p>
     </div>
   );
+}
+
+
+/** ✓ / ⚠ / ✗ against the coordination manufacturing register, for one dispatch row. */
+function CoordMatch({ row, statuses }: { row: Record<string, any>; statuses: Record<string, string> }) {
+  const purpose = String(row.tripPurpose || "").trim();
+  const vehicle = String(row.vehicleNo || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const date = String(row.date || "").slice(0, 10);
+  if ((purpose && !/^supply$/i.test(purpose)) || !vehicle || !date) return null;
+  const st = statuses[`${date}|${vehicle}`];
+  const [txt, cls, tip] =
+    st === "matched" ? ["✓ Coord.", "text-emerald-600 border-emerald-500/35 bg-emerald-500/10", "Found in the coordination manufacturing register"]
+    : st === "weight_differs" ? ["⚠ Wt", "text-amber-600 border-amber-500/35 bg-amber-500/10", "Vehicle and date match coordination, but the weight differs"]
+    : ["✗ Coord.", "text-rose-500 border-rose-500/35 bg-rose-500/10", "Not in the coordination manufacturing register yet (same vehicle, date ±1 day)"];
+  return <span title={tip} className={`mr-1 rounded-full border px-1.5 py-0.5 text-[9px] font-bold ${cls}`}>{txt}</span>;
 }

@@ -64,12 +64,11 @@ export async function GET(req: NextRequest) {
   // see the other's book. A coordinator runs trading; a plant manager runs
   // their own site's manufacturing. Enforced here rather than in the page,
   // so the rule holds for anyone calling the API directly.
-  if (user.role === "coordinator" && reg !== "trading") {
-    return NextResponse.json(
-      { error: "The manufacturing register belongs to the plant managers. A coordinator sees the trading register.", trips: [] },
-      { status: 403 }
-    );
-  }
+  // The coordination team keeps BOTH registers: trading, and the
+  // manufacturing sheet of supplies leaving our plants. The plant
+  // manager's own dispatch (transport) sheet is a separate book; the two
+  // are compared by /api/plant-match, which hands each side only a
+  // matched / not-matched verdict — never the other side's figures.
   if (user.role === "plant_manager") {
     if (reg !== "manufacturing") {
       return NextResponse.json(

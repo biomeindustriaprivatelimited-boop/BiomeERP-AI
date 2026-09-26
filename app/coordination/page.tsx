@@ -118,8 +118,21 @@ export default function CoordinationPage() {
     } catch (err) { setError((err as Error).message); }
   }, [filters, business]);
   // Reload when anything is saved on any device — phone, other PC, other tab.
-  useLiveRefresh(() => load());
+  useLiveRefresh(() => { load(); loadMatch(); });
   useEffect(() => { load(); }, [load]);
+
+  // Plant dispatch match: for the manufacturing register, whether each
+  // trip's vehicle also appears in the plant's own dispatch sheet. Only the
+  // verdict comes back — never the plant's figures.
+  const [match, setMatch] = useState<{ statuses: Record<string, string>; summary: any } | null>(null);
+  const loadMatch = useCallback(async () => {
+    if (business !== "manufacturing") { setMatch(null); return; }
+    try {
+      const res = await fetch("/api/plant-match?side=coordination", { cache: "no-store" });
+      if (res.ok) setMatch(await res.json());
+    } catch { /* the badge is a hint; the register works without it */ }
+  }, [business]);
+  useEffect(() => { loadMatch(); }, [loadMatch]);
 
   const clients: ClientOption[] = data?.options?.clients || [];
   const series: SeriesOption[] = data?.series || [];
@@ -320,6 +333,15 @@ export default function CoordinationPage() {
       )}
 
       {/* ---- Who is losing the weight ---- */}
+      {manufacturing && match?.summary && (
+        <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-biome-line bg-biome-bgSoft px-4 py-3 text-[11.5px]">
+          <span className="font-semibold text-biome-text">Plant dispatch match</span>
+          <span className="text-emerald-600">✓ {match.summary.matched} matched</span>
+          <span className="text-amber-600">⚠ {match.summary.weightDiffers} weight differs</span>
+          <span className="text-rose-500">✗ {match.summary.unmatched} not in plant sheet</span>
+          <span className="text-[10.5px] text-biome-muted">Same plant (from Location), same vehicle, date ±1 day. Only the verdict is shared — not the plant&rsquo;s data.</span>
+        </div>
+      )}
       {(data?.bySupplier || []).some((p: any) => p.shortfallKg > 0) && !manufacturing && (
         <div className="grid gap-4 lg:grid-cols-2">
           <PartyCard title="Shortfall by supplier" icon={<Users size={15} />} rows={data.bySupplier} />
@@ -393,6 +415,7 @@ export default function CoordinationPage() {
                         {manufacturing ? "BIOME" : (t.supplier || "—")} <span className="text-biome-muted">→</span> {t.client || "—"}
                       </p>
                       <DocBadge type={t.docType} number={t.ourDocNo} />
+                      {manufacturing && match && <PlantMatchBadge status={match.statuses[t.id]} />}
                       <span className={`rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase tracking-[.1em] ${vCls}`}>
                         {vLabel}
                       </span>
@@ -1557,4 +1580,16 @@ function PoQuantityPicker({ type, party, value, qtyKg, onChange }: { type: "vend
       {exceeds && <p className="mt-1 rounded-lg border border-rose-500/40 bg-rose-500/[.08] px-2 py-1 text-[10px] font-semibold text-rose-500">⚠ PO BALANCE WARNING — this supply exceeds the remaining quantity by {mt(qtyKg - sel.remainingKg)}. Saving needs approval per PO settings.</p>}
     </div>
   );
+}
+
+
+/** Matched / not matched with the plant's own dispatch sheet — a verdict only. */
+function PlantMatchBadge({ status }: { status?: string }) {
+  if (status === "matched") {
+    return <span title="Same vehicle, plant and date found in the plant's dispatch sheet" className="rounded-full border border-emerald-500/35 bg-emerald-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[.08em] text-emerald-600">✓ Plant matched</span>;
+  }
+  if (status === "weight_differs") {
+    return <span title="Vehicle and date match the plant's dispatch sheet, but the weight is different — check with the plant" className="rounded-full border border-amber-500/35 bg-amber-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[.08em] text-amber-600">⚠ Plant weight differs</span>;
+  }
+  return <span title="This vehicle is not in the plant's dispatch sheet for that date (±1 day) — or the location does not name the plant" className="rounded-full border border-rose-500/35 bg-rose-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[.08em] text-rose-500">✗ Not in plant dispatch</span>;
 }
