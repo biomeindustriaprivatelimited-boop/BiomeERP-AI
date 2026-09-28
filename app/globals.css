@@ -1282,8 +1282,12 @@ html.reduce-motion[data-theme="command"] .pulse-live { animation: none !importan
 .bmx-field:focus-within .bmx-icon-lead { color:rgba(165,243,252,.9); transform:scale(1.08); }
 
 .bmx-toggle { transition:transform .25s cubic-bezier(.22,1,.36,1), color .2s ease, background-color .2s ease; }
-.bmx-toggle:hover { transform:translateY(-50%) scale(1.12); }
-.bmx-toggle:active { transform:translateY(-50%) scale(.94); }
+/* translateY(-50%) belongs ONLY to the absolutely-centred password eye.
+   On the card close (X) buttons it shoved the button half its height up
+   on hover — the pointer then left it, it dropped back, and it jittered
+   non-stop under the cursor. Everything else just changes colour. */
+.bmx-toggle.absolute:hover { transform:translateY(-50%) scale(1.12); }
+.bmx-toggle.absolute:active { transform:translateY(-50%) scale(.94); }
 
 /* Filled fields get a quiet confirmation, not a badge */
 @keyframes bmx-filled { from { opacity:0; transform:scale(.4); } to { opacity:1; transform:scale(1); } }
@@ -1764,3 +1768,18 @@ h1.biome-shout span.text-biome-leafBright { text-shadow: 0 0 22px rgb(var(--c-vo
    the Command/Midnight themes with no pointer at all whenever the glow was
    switched off (reduce-motion, phone pages, modals above z-9998). */
 html[data-theme="midnight"] body, html[data-theme="command"] body { cursor: auto; }
+
+
+/* ==================================================================
+   NO HOVER JITTER
+   ------------------------------------------------------------------
+   A hover effect that MOVES the element moves its hit area too: with the
+   pointer near an edge the element slides out from under it, un-hovers,
+   slides back, and shakes. Small icon buttons (close X, row actions) get
+   no movement at all; chips and fields lift with a shadow instead of
+   moving, so their hit area stays exactly where it was.
+   ================================================================== */
+.bmx-chip:hover { transform: none; box-shadow: 0 6px 16px -10px rgb(var(--c-volt) / .55); }
+.bmx-field:hover { transform: none; }
+button[aria-label="Close"], button[title^="Close"], [role="dialog"] header button { transform: none !important; }
+button[aria-label="Close"]:hover, button[title^="Close"]:hover { transform: none !important; }

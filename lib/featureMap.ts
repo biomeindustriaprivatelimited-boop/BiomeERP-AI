@@ -57,10 +57,16 @@ export const FEATURE_MAP: FeatureCategory[] = [
     features: [
       { id: "coordination", label: "Coordination", href: "/coordination", icon: "Truck", perm: "coordination", what: "Every supply trip from dispatch to receiving, with weights, shortages and PO links." },
       { id: "po", label: "PO Control", href: "/po", icon: "Package", perm: "operations", what: "Vendor and client purchase orders with balances computed live from linked supplies; exhaustion alerts and accounts email." },
-      { id: "transport", label: "Transport", href: "/transport", icon: "Truck", perm: "operations", what: "Transporters, vehicles and trips." },
-      { id: "plants", label: "Plants", href: "/plants", icon: "Factory", perm: "operations", what: "Rewari and Gangakhed — codes, allowances, contacts." },
-      { id: "stock", label: "Plant Stock · Spare parts", href: "/stock", icon: "Package", perm: "stock", what: "Spare parts in (GRN from registered vendors), on hand, issued to which machine; re-order alerts; Excel." },
       { id: "operations", label: "Operations Board", href: "/operations", icon: "Map", perm: "developer", what: "Every load in motion and what is late." },
+    ],
+  },
+  {
+    id: "plant", label: "Plant", tagline: "Everything that happens at the plant — biomass in, trucks out, spare parts and stores.", icon: "Factory", tone: "from-green-600/25 to-lime-400/10",
+    features: [
+      { id: "plants", label: "Biomass entry", href: "/plants", icon: "Factory", perm: "operations", what: "Biomass purchase sheet per plant — weights, deductions, amount, weighbridge slip checked against the entry." },
+      { id: "transport", label: "Transport entry", href: "/transport", icon: "Truck", perm: "operations", what: "Every vehicle out of the plant — dispatch/receiving weight, freight, driver; matched against coordination." },
+      { id: "stock", label: "Stock · spare parts & stores", href: "/stock", icon: "Package", perm: "stock", what: "Purchases with invoice/parchi upload, stock on hand, parts issued to each machine, re-order alerts — Tally-style stock." },
+      { id: "plant-vendors", label: "Plant vendors & clients", href: "/partners", icon: "Handshake", perm: "partners", what: "Register manufacturing-side vendors (biomass, spare parts, services) and clients with KYC." },
     ],
   },
   {

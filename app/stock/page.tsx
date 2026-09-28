@@ -191,6 +191,7 @@ function MoveForm({ kind, data, post, onDone }: { kind: "receipt" | "issue"; dat
   const [head, setHead] = useState<any>({ plant: data.myPlant || data.plants[0]?.code || "", date: today(), vendorId: "", invoiceNo: "", challanNo: "", machineId: "", issuedTo: "", purpose: "", remarks: "" });
   const [lines, setLines] = useState<any[]>([{ itemId: "", qty: "", rate: "" }]);
   const [busy, setBusy] = useState(false);
+  const [bills, setBills] = useState<File[]>([]);
   const items = (data.items as any[]).filter((i) => i.active);
   const machines = (data.machines as any[]).filter((m) => m.active && m.plant === head.plant);
   const onHand = (itemId: string) => (data.rows as any[]).find((r) => r.itemId === itemId && r.plant === head.plant)?.qty ?? 0;
@@ -200,8 +201,13 @@ function MoveForm({ kind, data, post, onDone }: { kind: "receipt" | "issue"; dat
   async function save() {
     setBusy(true);
     const json = await post({ action: "move", type: kind, ...head, lines: lines.filter((l) => l.itemId) });
+    if (json && bills.length) {
+      // The purchase invoice / kanta parchi goes on the document just saved.
+      const fd = new FormData(); fd.append("no", json.no); bills.forEach((b) => fd.append("file", b));
+      await fetch("/api/stock/attachment", { method: "POST", body: fd }).catch(() => null);
+    }
     setBusy(false);
-    if (json) { setLines([{ itemId: "", qty: "", rate: "" }]); setHead({ ...head, invoiceNo: "", challanNo: "", issuedTo: "", purpose: "", remarks: "" }); onDone(json.no); }
+    if (json) { setLines([{ itemId: "", qty: "", rate: "" }]); setBills([]); setHead({ ...head, invoiceNo: "", challanNo: "", issuedTo: "", purpose: "", remarks: "" }); onDone(json.no); }
   }
 
   return (
@@ -259,6 +265,13 @@ function MoveForm({ kind, data, post, onDone }: { kind: "receipt" | "issue"; dat
         <button onClick={() => setLines([...lines, { itemId: "", qty: "", rate: "" }])} className="bmx-chip flex items-center gap-1.5 rounded-xl border border-biome-line px-3 py-1.5 text-[11px] font-semibold text-biome-muted"><Plus size={12} /> Add line</button>
       </div>
 
+      <div className="rounded-xl border border-dashed border-biome-line bg-biome-bg p-3">
+        <span className={label}>{kind === "receipt" ? "Purchase invoice / kanta parchi / challan (PDF or photo)" : "Photo / job card (optional)"}</span>
+        <input type="file" multiple accept="application/pdf,image/*" onChange={(e) => setBills(Array.from(e.target.files || []))}
+          className="block w-full text-[11px] text-biome-muted file:mr-3 file:rounded-lg file:border-0 file:bg-biome-leaf file:px-3 file:py-1.5 file:text-[11px] file:font-bold file:text-white" />
+        {bills.length > 0 && <p className="mt-1 text-[10.5px] text-biome-muted">{bills.map((b) => b.name).join(", ")} — attached when you save; anyone with stock access can open it from the ledger.</p>}
+      </div>
+
       <div className="flex flex-wrap items-center gap-3">
         {kind === "receipt" && <span className="font-mono text-[12px] text-biome-text">Total {inr(total)}</span>}
         <button onClick={save} disabled={busy}
@@ -306,7 +319,7 @@ function LedgerTab({ data, post, setOk }: { data: any; post: (b: any) => Promise
       <div className="overflow-x-auto">
         <table className="w-full min-w-[900px] text-left text-[11px]">
           <thead><tr className="border-b border-biome-line text-[9.5px] uppercase tracking-[.12em] text-biome-muted">
-            <th className="py-2">No / date</th><th>Type</th><th>Part</th><th className="text-right">Qty</th><th className="text-right">Amount</th><th>Vendor / machine</th><th>By</th><th></th>
+            <th className="py-2">No / date</th><th>Type</th><th>Part</th><th className="text-right">Qty</th><th className="text-right">Amount</th><th>Vendor / machine</th><th>By</th><th>Bill</th><th></th>
           </tr></thead>
           <tbody>
             {rows.map((m) => {
@@ -321,6 +334,12 @@ function LedgerTab({ data, post, setOk }: { data: any; post: (b: any) => Promise
                   <td className="text-right font-mono">{inr(m.amount || m.qty * m.rate)}</td>
                   <td className="text-[10.5px]">{m.vendorName || machines.get(m.machineId)?.name || m.purpose}{m.invoiceNo && ` · inv ${m.invoiceNo}`}{m.issuedTo && ` · to ${m.issuedTo}`}</td>
                   <td className="text-[10px] text-biome-muted">{m.createdByName}{m.cancelled && ` · cancelled: ${m.cancelReason}`}</td>
+                  <td className="whitespace-nowrap">
+                    {(data.attachments?.[m.no] || []).map((a: any) => (
+                      <a key={a.id} href={`/api/stock/attachment?no=${encodeURIComponent(m.no)}&id=${a.id}`} target="_blank" rel="noreferrer" title={a.name} className="mr-1 text-[12px]">📎</a>
+                    ))}
+                    <AttachButton no={m.no} onDone={() => setOk(`Attached to ${m.no}.`)} />
+                  </td>
                   <td>{data.canManage && !m.cancelled && m.type !== "transfer_in" && (
                     <button onClick={() => cancel(m.no)} title="Cancel this document" className="rounded-lg border border-biome-line p-1 text-rose-500"><XCircle size={12} /></button>
                   )}</td>
@@ -476,5 +495,24 @@ function ItemsTab({ data, post, setOk }: { data: any; post: (b: any) => Promise<
         </table>
       </div>
     </section>
+  );
+}
+
+
+/** Add a bill / parchi to an existing stock document. */
+function AttachButton({ no, onDone }: { no: string; onDone: () => void }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <label title="Attach bill / parchi" className="cursor-pointer text-[10px] font-semibold text-biome-leaf">
+      {busy ? "…" : "+"}
+      <input type="file" multiple accept="application/pdf,image/*" className="hidden" onChange={async (e) => {
+        const files = Array.from(e.target.files || []); if (!files.length) return;
+        setBusy(true);
+        const fd = new FormData(); fd.append("no", no); files.forEach((f) => fd.append("file", f));
+        const r = await fetch("/api/stock/attachment", { method: "POST", body: fd }).catch(() => null);
+        setBusy(false); e.target.value = "";
+        if (r?.ok) { onDone(); location.reload(); } else alert((await r?.json().catch(() => ({})))?.error || "Could not attach.");
+      }} />
+    </label>
   );
 }

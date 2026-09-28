@@ -114,15 +114,29 @@ export interface Movement {
   createdAt: string;
 }
 
+export interface StockAttachment {
+  id: string;
+  name: string;
+  size: number;
+  type: string;
+  /** Relative to the stock folder. */
+  file: string;
+  uploadedAt: string;
+  uploadedByName: string;
+}
+
 interface StockFile {
   items: StockItem[];
   machines: Machine[];
   movements: Movement[];
   seq: Record<string, number>;
+  /** Purchase invoices, kanta parchis, challans — per document number (GRN-REW-0001). */
+  attachments: Record<string, StockAttachment[]>;
   updatedAt?: string;
 }
 
 function file() { return path.join(paths.root, "stock", "stock.json"); }
+export function stockDir() { return path.join(paths.root, "stock"); }
 
 export function loadStock(): StockFile {
   const f = readJson<Partial<StockFile>>(file(), {});
@@ -131,6 +145,7 @@ export function loadStock(): StockFile {
     machines: Array.isArray(f.machines) ? f.machines : [],
     movements: Array.isArray(f.movements) ? f.movements : [],
     seq: f.seq && typeof f.seq === "object" ? f.seq : {},
+    attachments: f.attachments && typeof f.attachments === "object" ? f.attachments : {},
   };
 }
 

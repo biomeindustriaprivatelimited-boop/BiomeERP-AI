@@ -65,6 +65,7 @@ export async function GET(req: NextRequest) {
 
   return NextResponse.json({
     items: s.items,
+    attachments: Object.fromEntries(Object.entries(s.attachments).filter(([no]) => movements.some((m) => m.no === no)).map(([no, list]) => [no, list.map(({ file: _f, ...a }) => a)])),
     machines,
     movements,
     rows,
