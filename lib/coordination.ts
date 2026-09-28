@@ -88,6 +88,15 @@ export interface Trip {
   /** True when the number was typed rather than taken from a series. */
   ourDocManual: boolean;
 
+  /**
+   * The coordination reference printed on our invoice and quoted on every
+   * paper of this supply: COMPANY / OUR DOC NO / VENDOR (or PLANT) CODE /
+   * VENDOR DOC NO — e.g. BDC/45/JSR/15. Empty = composed automatically
+   * from the trip (lib/tripDocs.ts). WhatsApp documents carrying this
+   * reference are linked to the trip, whenever they arrive.
+   */
+  referenceNo?: string;
+
   /** Who it went to, and from where. */
   client: string;
   location: string;
@@ -195,6 +204,7 @@ function normalise(t: any): Trip {
     ourDocManual: t.ourDocManual === undefined ? Boolean(legacyDoc) : Boolean(t.ourDocManual),
     biomeChallanNo: legacyDoc || String(t.ourDocNo || ""),
     poDate: String(t.poDate || ""),
+    referenceNo: String(t.referenceNo || ""),
     vendorDocType: t.vendorDocType === "tax_invoice" || t.vendorDocType === "delivery_challan" ? t.vendorDocType : "",
     debitNoteNo: String(t.debitNoteNo || ""),
     creditNoteNo: String(t.creditNoteNo || ""),

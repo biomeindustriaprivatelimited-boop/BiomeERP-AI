@@ -6,7 +6,7 @@ import {
   Truck, Plus, Loader2, AlertCircle, Check, Download, Search, Filter,
   TrendingDown, PackageCheck, Clock, ShieldAlert, Building2, Users,
   Lock, Unlock, FileText, Receipt, Upload, Hash, ChevronRight, X,
-  CircleDollarSign, Factory, Handshake, KeyRound,
+  CircleDollarSign, Factory, Handshake, KeyRound, Link2, Paperclip, RefreshCw, Mail,
 } from "lucide-react";
 import FormPanel, { FormSection } from "@/components/FormPanel";
 import DevEditedChip from "@/components/DevEditedChip";
@@ -53,6 +53,7 @@ interface Trip {
   supplier: string; supplierCode: string; vendorDocType: DocType | "";
   vehicleNumber: string; vehicleEntryDate: string;
   vendorChallanNo: string; vendorChallanDate: string; vendorInvoiceNo: string;
+  referenceNo?: string;
   vendorChallanWeight: number; vendorChallanAmount: number;
   receivingDate: string; receivingQty: number; ccWeight: number;
   debitNoteNo: string; creditNoteNo: string; billing: Billing;
@@ -84,7 +85,7 @@ const blank = {
   client: "", location: "", poNumber: "", poDate: "", vendorPoId: "", clientPoId: "",
   supplier: "", supplierCode: "", vendorDocType: "" as DocType | "",
   vehicleNumber: "", vehicleEntryDate: new Date().toISOString().slice(0, 10),
-  vendorChallanNo: "", vendorChallanDate: "", vendorInvoiceNo: "",
+  vendorChallanNo: "", vendorChallanDate: "", vendorInvoiceNo: "", referenceNo: "",
   vendorChallanWeight: "", vendorChallanAmount: "",
   receivingDate: "", receivingQty: "", ccWeight: "",
   debitNoteNo: "", creditNoteNo: "",
@@ -133,6 +134,17 @@ export default function CoordinationPage() {
     } catch { /* the badge is a hint; the register works without it */ }
   }, [business]);
   useEffect(() => { loadMatch(); }, [loadMatch]);
+
+  // WhatsApp paperwork linked to each trip (by reference, doc numbers or
+  // vehicle + date) — counts for the register's badges.
+  const [docSummary, setDocSummary] = useState<Record<string, { docs: number; warnings: number; missing: number }>>({});
+  const loadDocSummary = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/coordination/documents?summary=1&business=${business}`, { cache: "no-store" });
+      if (res.ok) setDocSummary((await res.json()).summary || {});
+    } catch { /* badges are a hint */ }
+  }, [business]);
+  useEffect(() => { loadDocSummary(); }, [loadDocSummary, data]);
 
   const clients: ClientOption[] = data?.options?.clients || [];
   const series: SeriesOption[] = data?.series || [];
@@ -333,6 +345,22 @@ export default function CoordinationPage() {
       )}
 
       {/* ---- Who is losing the weight ---- */}
+      {(() => {
+        const bad = (data?.trips || []).filter((t: Trip) => docSummary[t.id]?.warnings);
+        if (!bad.length) return null;
+        return (
+          <div className="rounded-2xl border border-amber-500/35 bg-amber-500/[.06] px-4 py-3">
+            <p className="text-[12px] font-semibold text-amber-600">⚠ WhatsApp documents disagree with the register ({bad.length} supply{bad.length === 1 ? "" : "s"})</p>
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {bad.slice(0, 20).map((t: Trip) => (
+                <button key={t.id} onClick={() => edit(t)} className="rounded-full border border-amber-500/40 px-2.5 py-0.5 text-[10.5px] font-semibold text-amber-700">
+                  #{t.serial} {t.vehicleNumber || t.ourDocNo || t.client} · {docSummary[t.id].warnings} difference(s)
+                </button>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
       {manufacturing && match?.summary && (
         <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-biome-line bg-biome-bgSoft px-4 py-3 text-[11.5px]">
           <span className="font-semibold text-biome-text">Plant dispatch match</span>
@@ -415,6 +443,12 @@ export default function CoordinationPage() {
                         {manufacturing ? "BIOME" : (t.supplier || "—")} <span className="text-biome-muted">→</span> {t.client || "—"}
                       </p>
                       <DocBadge type={t.docType} number={t.ourDocNo} />
+                      {docSummary[t.id] && (
+                        <span title={`${docSummary[t.id].docs} WhatsApp document(s) linked · ${docSummary[t.id].missing} paper(s) missing · ${docSummary[t.id].warnings} difference(s)`}
+                          className={`rounded-full border px-2 py-0.5 text-[9px] font-bold ${docSummary[t.id].warnings ? "border-amber-500/40 bg-amber-500/10 text-amber-600" : docSummary[t.id].docs ? "border-emerald-500/35 bg-emerald-500/10 text-emerald-600" : "border-biome-line text-biome-muted"}`}>
+                          📎 {docSummary[t.id].docs}{docSummary[t.id].warnings ? ` · ⚠ ${docSummary[t.id].warnings}` : ""}{docSummary[t.id].missing ? ` · ${docSummary[t.id].missing} missing` : ""}
+                        </span>
+                      )}
                       {manufacturing && match && <PlantMatchBadge status={match.statuses[t.id]} />}
                       <span className={`rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase tracking-[.1em] ${vCls}`}>
                         {vLabel}
@@ -686,6 +720,15 @@ export default function CoordinationPage() {
             </F>
           </FormSection>
         )}
+        <FormSection title="Coordination reference" sectionIcon={<Link2 size={14} />} columns={2}
+          hint="COMPANY / OUR DOC NO / VENDOR (or PLANT) CODE / VENDOR DOC NO — e.g. BDC/45/JSR/15. Leave empty to build it from this trip. Every WhatsApp document quoting it links here automatically, whenever it arrives.">
+          <F label="Reference no">
+            <input value={form.referenceNo || ""} onChange={(e) => setForm({ ...form, referenceNo: e.target.value.toUpperCase() })}
+              placeholder={`${(form.ourDocNo || "").match(/(\d+)\s*$/)?.[1]?.replace(/^0+/, "") ? `BDC/${(form.ourDocNo || "").match(/(\d+)\s*$/)![1].replace(/^0+/, "")}/${manufacturing ? "REW" : (form.supplierCode || "VEN")}/${(form.vendorInvoiceNo || form.vendorChallanNo || "").match(/(\d+)\s*$/)?.[1]?.replace(/^0+/, "") || "?"}` : "BDC/45/JSR/15"}`}
+              className={`${inputCls} font-mono`} />
+          </F>
+        </FormSection>
+
 
         <FormSection title="Dispatch — what left" sectionIcon={<PackageCheck size={14} />} columns={3}>
           <F label="Dispatch weight (KG)">
@@ -740,6 +783,8 @@ export default function CoordinationPage() {
             <Read label="Tax" value={money(editing.billing.taxAmount)} />
           </FormSection>
         ) : null}
+
+        {editing && <TripDocuments tripId={editing.id} />}
 
         <FormSection title="Status and notes" columns={2}>
           <F label="Status">
@@ -1592,4 +1637,94 @@ function PlantMatchBadge({ status }: { status?: string }) {
     return <span title="Vehicle and date match the plant's dispatch sheet, but the weight is different — check with the plant" className="rounded-full border border-amber-500/35 bg-amber-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[.08em] text-amber-600">⚠ Plant weight differs</span>;
   }
   return <span title="This vehicle is not in the plant's dispatch sheet for that date (±1 day) — or the location does not name the plant" className="rounded-full border border-rose-500/35 bg-rose-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[.08em] text-rose-500">✗ Not in plant dispatch</span>;
+}
+
+
+/**
+ * WhatsApp paperwork for one supply: linked by reference, document
+ * numbers, or vehicle + date; grouped by category; each paper checked
+ * against what the register says. Opening a file goes through the
+ * server, which only serves papers linked to this trip.
+ */
+function TripDocuments({ tripId }: { tripId: string }) {
+  const [d, setD] = useState<any>(null);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const load = useCallback(async () => {
+    const res = await fetch(`/api/coordination/documents?tripId=${tripId}`, { cache: "no-store" });
+    if (res.ok) setD(await res.json());
+  }, [tripId]);
+  useEffect(() => { load(); }, [load]);
+
+  async function sweep() {
+    setBusy(true); setNote(null);
+    try {
+      const res = await fetch("/api/coordination/documents", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "sweep" }) });
+      const j = await res.json().catch(() => ({}));
+      setNote(j.note || `Filed ${j.promoted ?? 0} waiting document(s); ${j.stillWaiting ?? 0} still waiting.`);
+      await load();
+    } finally { setBusy(false); }
+  }
+
+  if (!d) return null;
+  const cats = Object.entries(d.byCategory || {}) as [string, any[]][];
+  return (
+    <FormSection title={`WhatsApp documents (${d.docs.length})`} sectionIcon={<Paperclip size={14} />} columns={1}
+      hint={`Reference ${d.reference.canonical} (${d.reference.source === "typed" ? "typed" : d.reference.source === "composed" ? "built from this trip" : "incomplete"}). Papers already read, and any that arrive later, link here automatically.`}>
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="button" onClick={sweep} disabled={busy}
+          className="bmx-chip flex items-center gap-1.5 rounded-xl border border-biome-line px-3 py-1.5 text-[11px] font-semibold text-biome-muted disabled:opacity-50">
+          <RefreshCw size={12} className={busy ? "bmx-spin" : ""} /> File waiting papers now
+        </button>
+        {note && <span className="text-[10.5px] text-biome-muted">{note}</span>}
+      </div>
+
+      {d.notices.length > 0 && (
+        <div className="rounded-xl border border-amber-500/35 bg-amber-500/[.07] px-3 py-2">
+          <p className="text-[11px] font-bold text-amber-600">Differences to check</p>
+          <ul className="mt-1 space-y-0.5">
+            {d.notices.map((n: any, i: number) => (
+              <li key={i} className={`text-[10.5px] ${n.level === "warning" ? "text-amber-700" : "text-biome-muted"}`}>{n.level === "warning" ? "⚠" : "ℹ"} {n.text}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {d.missing.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-rose-500/30 bg-rose-500/[.06] px-3 py-2">
+          <span className="text-[10px] font-bold uppercase tracking-[.1em] text-rose-500">Not received yet:</span>
+          {d.missing.map((m: string) => <span key={m} className="rounded-full border border-rose-500/35 px-2 py-0.5 text-[10px] font-semibold text-rose-600">{m}</span>)}
+          <a href={`/partners?followup=${tripId}`} className="ml-auto flex items-center gap-1 text-[10.5px] font-semibold text-biome-leaf"><Mail size={11} /> Ask the vendor</a>
+        </div>
+      )}
+
+      {cats.length === 0 ? (
+        <p className="text-[11px] text-biome-muted">No WhatsApp document found for this supply yet.</p>
+      ) : cats.map(([cat, list]) => (
+        <div key={cat}>
+          <p className="mb-1 text-[9.5px] font-bold uppercase tracking-[.14em] text-biome-muted">{cat}</p>
+          <div className="space-y-1">
+            {list.map((doc: any) => {
+              const bad = doc.checks.filter((c: any) => !c.ok);
+              return (
+                <div key={doc.id} className={`flex flex-wrap items-center gap-2 rounded-xl border px-3 py-2 ${bad.length ? "border-amber-500/40 bg-amber-500/[.05]" : "border-biome-line"}`}>
+                  <FileText size={12} className="text-biome-leaf" />
+                  <a href={`/api/coordination/documents?tripId=${tripId}&docId=${encodeURIComponent(doc.id)}`} target="_blank" rel="noreferrer"
+                    className="text-[11.5px] font-semibold text-biome-text underline-offset-2 hover:underline">{doc.label}</a>
+                  <span className="text-[10px] text-biome-muted">{doc.fileName}</span>
+                  <span className={`rounded-full px-2 py-0.5 text-[9px] font-bold ${doc.source === "staged" ? "bg-sky-500/15 text-sky-600" : "bg-emerald-500/15 text-emerald-600"}`}>{doc.source === "staged" ? "waiting in staging" : "filed in supply set"}</span>
+                  <span className="text-[9.5px] text-biome-muted">linked by {doc.how}</span>
+                  <span className="ml-auto flex flex-wrap gap-1">
+                    {doc.checks.map((c: any, i: number) => (
+                      <span key={i} title={`Document: ${c.doc} · Trip: ${c.trip}`} className={`rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${c.ok ? "text-emerald-600" : "bg-amber-500/15 text-amber-700"}`}>{c.ok ? "✓" : "⚠"} {c.field}</span>
+                    ))}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </FormSection>
+  );
 }

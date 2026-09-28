@@ -115,39 +115,17 @@ async function ocrScannedPdf(buffer, options = {}) {
     );
   }
 
-  let Tesseract;
-  try {
-    Tesseract = require("tesseract.js");
-  } catch {
-    throw new Error("tesseract.js isn't installed — run `npm install`.");
-  }
-
-  // One worker for every page. Starting a worker is the slow part, so
-  // reusing it across pages matters on a four-page scan.
-  // Hindi + English: kanta slips, bilties and receivings are printed in
-  // Hindi with handwritten numbers. Both language files ship in
-  // ./tessdata so nothing is downloaded at run time.
-  const path = require("path");
-  const langPath = path.join(__dirname, "..", "tessdata");
-  const worker = await Tesseract.createWorker(options.lang || "hin+eng", 1, { langPath, gzip: true, cachePath: langPath });
+  // Offline, time-limited, shared worker (lib/ocrWorker.js). English
+  // only: hin+eng turns printed digits into Devanagari look-alikes, and
+  // the numbers are what every match depends on.
+  const ocr = require("./ocrWorker");
   const pages = [];
-  try {
-    for (const image of images) {
-      try {
-        const { data } = await worker.recognize(image);
-        pages.push((data.text || "").trim());
-      } catch (err) {
-        // One unreadable page shouldn't cost the other three.
-        pages.push("");
-      }
-    }
-  } finally {
-    // Same guard as pdfText: a failing cleanup must never discard text
-    // that was read successfully.
+  for (const image of images) {
     try {
-      await worker.terminate();
+      pages.push((await ocr.recognize(image)).trim());
     } catch {
-      /* best effort */
+      // One unreadable page shouldn't cost the other three.
+      pages.push("");
     }
   }
 

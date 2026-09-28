@@ -16,6 +16,17 @@ import {
 import { recordAudit } from "@/lib/audit";
 import { isOverrideActive, recordOverrideUse, lockedMessage } from "@/lib/override";
 import { devStamp } from "@/lib/devEdit";
+import { agentFetch } from "@/lib/whatsappAgent";
+
+/**
+ * A saved trip is a matching anchor for WhatsApp paperwork: ask the agent
+ * to file any vendor document that was waiting for this reference. Fire
+ * and forget — a stopped agent must never fail a save, and it sweeps on
+ * its own every 20 minutes anyway.
+ */
+function pokeAgentSweep() {
+  agentFetch("/staged/sweep", { method: "POST", timeoutMs: 15000 }).catch(() => { /* agent off */ });
+}
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -210,6 +221,8 @@ export async function POST(req: NextRequest) {
   if (assigned.error) return NextResponse.json({ error: assigned.error }, { status: assigned.status || 400 });
 
   saveTrips([...all, trip]);
+
+  pokeAgentSweep();
   recordAudit({
     action: "COORDINATION_TRIP_ADDED",
     userId: user.id, userName: user.name, role: user.role,
@@ -295,6 +308,8 @@ export async function PUT(req: NextRequest) {
   if (usedGrant) delete updated.editGrant;
 
   saveTrips(all.map((t) => (t.id === updated.id ? updated : t)));
+
+  pokeAgentSweep();
 
   if (lock.locked && overriding) {
     recordOverrideUse(user, {
@@ -426,6 +441,7 @@ function readTrip(body: any, reg: BusinessType): Partial<Trip> {
     vendorChallanDate: str(body.vendorChallanDate, 10),
     vendorChallanWeight: num(body.vendorChallanWeight),
     vendorChallanAmount: num(body.vendorChallanAmount),
+    referenceNo: str(body.referenceNo, 40).toUpperCase().replace(/\s+/g, ""),
     receivingDate: str(body.receivingDate, 10),
     receivingQty: num(body.receivingQty),
     ccWeight: num(body.ccWeight),

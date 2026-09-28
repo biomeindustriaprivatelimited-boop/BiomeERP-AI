@@ -40,32 +40,11 @@ async function textFromFile(full: string, type: string): Promise<string> {
     }
   }
 
-  /**
-   * Exactly the call the WhatsApp agent has been making successfully for
-   * months: `createWorker("eng")` and nothing else.
-   *
-   * My first version passed `langPath` and `cachePath`. Those look helpful
-   * and are how this broke — pointing langPath at a folder holding only
-   * `eng.traineddata.gz` while also setting a cachePath makes tesseract.js
-   * resolve the language data twice and fail on whichever it tries first.
-   * The proven path lets it manage its own data. Don't "improve" this.
-   */
-  let Tesseract: any;
-  try {
-    Tesseract = nodeRequire("tesseract.js");
-  } catch {
-    throw new Error("tesseract.js isn't installed — run `npm install` in the project folder.");
-  }
-
-  const worker = await Tesseract.createWorker("eng");
-  try {
-    const { data } = await worker.recognize(full);
-    return data?.text || "";
-  } finally {
-    // Terminating must never throw away the text we just read — this is the
-    // exact shape of the pdfText bug that cost weeks.
-    try { await worker.terminate(); } catch { /* ignore */ }
-  }
+  // The WhatsApp agent's offline OCR helper: bundled LSTM model, writable
+  // cache, timeouts. A bare createWorker("eng") downloads its model from a
+  // CDN and hangs forever when that download fails.
+  const { recognize } = nodeRequire(path.join(process.cwd(), "whatsapp-agent", "lib", "ocrWorker.js"));
+  return await recognize(full);
 }
 
 export async function POST(req: NextRequest) {

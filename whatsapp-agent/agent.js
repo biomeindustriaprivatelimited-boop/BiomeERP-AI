@@ -404,10 +404,16 @@ async function connect() {
   });
 
   sock.ev.on("messages.upsert", (payload) => {
-    // "notify" = genuinely new. "append" = history backfill, which we skip
-    // so linking the account doesn't re-file months of old paperwork.
-    if (payload.type !== "notify") return;
+    // "notify" = arrived while connected. "append" is NOT only history:
+    // Baileys also delivers every message that arrived while this PC was
+    // OFF (or the app closed) as "append" when it reconnects. Skipping
+    // "append" silently lost every document sent overnight or during a
+    // power cut. Recent appends (last 7 days) are processed; older ones
+    // are left to an explicit historical scan. store.hasMessage() keeps a
+    // re-delivered message from being filed twice.
+    const cutoff = Date.now() / 1000 - 7 * 86400;
     for (const msg of payload.messages || []) {
+      if (payload.type !== "notify" && Number(msg.messageTimestamp || 0) < cutoff) continue;
       rememberChat(msg);
       rememberChatText(msg); // capture "documents for JPL" style hints
       enqueue(msg);
@@ -917,13 +923,22 @@ function autoSelectSalesGroups() {
   try {
     const cfg = settings();
     if (cfg.watchAllChats || cfg.allowedChats.length > 0) return;
-    const sales = [...knownChats.values()]
-      .filter((c) => c.isGroup && /\bsales?\b|सेल्स/i.test(String(c.name || "")))
+    // Supply documents are posted in the SALES or SUPPLY group(s) — the
+    // business calls it both. Only matching "sales" left a group named
+    // "Biome Supply" unwatched, and with nothing watched nothing was ever
+    // saved, with no error anywhere. If no group name matches, every
+    // GROUP is watched (never personal chats) so documents are not lost;
+    // the selection can be narrowed in WhatsApp → Chats at any time.
+    const groups = [...knownChats.values()].filter((c) => c.isGroup);
+    const named = groups
+      .filter((c) => /sales?|supply|supplies|dispatch|document|docs|coordination|logistic|सेल्स|सप्लाई/i.test(String(c.name || "")))
       .map((c) => c.jid);
+    const sales = named.length ? named : groups.map((c) => c.jid);
     if (!sales.length) {
-      log("no chat selected and no group named \"sales\" found — choose the sales group in WhatsApp → Chats");
+      log("no chat selected and no WhatsApp group found yet — choose the supply group in WhatsApp → Chats");
       return;
     }
+    if (!named.length) log("no group named sales/supply — watching every group until one is chosen in WhatsApp → Chats");
     const current = readJsonSafe(PATHS.settingsFile, {});
     fs.writeFileSync(
       PATHS.settingsFile,
@@ -971,8 +986,75 @@ function sweepStaged({ limit = 500, logFn = log } = {}) {
       if (done) promoted += 1;
     }
   }
-  logFn(`staging sweep: ${promoted} document(s) filed from ${examined} of our references; ${staging.pending().length} still waiting`);
-  return { promoted, examined, stillWaiting: staging.pending().length };
+  // Coordination trips are anchors too. A trip saved with its reference
+  // (or with our doc no + vendor code + vendor doc no) says outright which
+  // supply a vendor paper belongs to — the vendor paper must not wait for
+  // our invoice to come through WhatsApp as well.
+  let fromTrips = 0;
+  try {
+    for (const anchor of coordinationAnchors(opts)) {
+      if (!staging.pending().length) break;
+      let matches = [];
+      try {
+        matches = staging.findMatches({ reference: anchor.reference, extracted: anchor.extracted, vendors: vendors(), plantAdjustmentKg: 0 });
+      } catch { continue; }
+      if (!matches.length) continue;
+      const plan = planFiling({
+        reference: anchor.reference,
+        supplyType: anchor.reference.plantCode ? "manufacturing" : "trading",
+        extracted: { ...anchor.extracted, documentType: "biome_tax_invoice" },
+        originalName: "anchor.pdf",
+        mimeType: "application/pdf",
+        receivedAt: new Date(anchor.extracted.documentDate || Date.now()),
+        senderName: "Coordination",
+      });
+      for (const m of matches) {
+        const done = promoteStagedVendorDoc(m.entry, anchor.reference, plan.dir, anchor.reference.plantCode ? "manufacturing" : "trading", logFn);
+        if (done) { promoted += 1; fromTrips += 1; }
+      }
+    }
+  } catch (err) {
+    logFn(`coordination anchors skipped: ${err.message}`);
+  }
+  logFn(`staging sweep: ${promoted} document(s) filed (${fromTrips} via coordination trips) from ${examined} of our references; ${staging.pending().length} still waiting`);
+  return { promoted, examined, fromTrips, stillWaiting: staging.pending().length };
+}
+
+/**
+ * Coordination trips as matching anchors: the reference the coordinator
+ * typed, or one composed from the trip (company / our doc / vendor code /
+ * vendor doc), plus the trip's client, date, vehicle and weight.
+ */
+function coordinationAnchors(opts) {
+  const f = readJsonSafe(path.join(PATHS.root, "coordination", "trips.json"), { trips: [] });
+  const tail = (v) => { const m = String(v || "").toUpperCase().match(/(\d+)\s*$/); return m ? String(Number(m[1])) : ""; };
+  const out = [];
+  for (const t of Array.isArray(f.trips) ? f.trips : []) {
+    if (t.status === "cancelled") continue;
+    let text = String(t.referenceNo || "").trim();
+    if (!text) {
+      const our = tail(t.ourDocNo);
+      const code = String(t.supplierCode || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+      const vend = tail(t.vendorInvoiceNo || t.vendorChallanNo);
+      if (t.business === "trading" && our && code && vend) text = `${(opts.companyCodes || ["BDC"])[0]}/${our}/${code}/${vend}`;
+    }
+    if (!text) continue;
+    const reference = parseReference(text, { ...opts, vendorCodes: [...(opts.vendorCodes || []), String(t.supplierCode || "").toUpperCase()] });
+    if (!reference) continue;
+    out.push({
+      tripId: t.id,
+      reference,
+      extracted: {
+        clientName: t.client || null,
+        documentDate: t.ourDocDate || t.vehicleEntryDate || null,
+        vehicleNo: t.vehicleNumber || null,
+        biomeDocNo: t.ourDocNo || null,
+        quantityKg: Number(t.vendorChallanWeight) || null,
+        netWeight: Number(t.vendorChallanWeight) || null,
+      },
+    });
+  }
+  return out;
 }
 
 function promoteStagedVendorDoc(entry, reference, targetDir, supplyType, logFn = log) {
@@ -1637,7 +1719,8 @@ function readBody(req) {
     let size = 0;
     req.on("data", (chunk) => {
       size += chunk.length;
-      if (size > 2 * 1024 * 1024) {
+      // Phone PDFs of 5-10 MB are normal; as base64 they are a third larger.
+      if (size > 40 * 1024 * 1024) {
         reject(new Error("Request body too large."));
         req.destroy();
         return;
@@ -2983,8 +3066,8 @@ server.listen(activePort, HOST, () => {
   log(`data root: ${PATHS.root}`);
   if (!process.env.GEMINI_API_KEY && !process.env.ANTHROPIC_API_KEY) {
     log(
-      "NOTE: no GEMINI_API_KEY / ANTHROPIC_API_KEY found in .env.local — documents will still be " +
-        "downloaded and saved, but they will land in '_Needs Review' unclassified until a key is added."
+      "NOTE: no GEMINI_API_KEY / ANTHROPIC_API_KEY — documents are read with the built-in offline OCR " +
+        "(free, no internet). A key is optional and only helps with unusual layouts."
     );
   }
   // If a session already exists from last time, come straight back up —

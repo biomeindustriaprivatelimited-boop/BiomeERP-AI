@@ -659,14 +659,10 @@ async function readLocally(buffer, mimeType, fileName) {
     throw new Error(`Can't read files of type ${mimeType} locally.`);
   }
 
-  let Tesseract;
-  try {
-    Tesseract = require("tesseract.js");
-  } catch {
-    throw new Error("tesseract.js isn't installed — run `npm install`.");
-  }
-  const worker = await Tesseract.createWorker("eng");
-  try {
+  // Offline, time-limited, shared worker — see lib/ocrWorker.js for why
+  // a bare createWorker("eng") silently stopped the whole queue.
+  const ocr = require("./ocrWorker");
+  {
     // These slips are photographed sideways. A receiving printed on a
     // narrow till roll is almost always shot in portrait and lands
     // rotated 90°, and Tesseract reading a rotated page produces exactly
@@ -695,10 +691,10 @@ async function readLocally(buffer, mimeType, fileName) {
     for (const rotation of [0, 90, 270, 180]) {
       let result;
       try {
-        result = await worker.recognize(
+        result = { data: { text: await ocr.recognize(
           buffer,
           rotation === 0 ? {} : { rotateRadians: (rotation * Math.PI) / 180 }
-        );
+        ) } };
       } catch {
         continue;
       }
@@ -714,8 +710,6 @@ async function readLocally(buffer, mimeType, fileName) {
       pages: [best.text],
       method: best.rotation ? `image_ocr_rotated_${best.rotation}` : "image_ocr",
     };
-  } finally {
-    await worker.terminate();
   }
 }
 
