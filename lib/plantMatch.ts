@@ -24,6 +24,7 @@ import path from "path";
 import { paths, readJson } from "@/lib/dataRoot";
 import { loadTrips, Trip } from "@/lib/coordination";
 import { loadPlants } from "@/lib/plants";
+import { slugForCode } from "@/lib/plantRegistry";
 
 export type MatchStatus = "matched" | "weight_differs" | "unmatched";
 
@@ -33,7 +34,7 @@ export const DATE_WINDOW_DAYS = 1;
 const WEIGHT_PCT = 1.0;
 const WEIGHT_FLAT_KG = 100;
 
-const SLUGS: Record<string, string> = { REW: "rewari", GKD: "gangakhed" };
+
 
 export function normVehicle(v: unknown): string {
   return String(v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
@@ -68,7 +69,7 @@ export interface PlantDispatch {
 export function loadPlantDispatches(plantCodes: string[]): PlantDispatch[] {
   const out: PlantDispatch[] = [];
   for (const code of plantCodes) {
-    const slug = SLUGS[code];
+    const slug = slugForCode(code);
     if (!slug) continue;
     const f = readJson<{ rows?: any[] }>(path.join(paths.configDir, "plants", `${slug}-transport.json`), {});
     for (const r of Array.isArray(f.rows) ? f.rows : []) {

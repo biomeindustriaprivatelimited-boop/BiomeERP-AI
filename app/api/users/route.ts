@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { plantOptions } from "@/lib/plants";
 import crypto from "crypto";
 import {
   loadUsers,
@@ -9,15 +10,17 @@ import {
   findById,
   User,
 } from "@/lib/authServer";
-import { ROLES, Role, PLANTS } from "@/lib/permissions";
+import { ROLES, Role } from "@/lib/permissions";
 import { loadEntries, loadPeople } from "@/lib/imprest";
 import { recordAudit } from "@/lib/audit";
+
+function livePlants() { return plantOptions().map((p) => ({ code: p.code, label: p.label })); }
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const VALID_ROLES = ROLES.map((r) => r.id);
-const VALID_PLANTS = PLANTS.map((p) => p.code);
+const VALID_PLANTS = { includes: (c: string) => livePlants().some((p) => p.code === c) };
 
 function cleanPlants(input: unknown): string[] {
   if (!Array.isArray(input)) return [];
@@ -41,7 +44,7 @@ export async function GET(req: NextRequest) {
       .map(publicUser),
     // Nor is "developer" offered as a role to assign.
     roles: ROLES.filter((r) => isDeveloper || r.id !== "developer"),
-    plants: PLANTS,
+    plants: livePlants(),
     // Admin still adds people and resets passwords; deciding what a person
     // may DO now sits with the developer, so the screen can stop offering
     // a control that the server will refuse.

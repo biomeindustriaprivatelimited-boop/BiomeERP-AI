@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import { plantOptions } from "@/lib/plants";
 import { requirePermission, findById } from "@/lib/authServer";
-import { hasPermission, PLANTS } from "@/lib/permissions";
+import { hasPermission } from "@/lib/permissions";
 import { loadEntries, loadPeople, IMPREST_CATEGORIES } from "@/lib/imprest";
 import {
   loadBudgets, saveBudgets, makeBudget, usageForMonth,
@@ -15,6 +16,8 @@ import { recordAudit } from "@/lib/audit";
  * see what is left has no way to spend inside it, which is the whole point.
  * Only an admin sets them.
  */
+function livePlants() { return plantOptions().map((p) => ({ code: p.code, label: p.label })); }
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -49,9 +52,9 @@ export async function GET(req: NextRequest) {
     // Anything typed into a holder record that is not in the master is
     // added on the end rather than dropped.
     plants: [
-      ...PLANTS.map((p) => ({ code: p.code, label: p.label })),
+      ...livePlants().map((p) => ({ code: p.code, label: p.label })),
       ...[...new Set(people.map((p) => p.plant).filter(Boolean))]
-        .filter((code) => !PLANTS.some((p) => p.code === code))
+        .filter((code) => !livePlants().some((p) => p.code === code))
         .map((code) => ({ code, label: code })),
     ],
     canManage: canManage(user.role),

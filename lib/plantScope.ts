@@ -18,18 +18,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSession, findById } from "@/lib/authServer";
 import { hasPermission } from "@/lib/permissions";
+import { slugForCode, codeForSlug, allSlugs } from "@/lib/plantRegistry";
 
-export type PlantSlug = "rewari" | "gangakhed";
-
-const SLUG_BY_CODE: Record<string, PlantSlug> = { REW: "rewari", GKD: "gangakhed" };
-const CODE_BY_SLUG: Record<PlantSlug, string> = { rewari: "REW", gangakhed: "GKD" };
+/** Sheet folder: "rewari" (Mayan), "gangakhed", or a newer plant's code. */
+export type PlantSlug = string;
 
 export function slugToCode(slug: string): string | null {
-  return CODE_BY_SLUG[slug as PlantSlug] ?? null;
+  return codeForSlug(slug);
 }
 
 export function codeToSlug(code: string): PlantSlug | null {
-  return SLUG_BY_CODE[String(code || "").toUpperCase()] ?? null;
+  return slugForCode(code);
 }
 
 export interface PlantScope {
@@ -71,7 +70,7 @@ export async function resolvePlantScope(
   const unrestricted = hasPermission(user.role, "finance");
 
   if (unrestricted) {
-    const slug = (requested && codeToSlug(slugToCode(requested) || requested)) || "rewari";
+    const slug = (requested && codeToSlug(slugToCode(requested) || requested)) || allSlugs()[0] || "rewari";
     return { scope: { slug, unrestricted: true, userId: user.id, userName: user.name, role: user.role } };
   }
 

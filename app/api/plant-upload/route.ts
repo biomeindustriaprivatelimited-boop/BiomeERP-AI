@@ -5,6 +5,7 @@ import fs from "fs";
 import path from "path";
 import { paths, ensureDir } from "@/lib/dataRoot";
 import { resolvePlantScope } from "@/lib/plantScope";
+import { allSlugs } from "@/lib/plantRegistry";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -33,7 +34,7 @@ function uploadDir(plant: string) {
 }
 
 export async function POST(req: NextRequest) {
-  const auth = await requirePermission(req, "operations");
+  const auth = await requirePermission(req, "plant");
   if ("response" in auth) return auth.response;
 
   const form = await req.formData().catch(() => null);
@@ -94,7 +95,7 @@ export async function POST(req: NextRequest) {
 
 /** Open a stored slip. */
 export async function GET(req: NextRequest) {
-  const auth = await requirePermission(req, "operations");
+  const auth = await requirePermission(req, "plant");
   if ("response" in auth) return auth.response;
 
   const id = req.nextUrl.searchParams.get("id") || "";
@@ -108,7 +109,7 @@ export async function GET(req: NextRequest) {
   // A field role can only open slips from their own plant. An office role
   // may be looking at either, so both folders are searched for them.
   const folders = scoped.scope.unrestricted
-    ? ["rewari", "gangakhed"]
+    ? allSlugs()
     : [scoped.scope.slug];
 
   for (const plant of folders) {

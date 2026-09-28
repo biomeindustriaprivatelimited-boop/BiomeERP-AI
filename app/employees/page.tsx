@@ -5,7 +5,7 @@ import {
   UserCog, Plus, Loader2, AlertCircle, Check, Paperclip, FileText, ShieldAlert,
   Search, Snowflake, Contact, Landmark, Phone, ScrollText, Trash2,
 } from "lucide-react";
-import { PLANTS } from "@/lib/permissions";
+import { usePlants } from "@/lib/usePlants";
 import FormPanel, { FormSection } from "@/components/FormPanel";
 import { EmptyState } from "@/components/SetupGuide";
 
@@ -212,6 +212,7 @@ export default function EmployeesPage() {
 function AddEmployee({
   open, onClose, org, myPlant, onSaved,
 }: { open: boolean; onClose: () => void; org: any; myPlant: string | null; onSaved: () => void }) {
+  const PLANTS = usePlants();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState<any>({

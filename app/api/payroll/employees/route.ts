@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { plantOptions } from "@/lib/plants";
 import { requirePermission, findById, getSession } from "@/lib/authServer";
 import { hasPermission } from "@/lib/permissions";
 import {
@@ -7,12 +8,13 @@ import {
 } from "@/lib/payroll";
 import { loadOrg } from "@/lib/org";
 import { tableForPlant, checkAgainstFloor, checkWageTable, SkillCategory } from "@/lib/wages";
-import { PLANTS } from "@/lib/permissions";
+
+function livePlants() { return plantOptions().map((p) => ({ code: p.code, label: p.label })); }
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const PLANT_CODES = PLANTS.map((p) => p.code);
+const PLANT_CODES = { includes: (c: string) => livePlants().some((p) => p.code === c) };
 
 function readKyc(raw: any, existing?: EmployeeKyc): EmployeeKyc {
   const base = existing || blankKyc();
@@ -98,7 +100,7 @@ export async function GET(req: NextRequest) {
     canFreeze: hasPermission(user.role, "employee.freeze"),
     canUploadDocs: hasPermission(user.role, "employee.docs"),
     myPlant: canSeeAll ? null : auth.session.plant,
-    plants: PLANTS,
+    plants: livePlants(),
     org: loadOrg(),
     documentCategories: DOCUMENT_CATEGORIES,
     letterKinds: LETTER_KINDS,

@@ -22,7 +22,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       {
         error:
-          "Google credentials aren't set up yet. Add GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and GOOGLE_REDIRECT_URI to .env.local — see CLOUD-SETUP.md for the ten-minute walkthrough.",
+          "Google credentials aren't set up yet. Enter the Client ID and Client Secret under Cloud → Google Drive API credentials and press Save.",
         needsSetup: true,
       },
       { status: 409 }

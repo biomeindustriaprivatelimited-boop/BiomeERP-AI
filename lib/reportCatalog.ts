@@ -24,6 +24,7 @@ import { loadTrips, shortageFor, derivedStatus, TRIP_STATUS } from "@/lib/coordi
 import { loadPartners, gapsFor, PARTNER_KINDS, SUPPLY_CATEGORIES } from "@/lib/partners";
 import { loadStock, stockRows, computeBalances, balanceOf, MOVEMENT_LABEL } from "@/lib/stock";
 import { loadPlants } from "@/lib/plants";
+import { slugForCode } from "@/lib/plantRegistry";
 import { loadLeave } from "@/lib/leave";
 import { computeAll as computePos } from "@/lib/po";
 import { matchAll, tripPlant } from "@/lib/plantMatch";
@@ -63,7 +64,7 @@ export interface DatasetDef {
 
 const has = (ctx: ReportContext, p: Permission) => ctx.perms.includes(p);
 const plantLabel = (code: string) => loadPlants().find((p) => p.code === code)?.label || code || "—";
-const SLUG: Record<string, string> = { REW: "rewari", GKD: "gangakhed" };
+
 
 /** A field role sees its own plant; everybody else every plant. */
 function plantsFor(ctx: ReportContext, wide: Permission[] = ["finance", "users", "stock.manage"]): string[] {
@@ -83,7 +84,7 @@ function sheetPlants(ctx: ReportContext): string[] {
 }
 
 function plantSheet(kind: "biomass" | "transport", code: string): any[] {
-  const slug = SLUG[code];
+  const slug = slugForCode(code);
   if (!slug) return [];
   const f = readJson<{ rows?: any[] }>(path.join(paths.configDir, "plants", `${slug}-${kind}.json`), {});
   return Array.isArray(f.rows) ? f.rows : [];
@@ -211,7 +212,7 @@ export const DATASETS: DatasetDef[] = [
   {
     id: "transport", module: "Transport", label: "Transport — plant dispatch sheet",
     description: "Every vehicle out of the plant: weights, freight, driver, transporter; by plant, transporter, party, place, vehicle, driver, purpose.",
-    perms: ["operations"], dateField: "date",
+    perms: ["plant"], dateField: "date",
     columns: [
       { key: "date", label: "Date", type: "date" },
       { key: "plantName", label: "Plant", type: "text" },
@@ -245,7 +246,7 @@ export const DATASETS: DatasetDef[] = [
   {
     id: "biomass", module: "Biomass", label: "Biomass — purchase at plant",
     description: "Biomass bought at each plant: net and payable weight and value; by plant, vendor/farmer, village, material.",
-    perms: ["operations"], dateField: "date",
+    perms: ["plant"], dateField: "date",
     columns: [
       { key: "date", label: "Date", type: "date" },
       { key: "plantName", label: "Plant", type: "text" },

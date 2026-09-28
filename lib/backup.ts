@@ -49,6 +49,7 @@ const SENSITIVE_FILES: string[] = [
   "config/gdrive.json",
   "config/backup-schedule.json",
   "config/ai-keys.json",
+  "config/google-oauth.json",
 ];
 
 /**
@@ -63,6 +64,7 @@ export const KEEP_ON_RESTORE: string[] = [
   "config/gdrive.json",
   "config/backup-schedule.json",
   "config/ai-keys.json",
+  "config/google-oauth.json",
   "runtime",
   "backups",
 ];

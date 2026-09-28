@@ -3,7 +3,8 @@
 import { useEffect, useState } from "react";
 import Portal from "@/components/Portal";
 import { UserPlus, Loader2, AlertCircle, ShieldCheck, KeyRound, Factory, Pencil, Trash2, X } from "lucide-react";
-import { ROLES, PLANTS, Role } from "@/lib/permissions";
+import { ROLES, Role } from "@/lib/permissions";
+import { usePlants } from "@/lib/usePlants";
 import { useSession } from "@/lib/session";
 
 interface ListedUser {
@@ -32,6 +33,7 @@ const BLANK = {
 };
 
 export default function UsersPage() {
+  const PLANTS = usePlants();
   const { user: me } = useSession();
   const isDeveloper = me?.role === "developer";
   const [users, setUsers] = useState<ListedUser[]>([]);

@@ -5,6 +5,7 @@ import fs from "fs";
 import path from "path";
 import { paths } from "@/lib/dataRoot";
 import { resolvePlantScope } from "@/lib/plantScope";
+import { allSlugs } from "@/lib/plantRegistry";
 import { parseWeightSlip, verifyAgainstSlip, SheetRowValues } from "@/lib/weightSlip";
 
 export const runtime = "nodejs";
@@ -48,7 +49,7 @@ async function textFromFile(full: string, type: string): Promise<string> {
 }
 
 export async function POST(req: NextRequest) {
-  const auth = await requirePermission(req, "operations");
+  const auth = await requirePermission(req, "plant");
   if ("response" in auth) return auth.response;
 
   const body = await req.json().catch(() => null);
@@ -64,7 +65,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Not found." }, { status: 404 });
   }
 
-  const folders = scoped.scope.unrestricted ? ["rewari", "gangakhed"] : [scoped.scope.slug];
+  const folders = scoped.scope.unrestricted ? allSlugs() : [scoped.scope.slug];
   let full: string | null = null;
   let type = "";
 

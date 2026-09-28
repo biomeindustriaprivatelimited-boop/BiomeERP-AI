@@ -18,7 +18,7 @@ import FormPanel, { FormSection } from "@/components/FormPanel";
  */
 
 interface Reply { id: string; byName: string; byRole: string; message: string; at: string; }
-type Status = "submitted" | "accepted" | "pending_admin" | "resolved" | "rejected" | "closed";
+type Status = "submitted" | "accepted" | "pending_admin" | "reopened" | "resolved" | "rejected" | "closed";
 interface StatusEvent { status: Status; at: string; byName: string; note: string; }
 interface FlowStep { id: Status; label: string; detail: string; step: number; }
 interface Ticket {
@@ -47,7 +47,7 @@ interface Board {
 
 export default function SupportPage() {
   const [data, setData] = useState<{
-    tickets: Ticket[]; canManage: boolean; canResolve: boolean;
+    tickets: Ticket[]; canManage: boolean; canResolve: boolean; canRaise?: boolean; canReopen?: boolean;
     topics: string[]; flow: FlowStep[]; urgentOpen: number;
     board?: Board | null; maxAttachments?: number;
   } | null>(null);
@@ -136,6 +136,7 @@ export default function SupportPage() {
         </div>
       )}
 
+      {data?.canRaise !== false ? (
       <button
         onClick={() => setOpen(true)}
         className="bmx-btn flex w-full items-center justify-between rounded-2xl border border-biome-line bg-biome-bgSoft px-5 py-4 text-left"
@@ -143,8 +144,13 @@ export default function SupportPage() {
         <span className="flex items-center gap-2 text-[13px] font-semibold text-biome-text">
           <MessageSquare size={15} className="text-biome-leaf" /> Write a message
         </span>
-        <span className="text-[11px] text-biome-muted">Opens as a card</span>
+        <span className="text-[11px] text-biome-muted">With or without documents · opens as a card</span>
       </button>
+      ) : (
+        <p className="rounded-2xl border border-biome-line bg-biome-bgSoft px-5 py-3 text-[11.5px] text-biome-muted">
+          Tickets are raised by the team. As {data?.canReopen ? "developer" : "admin"} you resolve or decline them below{data?.canReopen ? ", and only you can reopen or change a finished case" : ""}.
+        </p>
+      )}
 
       <FormPanel
         open={open}
@@ -282,6 +288,7 @@ export default function SupportPage() {
             ticket={t}
             canManage={data!.canManage}
             canResolve={data!.canResolve}
+            canReopen={!!data!.canReopen}
             flow={data!.flow}
             expanded={expanded === t.id}
             onToggle={() => setExpanded(expanded === t.id ? null : t.id)}
@@ -464,9 +471,9 @@ function Attachments({
 }
 
 function TicketCard({
-  ticket, canManage, canResolve, flow, expanded, onToggle, onAct, onChanged, busy, index,
+  ticket, canManage, canResolve, canReopen, flow, expanded, onToggle, onAct, onChanged, busy, index,
 }: {
-  ticket: Ticket; canManage: boolean; canResolve: boolean; flow: FlowStep[];
+  ticket: Ticket; canManage: boolean; canResolve: boolean; canReopen: boolean; flow: FlowStep[];
   expanded: boolean; onToggle: () => void;
   onAct: (id: string, message: string, status?: Status, outcome?: string) => void;
   onChanged: () => void;
@@ -558,10 +565,11 @@ function TicketCard({
 
           {settled && (
             <div className="mt-4 rounded-xl border border-amber-500/30 bg-amber-500/[.06] px-4 py-3">
-              <p className="text-[11.5px] font-semibold text-amber-600">Did this actually sort it?</p>
+              <p className="text-[11.5px] font-semibold text-amber-600">This case is finished.</p>
               <p className="mt-1 text-[11px] leading-relaxed text-biome-muted">
-                If not, write below and send. It reopens this same message and goes back to the desk with its whole
-                history — please don&rsquo;t raise a fresh one, or the earlier answer gets lost.
+                {canReopen
+                  ? "Only you (developer) can reopen it or change its status — use the buttons below."
+                  : "Only the developer can reopen it or change its status. You can still add a reply below — the developer will see it."}
               </p>
             </div>
           )}
@@ -582,8 +590,23 @@ function TicketCard({
               disabled={busy || text.trim().length < 2}
               className="bmx-btn flex items-center gap-1.5 rounded-xl bg-biome-leaf px-3.5 py-2.5 text-[11px] font-bold text-white disabled:opacity-50"
             >
-              <Send size={12} />{settled ? "Reopen with this reply" : "Reply"}
+              <Send size={12} />Reply
             </button>
+
+            {canReopen && settled && (
+              <button onClick={() => { onAct(ticket.id, text || "Reopened by the developer.", "reopened"); setText(""); }} disabled={busy}
+                className="bmx-chip flex items-center gap-1.5 rounded-xl border border-amber-500/40 px-3.5 py-2.5 text-[11px] font-bold text-amber-600">
+                <ArrowUp size={12} /> Reopen (developer)
+              </button>
+            )}
+            {canReopen && settled && (
+              <select value="" disabled={busy}
+                onChange={(e) => { const st = e.target.value as Status; if (!st) return; if ((st === "resolved" || st === "rejected") && text.trim().length < 2) { window.alert("Write the reason in the box first."); return; } onAct(ticket.id, text, st, st === "resolved" || st === "rejected" ? text : undefined); setText(""); }}
+                className="rounded-xl border border-biome-line bg-biome-bg px-2.5 py-2 text-[11px] text-biome-text">
+                <option value="">Change status…</option>
+                {flow.filter((f) => f.id !== ticket.status).map((f) => <option key={f.id} value={f.id}>{f.label}</option>)}
+              </select>
+            )}
 
             {canManage && ticket.status === "submitted" && (
               <button onClick={() => { onAct(ticket.id, text, "accepted"); setText(""); }} disabled={busy}
@@ -613,7 +636,7 @@ function TicketCard({
               </>
             )}
 
-            {ticket.status !== "closed" && (canManage || !settled) && (
+            {ticket.status !== "closed" && !settled && (
               <button onClick={() => { onAct(ticket.id, text, "closed"); setText(""); }} disabled={busy}
                 className="bmx-chip flex items-center gap-1.5 rounded-xl border border-biome-line px-3.5 py-2.5 text-[11px] font-semibold text-biome-muted">
                 <Check size={12} /> Close
@@ -701,6 +724,7 @@ function StatusPill({ status, flow }: { status: Status; flow: FlowStep[] }) {
     submitted: "border-amber-500/30 bg-amber-500/10 text-amber-600",
     accepted: "border-sky-500/30 bg-sky-500/10 text-sky-600",
     pending_admin: "border-violet-500/30 bg-violet-500/10 text-violet-600",
+    reopened: "border-amber-500/40 bg-amber-500/10 text-amber-700",
     resolved: "border-emerald-500/30 bg-emerald-500/10 text-emerald-600",
     rejected: "border-rose-500/30 bg-rose-500/10 text-rose-500",
     closed: "border-biome-line text-biome-muted",

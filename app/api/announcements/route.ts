@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { plantOptions } from "@/lib/plants";
 import { requirePermission, getSession, findById, loadUsers } from "@/lib/authServer";
 import { loadEmployees } from "@/lib/payroll";
 import { sendMail } from "@/lib/mailer";
@@ -6,7 +7,7 @@ import {
   loadAnnouncements, saveAnnouncements, makeAnnouncement, unreadFor,
   isFor, emailText, ANNOUNCEMENT_KINDS, Announcement, AnnouncementKind, DeliveryRecord,
 } from "@/lib/announcements";
-import { ROLES, Role, PLANTS, hasPermission } from "@/lib/permissions";
+import { ROLES, Role, hasPermission } from "@/lib/permissions";
 import { recordAudit } from "@/lib/audit";
 
 /**
@@ -17,6 +18,8 @@ import { recordAudit } from "@/lib/audit";
  * ordinary user reading the raw response still only sees their own.
  * Writing is `announce`, which only the developer holds.
  */
+function livePlants() { return plantOptions().map((p) => ({ code: p.code, label: p.label })); }
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -44,7 +47,7 @@ export async function GET(req: NextRequest) {
     canWrite,
     kinds: ANNOUNCEMENT_KINDS,
     roles: ROLES,
-    plants: PLANTS,
+    plants: livePlants(),
     recipients: canWrite
       ? loadUsers().filter((u) => u.active).map((u) => ({ id: u.id, name: u.name, role: u.role, plants: u.plants }))
       : [],

@@ -46,7 +46,7 @@ const ITEMS: SearchItem[] = [
   { href: "/payments", label: "Payments", description: "Payment tracking", icon: Wallet, keywords: [] },
   { href: "/gst-compliance", label: "GST Compliance", description: "GST filing & checks", icon: ShieldCheck, keywords: ["gst", "gstr", "tax"] },
   { href: "/billing-sop", label: "Billing SOP", description: "Billing standard procedures", icon: ClipboardList, keywords: ["sop", "billing"] },
-  { href: "/plants", label: "Plants", description: "Gangakhed, Rewari & other plants", icon: Factory, keywords: ["gangakhed", "rewari", "plant"] },
+  { href: "/plants", label: "Plants", description: "Mayan, Gangakhed & other plants", icon: Factory, keywords: ["mayan", "gangakhed", "rewari", "plant"] },
   { href: "/transport", label: "Transport", description: "Transport & weighbridge", icon: Truck, keywords: ["truck", "weighbridge"] },
   { href: "/vendors", label: "Vendors", description: "Vendor / AP management", icon: Users, keywords: ["vendor", "ap", "supplier"] },
   { href: "/customers", label: "Customers", description: "Customer management", icon: UserCheck, keywords: ["client", "party"] },

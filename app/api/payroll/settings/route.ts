@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
+import { plantOptions } from "@/lib/plants";
 import { requirePermission } from "@/lib/authServer";
 import { loadSettings, saveSettings, DEFAULT_SETTINGS, PayrollSettings } from "@/lib/payroll";
-import { PLANTS } from "@/lib/permissions";
+
+function livePlants() { return plantOptions().map((p) => ({ code: p.code, label: p.label })); }
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -9,7 +11,7 @@ export const dynamic = "force-dynamic";
 export async function GET(req: NextRequest) {
   const auth = await requirePermission(req, "payroll");
   if ("response" in auth) return auth.response;
-  return NextResponse.json({ settings: loadSettings(), defaults: DEFAULT_SETTINGS, plants: PLANTS });
+  return NextResponse.json({ settings: loadSettings(), defaults: DEFAULT_SETTINGS, plants: livePlants() });
 }
 
 /**
@@ -77,7 +79,7 @@ export async function PUT(req: NextRequest) {
 
   if (incoming.professionalTax && typeof incoming.professionalTax === "object") {
     const cleaned: PayrollSettings["professionalTax"] = { ...current.professionalTax };
-    for (const plant of PLANTS.map((p) => p.code)) {
+    for (const plant of livePlants().map((p) => p.code)) {
       const raw = (incoming.professionalTax as any)[plant];
       if (!raw) continue;
       cleaned[plant] = {

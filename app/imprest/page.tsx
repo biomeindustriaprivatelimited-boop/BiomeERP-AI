@@ -6,7 +6,7 @@ import {
   Wallet, Plus, Paperclip, Check, X, Loader2, AlertCircle, Users, Receipt,
   ArrowDownLeft, RotateCcw, Clock, Filter, Trash2, Pencil, Target, TrendingUp,
 } from "lucide-react";
-import { PLANTS } from "@/lib/permissions";
+import { usePlants } from "@/lib/usePlants";
 import SetupGuide, { EmptyState } from "@/components/SetupGuide";
 import PhoneLink from "@/components/imprest/PhoneLink";
 import FormPanel, { FormSection } from "@/components/FormPanel";
@@ -287,6 +287,7 @@ export default function ImprestPage() {
 /* ------------------------------------------------------------------ */
 
 function FloatCard({ person, compact }: { person: Person; compact?: boolean }) {
+  const PLANTS = usePlants();
   const b = person.balance;
   if (!b) return null;
   const short = b.inHand < 0;
@@ -1103,6 +1104,7 @@ function BudgetPanel({ onChanged }: { onChanged: () => void }) {
 }
 
 function PeoplePanel({ onChanged }: { onChanged: () => void }) {
+  const PLANTS = usePlants();
   const [data, setData] = useState<{ people: Person[]; users: any[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);

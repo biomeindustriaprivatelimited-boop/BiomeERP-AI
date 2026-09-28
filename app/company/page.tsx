@@ -193,12 +193,13 @@ export default function CompanyProfilePage() {
         </h2>
         <div className="grid gap-4 sm:grid-cols-2">
           {TEAM.map((t, i) => (
-            <GlassCard key={t.name} delay={i * 0.08} className="flex items-center gap-4 p-5">
-              <div className="relative h-16 w-16 shrink-0 overflow-hidden rounded-full border border-biome-line">
-                <Image src={t.photo} alt={t.name} fill className="object-cover" sizes="64px" />
+            <GlassCard key={t.name} delay={i * 0.08} className="flex items-center gap-5 p-5">
+              <div className="relative h-28 w-28 shrink-0 overflow-hidden rounded-2xl border-2 border-biome-leaf/30 shadow-md">
+                <Image src={t.photo} alt={t.name} fill className="object-cover object-top" sizes="112px" />
               </div>
               <div>
-                <h3 className="font-display text-sm font-medium text-biome-text">
+                <p className="text-[10px] font-bold uppercase tracking-[.14em] text-biome-leaf">Director {i + 1}</p>
+                <h3 className="font-display text-base font-semibold text-biome-text">
                   {t.name}
                 </h3>
                 <p className="text-xs text-biome-muted">{t.role}</p>

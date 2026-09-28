@@ -1,3 +1,4 @@
+import { normaliseRowWeights } from "@/lib/units";
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/lib/authServer";
 import path from "path";
@@ -20,8 +21,7 @@ import { resolvePlantScope } from "@/lib/plantScope";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-type PlantId = "rewari" | "gangakhed";
-const PLANTS: PlantId[] = ["rewari", "gangakhed"];
+import { allSlugs } from "@/lib/plantRegistry";
 
 interface Vendor {
   code: string;
@@ -34,7 +34,8 @@ interface SheetRow extends Record<string, any> {
 }
 
 function plantFile(kind: "vendors" | "biomass" | "transport", plant: string) {
-  const safe = PLANTS.includes(plant as PlantId) ? plant : "rewari";
+  const slugs = allSlugs();
+  const safe = slugs.includes(plant) ? plant : slugs[0] || "rewari";
   return path.join(paths.configDir, "plants", `${safe}-${kind}.json`);
 }
 
@@ -51,7 +52,7 @@ function writeList<T>(file: string, key: string, list: T[]) {
 // ---------------------------------------------------------------------
 
 export async function GET(req: NextRequest) {
-  const auth = await requirePermission(req, "operations");
+  const auth = await requirePermission(req, "plant");
   if ("response" in auth) return auth.response;
 
   const what = req.nextUrl.searchParams.get("what") || "rows";
@@ -75,11 +76,13 @@ export async function GET(req: NextRequest) {
     plant,
     kind,
     rows: readList<SheetRow>(plantFile(kind, plant), "rows"),
+    // Office roles read the plant's book; only the plant manager writes it.
+    readOnly: !(scoped.scope.role === "plant_manager" || scoped.scope.role === "developer"),
   });
 }
 
 export async function POST(req: NextRequest) {
-  const auth = await requirePermission(req, "operations");
+  const auth = await requirePermission(req, "plant");
   if ("response" in auth) return auth.response;
 
   let body: any;
@@ -97,6 +100,9 @@ export async function POST(req: NextRequest) {
 
   // ---- Importing a vendor list ----
   if (body.what === "vendors") {
+    if (!(scoped.scope.role === "plant_manager" || scoped.scope.role === "developer")) {
+      return NextResponse.json({ error: "Only the plant manager keeps the plant's vendor list." }, { status: 403 });
+    }
     // Accepts a pasted block from Excel: "BIO01<tab>AMAN MAYAN" per line,
     // or comma-separated. Pasting is what people actually do; asking for
     // a file upload for four columns would be ceremony.
@@ -151,14 +157,33 @@ export async function POST(req: NextRequest) {
 
   // ---- Saving sheet rows ----
   const kind = body.kind === "transport" ? "transport" : "biomass";
+
+  // The plant's books are the plant manager's: only they (and the
+  // developer) enter or change rows. Accounts / admin read them and may
+  // write in their own remarks column — nothing else they send is kept.
+  const entryRole = scoped.scope.role === "plant_manager" || scoped.scope.role === "developer";
+  if (!entryRole) {
+    const existing = readList<SheetRow>(plantFile(kind, plant), "rows");
+    const incoming = new Map<string, any>((Array.isArray(body.rows) ? body.rows : []).filter((r: any) => r?.id).map((r: any) => [String(r.id), r]));
+    const merged = existing.map((r: any) => {
+      const inc = incoming.get(String(r.id));
+      return inc && inc.accountsRemarks !== undefined && inc.accountsRemarks !== r.accountsRemarks
+        ? { ...r, accountsRemarks: String(inc.accountsRemarks).slice(0, 500), updatedAt: new Date().toISOString() }
+        : r;
+    });
+    writeList(plantFile(kind, plant), "rows", merged);
+    return NextResponse.json({ ok: true, saved: merged.length, plant, kind, rows: merged, readOnly: true });
+  }
+
   const rows: SheetRow[] = Array.isArray(body.rows)
     ? body.rows.map((r: any, i: number) => ({
-        ...r,
+        // Weights are kept in kg — "28.4 MT" or "284 qtl" is converted here.
+        ...normaliseRowWeights(r),
         id: r.id || `${kind}-${Date.now()}-${i}`,
         updatedAt: new Date().toISOString(),
       }))
     : [];
 
   writeList(plantFile(kind, plant), "rows", rows);
-  return NextResponse.json({ ok: true, saved: rows.length, plant, kind });
+  return NextResponse.json({ ok: true, saved: rows.length, plant, kind, rows });
 }

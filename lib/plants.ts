@@ -24,7 +24,7 @@ import { paths, readJson, writeJsonAtomic, ensureDir } from "@/lib/dataRoot";
 
 /** The states the business currently operates in, plus the office. */
 export const STATES: { code: string; label: string; help: string }[] = [
-  { code: "HR", label: "Haryana", help: "Rewari and anything else in Haryana." },
+  { code: "HR", label: "Haryana", help: "Mayan (Rewari) and anything else in Haryana." },
   { code: "MH", label: "Maharashtra", help: "Gangakhed and anything else in Maharashtra." },
   { code: "DL", label: "Delhi", help: "Head office. Office roles with no plant follow this." },
   { code: "UP", label: "Uttar Pradesh", help: "" },
@@ -32,6 +32,20 @@ export const STATES: { code: string; label: string; help: string }[] = [
   { code: "MP", label: "Madhya Pradesh", help: "" },
   { code: "RJ", label: "Rajasthan", help: "" },
   { code: "GJ", label: "Gujarat", help: "" },
+  { code: "KA", label: "Karnataka", help: "" },
+  { code: "TN", label: "Tamil Nadu", help: "" },
+  { code: "AP", label: "Andhra Pradesh", help: "" },
+  { code: "TG", label: "Telangana", help: "" },
+  { code: "WB", label: "West Bengal", help: "" },
+  { code: "BR", label: "Bihar", help: "" },
+  { code: "JH", label: "Jharkhand", help: "" },
+  { code: "OR", label: "Odisha", help: "" },
+  { code: "CG", label: "Chhattisgarh", help: "" },
+  { code: "UK", label: "Uttarakhand", help: "" },
+  { code: "HP", label: "Himachal Pradesh", help: "" },
+  { code: "KL", label: "Kerala", help: "" },
+  { code: "GA", label: "Goa", help: "" },
+  { code: "AS", label: "Assam", help: "" },
 ];
 
 export interface Plant {
@@ -60,7 +74,7 @@ function file(): string {
 function seed(): Plant[] {
   const now = new Date().toISOString();
   return [
-    { code: "REW", label: "Rewari", state: "HR", location: "Rewari, Haryana", active: true, createdAt: now, updatedAt: now },
+    { code: "REW", label: "Mayan", state: "HR", location: "Mayan Village, Rewari, Haryana", active: true, createdAt: now, updatedAt: now },
     { code: "GKD", label: "Gangakhed", state: "MH", location: "Gangakhed, Maharashtra", active: true, createdAt: now, updatedAt: now },
   ];
 }
@@ -74,9 +88,11 @@ export function loadPlants(): Plant[] {
   }
   return f.plants.map((p) => ({
     code: String(p.code || "").toUpperCase(),
-    label: String(p.label || p.code || ""),
+    // The first plant is the MAYAN plant (Mayan village, Rewari district).
+    // Records written when it was called "Rewari" read as Mayan.
+    label: String(p.code).toUpperCase() === "REW" && String(p.label || "").trim().toLowerCase() === "rewari" ? "Mayan" : String(p.label || p.code || ""),
     state: String(p.state || "DL").toUpperCase(),
-    location: String(p.location || ""),
+    location: String(p.code).toUpperCase() === "REW" && String(p.location || "").trim().toLowerCase() === "rewari, haryana" ? "Mayan Village, Rewari, Haryana" : String(p.location || ""),
     active: p.active !== false,
     createdAt: String(p.createdAt || ""),
     updatedAt: String(p.updatedAt || ""),
@@ -114,6 +130,7 @@ export function plantsInState(state: string): Plant[] {
 export function plantOptions(): { code: string; label: string; state: string }[] {
   return loadPlants()
     .filter((p) => p.active)
-    .sort((a, b) => a.label.localeCompare(b.label))
+    // Master order, not alphabetical: Mayan is plant 1, Gangakhed plant 2,
+    // and a plant the developer adds later comes after them.
     .map((p) => ({ code: p.code, label: p.label, state: p.state }));
 }

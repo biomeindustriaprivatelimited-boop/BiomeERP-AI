@@ -24,7 +24,7 @@ const nodeRequire = createRequire(import.meta.url);
  * per client, and a sheet of just the trips that need chasing.
  */
 export async function GET(req: NextRequest) {
-  const auth = await requirePermission(req, "operations");
+  const auth = await requirePermission(req, "coordination");
   if ("response" in auth) return auth.response;
 
   let ExcelJS: any;

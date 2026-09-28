@@ -10,7 +10,8 @@ import NotificationBell from "@/components/NotificationBell";
 import AndroidAppButton from "@/components/AndroidAppButton";
 import { getColorMode, setColorMode, type ColorMode } from "@/lib/preferences";
 import { useSession } from "@/lib/session";
-import { ROLES, PLANTS } from "@/lib/permissions";
+import { ROLES } from "@/lib/permissions";
+import { usePlants } from "@/lib/usePlants";
 
 /**
  * The application top bar.
@@ -20,6 +21,7 @@ import { ROLES, PLANTS } from "@/lib/permissions";
  * in the page itself, so this never competes with the content below it.
  */
 export default function Navbar() {
+  const PLANTS = usePlants();
   const { user, plant, can, signOut } = useSession();
   const [mode, setMode] = useState<ColorMode>("light");
   const [menuOpen, setMenuOpen] = useState(false);

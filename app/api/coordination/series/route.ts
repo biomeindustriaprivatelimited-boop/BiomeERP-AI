@@ -23,7 +23,7 @@ function canEdit(role: string): boolean {
 }
 
 export async function GET(req: NextRequest) {
-  const auth = await requirePermission(req, "operations");
+  const auth = await requirePermission(req, "coordination");
   if ("response" in auth) return auth.response;
   const user = findById(auth.session.uid)!;
 
@@ -39,7 +39,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const auth = await requirePermission(req, "operations");
+  const auth = await requirePermission(req, "coordination");
   if ("response" in auth) return auth.response;
   const user = findById(auth.session.uid)!;
   if (!canEdit(user.role)) {
@@ -93,7 +93,7 @@ export async function POST(req: NextRequest) {
 }
 
 export async function PUT(req: NextRequest) {
-  const auth = await requirePermission(req, "operations");
+  const auth = await requirePermission(req, "coordination");
   if ("response" in auth) return auth.response;
   const user = findById(auth.session.uid)!;
   if (!canEdit(user.role)) {

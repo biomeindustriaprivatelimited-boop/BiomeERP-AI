@@ -1,13 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
+import { plantOptions } from "@/lib/plants";
 import { requirePermission, loadUsers, publicUser } from "@/lib/authServer";
 import { loadPeople, savePeople, makePerson, loadEntries, balanceFor } from "@/lib/imprest";
 import { loadEmployees } from "@/lib/payroll";
-import { PLANTS } from "@/lib/permissions";
+
+function livePlants() { return plantOptions().map((p) => ({ code: p.code, label: p.label })); }
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const PLANT_CODES = PLANTS.map((p) => p.code);
+const PLANT_CODES = { includes: (c: string) => livePlants().some((p) => p.code === c) };
 
 /**
  * The register of people who hold a float. Managed by accounts and admin;
@@ -31,7 +33,7 @@ export async function GET(req: NextRequest) {
       .filter((e) => e.active)
       .map((e) => ({ id: e.id, code: e.code, name: e.name, designation: e.designation, plant: e.plant }))
       .sort((a, b) => a.name.localeCompare(b.name)),
-    plants: PLANTS,
+    plants: livePlants(),
   });
 }
 

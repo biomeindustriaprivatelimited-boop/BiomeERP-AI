@@ -16,6 +16,7 @@
  *     nobody assumes more than it gives.
  */
 
+import { storedGoogleKeys } from "@/lib/aiKeys";
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
@@ -115,11 +116,16 @@ export function publicConnection(c: CloudConnection | null) {
   };
 }
 
+/**
+ * The OAuth client. `.env.local` wins when it has a value; otherwise the
+ * one saved from Settings → Cloud (encrypted in config/google-oauth.json).
+ */
 export function googleConfig() {
+  const stored = storedGoogleKeys();
   return {
-    clientId: (process.env.GOOGLE_CLIENT_ID || "").trim(),
-    clientSecret: (process.env.GOOGLE_CLIENT_SECRET || "").trim(),
-    redirectUri: (process.env.GOOGLE_REDIRECT_URI || "").trim(),
+    clientId: (process.env.GOOGLE_CLIENT_ID || "").trim() || stored.clientId,
+    clientSecret: (process.env.GOOGLE_CLIENT_SECRET || "").trim() || stored.clientSecret,
+    redirectUri: (process.env.GOOGLE_REDIRECT_URI || "").trim() || stored.redirectUri,
   };
 }
 

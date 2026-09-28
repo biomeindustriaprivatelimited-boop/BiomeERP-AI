@@ -16,6 +16,8 @@
  * that is itself the finding, and silently fixing it would hide it.
  */
 
+import { toKg } from "@/lib/units";
+
 export interface WeightSlipFields {
   vehicleNo: string | null;
   slipNo: string | null;
@@ -125,7 +127,17 @@ export function parseWeightSlip(text: string): WeightSlipFields {
       if (out[`${key}Weight` as keyof WeightSlipFields] !== null) continue;
       if (!label.test(line)) continue;
       const after = valueAfterLabel(line, label);
-      const num = cleanNumber(after.split(/\s{2,}|\||;/)[0] || after);
+      const head = after.split(/\s{2,}|\||;/)[0] || after;
+      // Slips print kg, quintal or MT — everything is kept in kg.
+      const unitM = after.match(/^[^A-Za-z]*?([\d,]+\.?\d*)\s*(kgs?|qtls?|quintals?|mts?|tons?|tonnes?)\b/i);
+      let num = cleanNumber(head);
+      if (unitM) {
+        const kg = toKg(`${unitM[1]} ${unitM[2]}`);
+        if (kg !== null) num = kg;
+      } else if (num !== null && num > 0 && num < 100 && /\d\.\d/.test(head)) {
+        // "42.330" on a slip with no unit is tonnes.
+        num = Math.round(num * 1000);
+      }
       // A weighbridge figure under 100 is a misread, not a weight.
       if (num !== null && num >= 100 && num <= 200000) {
         (out as any)[`${key}Weight`] = num;
@@ -213,6 +225,9 @@ export interface SheetRowValues {
 
 const num = (v: unknown): number | null => {
   if (v === null || v === undefined || v === "") return null;
+  // Entered weights may still say "28.4 MT" / "284 qtl" — compare in kg.
+  const kg = toKg(typeof v === "string" ? v.trim() : v);
+  if (kg !== null) return kg;
   const n = Number(String(v).replace(/[,\s]/g, ""));
   return Number.isFinite(n) ? n : null;
 };

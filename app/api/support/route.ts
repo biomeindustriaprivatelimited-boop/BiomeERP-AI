@@ -98,7 +98,11 @@ export async function GET(req: NextRequest) {
     }),
     canManage,
     // Only the admin may resolve or reject; accounts can accept and refer.
-    canResolve: hasPermission(user.role, "users"),
+    canResolve: user.role === "admin" || user.role === "developer",
+    // Admin and developer answer tickets; everyone else raises them.
+    canRaise: user.role !== "admin" && user.role !== "developer",
+    // After a case is completed or declined, only the developer moves it.
+    canReopen: user.role === "developer",
     topics: SUPPORT_TOPICS,
     flow: STATUS_FLOW,
     urgentOpen: all.filter(
@@ -144,6 +148,11 @@ export async function POST(req: NextRequest) {
   if ("response" in auth) return auth.response;
 
   const user = findById(auth.session.uid)!;
+  // Tickets are raised by the people who USE the app; the admin and the
+  // developer are the ones who answer them.
+  if (user.role === "admin" || user.role === "developer") {
+    return NextResponse.json({ error: "Admin and developer resolve tickets — they don't raise them." }, { status: 403 });
+  }
   const body = await req.json().catch(() => null);
   if (!body) return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
 
@@ -235,7 +244,9 @@ export async function PUT(req: NextRequest) {
 
   const user = findById(auth.session.uid)!;
   const canManage = hasPermission(user.role, "support.manage");
-  const canResolve = hasPermission(user.role, "users");
+  // Resolve or decline: the admin or the developer.
+  const canResolve = user.role === "admin" || user.role === "developer";
+  const isDeveloper = user.role === "developer";
 
   const body = await req.json().catch(() => null);
   if (!body?.id) return NextResponse.json({ error: "Which message?" }, { status: 400 });
@@ -264,6 +275,16 @@ export async function PUT(req: NextRequest) {
   }
 
   const nextStatus = body.status ? (String(body.status) as Status) : null;
+  const settled = ["resolved", "rejected", "closed"].includes(ticket.status);
+  // Once the admin or developer has completed or declined a case, only the
+  // developer may reopen it or change its status. Anyone may still add a
+  // reply — it is read, but it does not move the case.
+  if (settled && nextStatus && !isDeveloper) {
+    return NextResponse.json({ error: "This case is finished. Only the developer can reopen it or change its status." }, { status: 403 });
+  }
+  if (nextStatus === "reopened" && !isDeveloper) {
+    return NextResponse.json({ error: "Only the developer can reopen a case." }, { status: 403 });
+  }
   if (nextStatus) {
     if (!STATUS_FLOW.some((f) => f.id === nextStatus)) {
       return NextResponse.json({ error: "Unknown status." }, { status: 400 });
@@ -273,7 +294,7 @@ export async function PUT(req: NextRequest) {
     if (nextStatus === "resolved" || nextStatus === "rejected") {
       if (!canResolve) {
         return NextResponse.json(
-          { error: "Only the admin can resolve or decline a case." },
+          { error: "Only the admin or the developer can resolve or decline a case." },
           { status: 403 }
         );
       }
@@ -285,6 +306,9 @@ export async function PUT(req: NextRequest) {
         );
       }
       updated.outcome = String(body.outcome || message).trim();
+    } else if (nextStatus === "reopened") {
+      updated.closedAt = null;
+      updated.reopenCount = (ticket.reopenCount || 0) + 1;
     } else if (nextStatus === "closed") {
       if (!canManage && !isOwn) {
         return NextResponse.json({ error: "You can't close this." }, { status: 403 });
@@ -296,7 +320,7 @@ export async function PUT(req: NextRequest) {
 
     updated.status = nextStatus;
     updated.history.push({ status: nextStatus, at: now, byName: user.name, note: message });
-  } else if (message && (isOwn || canManage) && ["resolved", "rejected", "closed"].includes(ticket.status)) {
+  } else if (message && isDeveloper && body.reopen === true && settled) {
     /**
      * The answer did not actually sort it.
      *

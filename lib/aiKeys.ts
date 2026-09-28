@@ -51,3 +51,32 @@ export function applyStoredAiKeys(): void {
   if (!(process.env.GEMINI_API_KEY || "").trim() && f.geminiEnc) process.env.GEMINI_API_KEY = dec(f.geminiEnc);
   if (!(process.env.ANTHROPIC_API_KEY || "").trim() && f.anthropicEnc) process.env.ANTHROPIC_API_KEY = dec(f.anthropicEnc);
 }
+
+/* ------------------------------------------------------------------ */
+/* Google Drive OAuth client — also set from the app, not .env.local   */
+/* ------------------------------------------------------------------ */
+
+interface GoogleStored { clientIdEnc?: string; clientSecretEnc?: string; redirectUri?: string; updatedAt?: string }
+function googleFile() { return path.join(paths.configDir, "google-oauth.json"); }
+
+/** Save the Drive OAuth client (Settings → Cloud). Takes effect at once. */
+export function saveGoogleKeys(k: { clientId: string; clientSecret?: string; redirectUri: string }): void {
+  const cur = readJson<GoogleStored>(googleFile(), {});
+  writeJsonAtomic(googleFile(), {
+    clientIdEnc: enc(k.clientId.trim()),
+    // A blank secret on re-save keeps the stored one — it is never shown back.
+    clientSecretEnc: k.clientSecret && k.clientSecret.trim() ? enc(k.clientSecret.trim()) : cur.clientSecretEnc || "",
+    redirectUri: k.redirectUri.trim(),
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+/** The stored Drive OAuth client, decrypted; empty strings when not set. */
+export function storedGoogleKeys(): { clientId: string; clientSecret: string; redirectUri: string; updatedAt: string } {
+  const f = readJson<GoogleStored>(googleFile(), {});
+  return { clientId: dec(f.clientIdEnc || ""), clientSecret: dec(f.clientSecretEnc || ""), redirectUri: f.redirectUri || "", updatedAt: f.updatedAt || "" };
+}
+
+export function clearGoogleKeys(): void {
+  writeJsonAtomic(googleFile(), { updatedAt: new Date().toISOString() });
+}

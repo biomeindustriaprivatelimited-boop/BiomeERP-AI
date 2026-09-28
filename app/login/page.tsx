@@ -8,9 +8,10 @@ import BiomassLoginScene from "@/components/brand/BiomassLoginScene";
 import BiomeLogo from "@/components/brand/BiomeLogo";
 import { CursorGlow } from "@/components/fx";
 import { useSession } from "@/lib/session";
-import { PLANTS } from "@/lib/permissions";
+import { usePlants } from "@/lib/usePlants";
 
 export default function LoginPage() {
+  const PLANTS = usePlants();
   const router = useRouter();
   const { refresh } = useSession();
   const [userId, setUserId] = useState("");

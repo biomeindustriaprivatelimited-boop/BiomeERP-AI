@@ -10,6 +10,7 @@ import AnimatedBackground from "@/components/AnimatedBackground";
 import SplashScreen from "@/components/brand/SplashScreen";
 import PreferencesInit from "@/components/PreferencesInit";
 import UpdateBanner from "@/components/UpdateBanner";
+import NoticeBanner from "@/components/NoticeBanner";
 import ServerGuard from "@/components/ServerGuard";
 import { PageWipe } from "@/components/motion/kit";
 import FeatureShell from "@/components/FeatureShell";
@@ -127,7 +128,7 @@ function Gate({ children }: { children: React.ReactNode }) {
                 running, that is the most important thing on the screen. */}
             <OverrideBanner />
             <UpdateBanner />
-            <main className="flex-1 overflow-y-auto overflow-x-hidden px-3 pb-16 pt-4 sm:px-5 sm:pt-5 md:px-7"><PageWipe id={pathname}><FeatureShell>{children}</FeatureShell></PageWipe></main>
+            <main className="flex-1 overflow-y-auto overflow-x-hidden px-3 pb-16 pt-4 sm:px-5 sm:pt-5 md:px-7"><NoticeBanner /><PageWipe id={pathname}><FeatureShell>{children}</FeatureShell></PageWipe></main>
           </div>
         </div>
       </NotificationsProvider>

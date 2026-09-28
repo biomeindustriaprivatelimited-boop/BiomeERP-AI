@@ -22,8 +22,8 @@ export const ROLES: { id: Role; label: string; description: string }[] = [
   { id: "developer", label: "Developer", description: "Everything, plus access control and feature switches" },
   { id: "admin", label: "Admin", description: "Day-to-day everything — access control sits with the developer" },
   { id: "accounts", label: "Accounts", description: "Finance, Tally, approvals — no app settings" },
-  { id: "coordinator", label: "Coordinator", description: "Supply coordination, documents, WhatsApp" },
-  { id: "plant_manager", label: "Plant Manager", description: "Plant entries only — no Tally, no WhatsApp, no coordination" },
+  { id: "coordinator", label: "Coordinator", description: "All coordination, own imprest, WhatsApp documents — no plant sheets" },
+  { id: "plant_manager", label: "Plant Manager", description: "Own plant: biomass, transport, plant imprest, spare-parts stock — no coordination" },
   { id: "procurement", label: "Procurement", description: "Plant stock & spare parts for every plant, spare-part vendors, stock reports" },
 ];
 
@@ -41,10 +41,19 @@ export type Permission =
   | "assistant"
   | "operations" // view plants and transport
   | "operations.entry" // create/edit plant and transport entries
+  // The plant's own books: biomass sheet, transport sheet, weight-slip
+  // checks. Its own key so a coordinator (who holds "operations" for PO
+  // Control) never reads a plant sheet, and a plant manager never needs
+  // "operations" and so never reaches coordination or PO data.
+  | "plant"
   // Supply coordination — its own key rather than riding on "operations".
   // A plant manager needs plant and transport entry but must NOT see the
   // coordination register, and the two were sharing one permission.
   | "coordination"
+  // Plant ↔ coordination reconciliation: both sides' figures for every
+  // mismatch, the 3-day red flags, and sending the teams a notice.
+  // Accounts / admin / developer — never a plant manager or a coordinator.
+  | "reco"
   | "vendors"
   | "customers"
   // Commercial registration — agreements, rates, bank details. Its own key
@@ -55,6 +64,7 @@ export type Permission =
   | "imprest.view"     // see my own float
   | "imprest.approve"  // accept or reject entries put in front of you
   | "imprest.viewAll"  // read every holder's full ledger — admin only
+  | "imprest.viewPlant" // read every holder's ledger at MY plant — plant manager
   | "imprest.manage"   // add and edit imprest holders
   | "payroll"          // salary sheets, slips, PF/ESIC
   | "payroll.approve"  // lock a month and mark it paid
@@ -97,7 +107,9 @@ const ALL: Permission[] = [
   "assistant",
   "operations",
   "operations.entry",
+  "plant",
   "coordination",
+  "reco",
   "vendors",
   "customers",
   "partners",
@@ -105,6 +117,7 @@ const ALL: Permission[] = [
   "imprest.view",
   "imprest.approve",
   "imprest.viewAll",
+  "imprest.viewPlant",
   "imprest.manage",
   "payroll",
   "payroll.approve",
@@ -160,7 +173,9 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "ocr",
     "assistant",
     "operations",
+    "plant",
     "coordination",
+    "reco",
     "vendors",
     "customers",
     "partners",
@@ -176,8 +191,8 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "attendance.entry",
     "attendance.approve",
     "reports",
-    "stock",
-    "stock.manage",
+    // No plant stock: spare parts are the plant manager's and procurement's.
+    // The developer can still grant it to one accounts person if needed.
     "support",
     "work",
     "support.manage",
@@ -214,11 +229,15 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
   // link, so a hand-typed URL fails the same way a click would.
   plant_manager: [
     "documents",
-    "operations",
+    // Plant books only — biomass, transport, slip checks. No "operations",
+    // so no PO Control and nothing from coordination.
+    "plant",
     "operations.entry",
     "partners",
     "imprest.entry",
     "imprest.view",
+    // Every imprest holder at the plant they are signed in for.
+    "imprest.viewPlant",
     "attendance.entry",
     "employee.view",
     "employee.add",
@@ -284,8 +303,9 @@ export const ROUTE_PERMISSIONS: { prefix: string; permission: Permission }[] = [
   { prefix: "/api/clients", permission: "customers" },
   { prefix: "/api/company-documents", permission: "company" },
   { prefix: "/api/coordination", permission: "coordination" },
-  { prefix: "/api/plant-data", permission: "operations" },
+  { prefix: "/api/plant-data", permission: "plant" },
   { prefix: "/api/partners", permission: "partners" },
+  { prefix: "/api/mismatches", permission: "reco" },
   { prefix: "/api/followups", permission: "partners" },
   { prefix: "/api/work", permission: "work" },
   { prefix: "/api/workflows", permission: "work" },
@@ -306,12 +326,13 @@ export const ROUTE_PERMISSIONS: { prefix: string; permission: Permission }[] = [
   { prefix: "/api/reports-builder", permission: "reports" },
   { prefix: "/api/twin", permission: "developer" },
   { prefix: "/api/backup", permission: "settings" },
-  { prefix: "/api/plants-master", permission: "operations" },
+  { prefix: "/api/plants-master", permission: "plant" },
   { prefix: "/api/stock", permission: "stock" },
-  { prefix: "/api/plant-match", permission: "operations" },
-  { prefix: "/api/plant-verify", permission: "operations" },
-  { prefix: "/api/plant-upload", permission: "operations" },
-  { prefix: "/api/plant-sheet", permission: "operations" },
+  // Each side is checked inside the route (plant / coordination / full).
+  { prefix: "/api/plant-match", permission: "support" },
+  { prefix: "/api/plant-verify", permission: "plant" },
+  { prefix: "/api/plant-upload", permission: "plant" },
+  { prefix: "/api/plant-sheet", permission: "plant" },
   { prefix: "/api/users", permission: "users" },
   // Admin-only, same key as user management: the power to edit a frozen
   // record belongs with the power to change who can log in.
@@ -352,11 +373,12 @@ export const ROUTE_PERMISSIONS: { prefix: string; permission: Permission }[] = [
   { prefix: "/review-queue", permission: "documents" },
   { prefix: "/ocr", permission: "ocr" },
   { prefix: "/assistant", permission: "assistant" },
-  { prefix: "/plants", permission: "operations" },
-  { prefix: "/transport", permission: "operations" },
+  { prefix: "/plants", permission: "plant" },
+  { prefix: "/transport", permission: "plant" },
   { prefix: "/coordination", permission: "coordination" },
   { prefix: "/developer", permission: "developer" },
   { prefix: "/partners", permission: "partners" },
+  { prefix: "/mismatches", permission: "reco" },
   { prefix: "/followups", permission: "partners" },
   { prefix: "/work", permission: "developer" },
   { prefix: "/insights", permission: "developer" },
@@ -410,6 +432,8 @@ export const PUBLIC_PREFIXES = [
   // login screen itself sits behind the ServerGuard, and a 401 here was
   // read as "server down", blocking the whole app on its own doorstep.
   "/api/health",
+  // Plant names for the login picker — names only, nothing private.
+  "/api/plants",
   // Google's OAuth redirect lands in a plain browser tab with no app
   // session; the code inside is worthless without the Client Secret.
   "/api/gdrive/callback",
@@ -469,7 +493,7 @@ export function canAccessPath(
 
 /** Plant codes. Kept here so login, entries and filters agree on spelling. */
 export const PLANTS: { code: string; label: string }[] = [
-  { code: "REW", label: "Rewari" },
+  { code: "REW", label: "Mayan" },
   { code: "GKD", label: "Gangakhed" },
 ];
 
@@ -506,7 +530,10 @@ export const PERMISSION_INFO: Record<string, { label: string; what: string; why:
   whatsapp: { label: "WhatsApp Documents", what: "See the WhatsApp agent, filed supply sets, connection and training.", why: "Coordinators and accounts who work from supply documents.", risk: "medium" },
   ocr: { label: "AI OCR Scanner", what: "Scan documents to text/Excel; Smart Sheets batch extraction.", why: "Anyone digitising paper.", risk: "low" },
   finance: { label: "Finance", what: "Ledgers, reconciliation, payments, GST, billing SOP, delivery challans, PO override.", why: "Accounts only — it exposes money and Tally.", risk: "high" },
-  operations: { label: "Operations", what: "Plants, transport, PO Control.", why: "Coordinators and plant managers running supplies.", risk: "medium" },
+  operations: { label: "Operations (PO Control)", what: "Vendor and client purchase orders and their balances.", why: "Coordinators and accounts.", risk: "medium" },
+  reco: { label: "Plant ↔ coordination mismatches", what: "Both sides' figures for every vehicle/weight mismatch, the 3-day red flags, and notices to the teams.", why: "Accounts, admin, developer.", risk: "medium" },
+  plant: { label: "Plant sheets", what: "Biomass sheet, transport sheet and weight-slip checks — own plant only for a plant manager.", why: "Plant managers; accounts to verify.", risk: "medium" },
+  "imprest.viewPlant": { label: "Imprest — my plant", what: "Read every imprest holder's entries at the plant the person is signed in for.", why: "Plant managers.", risk: "medium" },
   coordination: { label: "Coordination", what: "Create and track supply trips, weights, receivings.", why: "Coordinators.", risk: "medium" },
   vendors: { label: "Vendors", what: "Vendor master, codes, balances.", why: "Coordinators and accounts.", risk: "medium" },
   customers: { label: "Clients", what: "Client master and document requirements.", why: "Coordinators and accounts.", risk: "medium" },

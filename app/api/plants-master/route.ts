@@ -18,7 +18,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
-  const auth = await requirePermission(req, "operations");
+  const auth = await requirePermission(req, "plant");
   if ("response" in auth) return auth.response;
   const user = findById(auth.session.uid)!;
 
@@ -35,16 +35,17 @@ export async function GET(req: NextRequest) {
       holidays: holidays.filter((h) => h.regions.includes(p.state)).length,
     })),
     states: STATES,
-    canEdit: hasPermission(user.role, "settings"),
+    // Adding or changing a plant is the developer's alone.
+    canEdit: hasPermission(user.role, "developer"),
   });
 }
 
 export async function POST(req: NextRequest) {
-  const auth = await requirePermission(req, "operations");
+  const auth = await requirePermission(req, "plant");
   if ("response" in auth) return auth.response;
   const user = findById(auth.session.uid)!;
-  if (!hasPermission(user.role, "settings")) {
-    return NextResponse.json({ error: "Only an admin can add a plant." }, { status: 403 });
+  if (!hasPermission(user.role, "developer")) {
+    return NextResponse.json({ error: "Only the developer can add a plant." }, { status: 403 });
   }
 
   const body = await req.json().catch(() => null);
@@ -87,11 +88,11 @@ export async function POST(req: NextRequest) {
 }
 
 export async function PUT(req: NextRequest) {
-  const auth = await requirePermission(req, "operations");
+  const auth = await requirePermission(req, "plant");
   if ("response" in auth) return auth.response;
   const user = findById(auth.session.uid)!;
-  if (!hasPermission(user.role, "settings")) {
-    return NextResponse.json({ error: "Only an admin can change a plant." }, { status: 403 });
+  if (!hasPermission(user.role, "developer")) {
+    return NextResponse.json({ error: "Only the developer can change a plant." }, { status: 403 });
   }
 
   const body = await req.json().catch(() => null);

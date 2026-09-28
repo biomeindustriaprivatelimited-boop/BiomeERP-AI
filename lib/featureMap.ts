@@ -56,6 +56,7 @@ export const FEATURE_MAP: FeatureCategory[] = [
     id: "supply", label: "Supply", tagline: "Trucks, weights, purchase orders — the physical business.", icon: "Truck", tone: "from-orange-500/25 to-amber-400/10",
     features: [
       { id: "coordination", label: "Coordination", href: "/coordination", icon: "Truck", perm: "coordination", what: "Every supply trip from dispatch to receiving, with weights, shortages and PO links." },
+      { id: "mismatches", label: "Plant ↔ Coordination mismatches", href: "/mismatches", icon: "Flag", perm: "reco", what: "Vehicle / weight differences between plant dispatch and the coordination register; red flag after 3 days unfixed; notify the team by app, email or WhatsApp." },
       { id: "po", label: "PO Control", href: "/po", icon: "Package", perm: "operations", what: "Vendor and client purchase orders with balances computed live from linked supplies; exhaustion alerts and accounts email." },
       { id: "operations", label: "Operations Board", href: "/operations", icon: "Map", perm: "developer", what: "Every load in motion and what is late." },
     ],
@@ -63,8 +64,8 @@ export const FEATURE_MAP: FeatureCategory[] = [
   {
     id: "plant", label: "Plant", tagline: "Everything that happens at the plant — biomass in, trucks out, spare parts and stores.", icon: "Factory", tone: "from-green-600/25 to-lime-400/10",
     features: [
-      { id: "plants", label: "Biomass entry", href: "/plants", icon: "Factory", perm: "operations", what: "Biomass purchase sheet per plant — weights, deductions, amount, weighbridge slip checked against the entry." },
-      { id: "transport", label: "Transport entry", href: "/transport", icon: "Truck", perm: "operations", what: "Every vehicle out of the plant — dispatch/receiving weight, freight, driver; matched against coordination." },
+      { id: "plants", label: "Biomass entry", href: "/plants", icon: "Factory", perm: "plant", what: "Biomass purchase sheet per plant — weights, deductions, amount, weighbridge slip checked against the entry." },
+      { id: "transport", label: "Transport entry", href: "/transport", icon: "Truck", perm: "plant", what: "Every vehicle out of the plant — dispatch/receiving weight, freight, driver; matched against coordination." },
       { id: "stock", label: "Stock · spare parts & stores", href: "/stock", icon: "Package", perm: "stock", what: "Purchases with invoice/parchi upload, stock on hand, parts issued to each machine, re-order alerts — Tally-style stock." },
       { id: "plant-vendors", label: "Plant vendors & clients", href: "/partners", icon: "Handshake", perm: "partners", what: "Register manufacturing-side vendors (biomass, spare parts, services) and clients with KYC." },
     ],

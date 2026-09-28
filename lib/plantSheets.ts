@@ -15,7 +15,8 @@
  * the plant manager already works in.
  */
 
-export type PlantId = "rewari" | "gangakhed";
+/** Sheet folder of a plant: "rewari" (Mayan), "gangakhed", or a new plant's code. */
+export type PlantId = string;
 
 export interface SheetColumn {
   /** Excel column letter, so an export lands where the plant expects it. */
@@ -31,6 +32,8 @@ export interface SheetColumn {
   compute?: (r: Record<string, any>) => number | string;
   width?: number;
   hint?: string;
+  /** Weight entry: typed in kg, qtl or MT, stored in kg. */
+  unit?: "kg";
 }
 
 const num = (v: any) => {
@@ -55,10 +58,10 @@ export const REWARI_COLUMNS: SheetColumn[] = [
   { cell: "G", key: "name", label: "Name", kind: "entry", width: 150 },
   { cell: "H", key: "village", label: "Village Location", kind: "entry", width: 140 },
   { cell: "I", key: "fs", label: "F/S", kind: "entry", width: 60, hint: "Farmer or Supplier" },
-  { cell: "J", key: "grossWeight", label: "Gross Weight", kind: "entry", type: "number", width: 110 },
-  { cell: "K", key: "tareWeight", label: "Tare Weight", kind: "entry", type: "number", width: 110 },
+  { cell: "J", key: "grossWeight", label: "Gross Weight (kg)", kind: "entry", type: "number", unit: "kg", width: 110 },
+  { cell: "K", key: "tareWeight", label: "Tare Weight (kg)", kind: "entry", type: "number", unit: "kg", width: 110 },
   {
-    cell: "L", key: "netWeight", label: "Net. Weight", kind: "derived", type: "number", width: 110,
+    cell: "L", key: "netWeight", label: "Net. Weight (kg)", kind: "derived", type: "number", width: 110,
     formula: "=J{row}-K{row}",
     compute: (r) => num(r.grossWeight) - num(r.tareWeight),
   },
@@ -88,7 +91,7 @@ export const REWARI_COLUMNS: SheetColumn[] = [
     },
   },
   {
-    cell: "S", key: "payableWeight", label: "Payble Weight", kind: "derived", type: "number", width: 120,
+    cell: "S", key: "payableWeight", label: "Payble Weight (kg)", kind: "derived", type: "number", width: 120,
     formula: "=L{row}-O{row}-R{row}",
     compute: (r) => {
       const net = num(r.grossWeight) - num(r.tareWeight);
@@ -183,20 +186,20 @@ export const GANGAKHED_COLUMNS: SheetColumn[] = [
   { cell: "EA", key: "vehicleNo", label: "Vehicle No.", kind: "entry", width: 120, hint: "Checked against the weight slip" },
   { cell: "F", key: "vendorCode", label: "Vendor Code", kind: "entry", width: 110 },
   { cell: "G", key: "vendorName", label: "Vendor Name", kind: "entry", width: 170 },
-  { cell: "H", key: "grossWeight", label: "Gross Weight", kind: "entry", type: "number", width: 110 },
-  { cell: "I", key: "tareWeight", label: "Tare Weight", kind: "entry", type: "number", width: 110 },
+  { cell: "H", key: "grossWeight", label: "Gross Weight (kg)", kind: "entry", type: "number", unit: "kg", width: 110 },
+  { cell: "I", key: "tareWeight", label: "Tare Weight (kg)", kind: "entry", type: "number", unit: "kg", width: 110 },
   {
-    cell: "J", key: "netWeight", label: "Net. Weight", kind: "derived", type: "number", width: 110,
+    cell: "J", key: "netWeight", label: "Net. Weight (kg)", kind: "derived", type: "number", width: 110,
     formula: "=H{row}-I{row}",
     compute: (r) => num(r.grossWeight) - num(r.tareWeight),
   },
   { cell: "K", key: "anyDeduction", label: "Any Deduction", kind: "entry", type: "number", width: 120 },
   {
-    cell: "L", key: "payableWeight", label: "Payble Weight", kind: "derived", type: "number", width: 120,
+    cell: "L", key: "payableWeight", label: "Payble Weight (kg)", kind: "derived", type: "number", width: 120,
     formula: "=J{row}-K{row}",
     compute: (r) => num(r.grossWeight) - num(r.tareWeight) - num(r.anyDeduction),
   },
-  { cell: "M", key: "finalWeight", label: "Final Weight", kind: "entry", type: "number", width: 110 },
+  { cell: "M", key: "finalWeight", label: "Final Weight (kg)", kind: "entry", type: "number", unit: "kg", width: 110 },
   { cell: "N", key: "rate", label: "Rate", kind: "entry", type: "number", width: 90 },
   {
     cell: "O", key: "amount", label: "Amount", kind: "derived", type: "number", width: 120,
@@ -225,10 +228,10 @@ export const TRANSPORT_COLUMNS: SheetColumn[] = [
   { cell: "D", key: "partyName", label: "Party Name", kind: "entry", width: 140 },
   { cell: "E", key: "to", label: "To", kind: "entry", width: 130 },
   { cell: "F", key: "inTime", label: "In Time", kind: "entry", width: 100 },
-  { cell: "G", key: "weight", label: "Weight", kind: "entry", type: "number", width: 100, hint: "Dispatch weight" },
-  { cell: "H", key: "rWeight", label: "R. Weight", kind: "entry", type: "number", width: 100, hint: "Receiving weight at the client" },
+  { cell: "G", key: "weight", label: "Weight (kg)", kind: "entry", type: "number", unit: "kg", width: 100, hint: "Dispatch weight" },
+  { cell: "H", key: "rWeight", label: "R. Weight (kg)", kind: "entry", type: "number", unit: "kg", width: 100, hint: "Receiving weight at the client" },
   {
-    cell: "I", key: "actualWeight", label: "Actual Calculation Weight", kind: "derived", type: "number", width: 170,
+    cell: "I", key: "actualWeight", label: "Actual Calculation Weight (kg)", kind: "derived", type: "number", width: 170,
     // The lower of the two. Freight is never paid on more material than
     // actually arrived, and the plant's own sheet already works this way.
     formula: "=MIN(G{row},H{row})",
@@ -276,7 +279,7 @@ export const PLANTS: Record<
 > = {
   rewari: {
     id: "rewari",
-    name: "Rewari Plant",
+    name: "Mayan Plant",
     state: "Haryana",
     code: "REW",
     biomass: REWARI_COLUMNS,

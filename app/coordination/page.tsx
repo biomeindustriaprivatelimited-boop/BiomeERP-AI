@@ -11,6 +11,8 @@ import {
 import FormPanel, { FormSection } from "@/components/FormPanel";
 import DevEditedChip from "@/components/DevEditedChip";
 import { EmptyState } from "@/components/SetupGuide";
+import MismatchFlag from "@/components/plant/MismatchFlag";
+import { toKg, conversionNote } from "@/lib/units";
 
 /**
  * Supply coordination.
@@ -128,7 +130,7 @@ export default function CoordinationPage() {
   // Plant dispatch match: for the manufacturing register, whether each
   // trip's vehicle also appears in the plant's own dispatch sheet. Only the
   // verdict comes back — never the plant's figures.
-  const [match, setMatch] = useState<{ statuses: Record<string, string>; summary: any } | null>(null);
+  const [match, setMatch] = useState<{ statuses: Record<string, string>; flags?: Record<string, any>; flagged?: number; summary: any } | null>(null);
   const loadMatch = useCallback(async () => {
     if (business !== "manufacturing") { setMatch(null); return; }
     try {
@@ -463,6 +465,7 @@ export default function CoordinationPage() {
                         </span>
                       )}
                       {manufacturing && match && <PlantMatchBadge status={match.statuses[t.id]} />}
+                      {manufacturing && match?.flags?.[t.id] && <MismatchFlag flag={match.flags[t.id]} onNoted={loadMatch} />}
                       <span className={`rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase tracking-[.1em] ${vCls}`}>
                         {vLabel}
                       </span>
@@ -769,7 +772,7 @@ export default function CoordinationPage() {
 
         <FormSection title="Dispatch — what left" sectionIcon={<PackageCheck size={14} />} columns={3}>
           <F label="Dispatch weight (KG)">
-            <input type="number" value={form.vendorChallanWeight} onChange={(e) => setForm({ ...form, vendorChallanWeight: e.target.value })} className={inputCls} />
+            <input type="text" inputMode="decimal" title="Kg — or type 284 qtl / 28.4 MT" value={form.vendorChallanWeight} onChange={(e) => setForm({ ...form, vendorChallanWeight: e.target.value })} onBlur={(e) => { const kg = toKg(e.target.value, { vehicle: true }); if (kg !== null && conversionNote(e.target.value, kg)) setForm((f: any) => ({ ...f, vendorChallanWeight: String(kg) })); }} className={inputCls} />
           </F>
           <F label={manufacturing ? "Value (₹)" : "Challan amount (₹)"}>
             <input type="number" value={form.vendorChallanAmount} onChange={(e) => setForm({ ...form, vendorChallanAmount: e.target.value })} className={inputCls} />
@@ -788,8 +791,8 @@ export default function CoordinationPage() {
           columns={3}
         >
           <F label="Receiving date"><input type="date" value={form.receivingDate} onChange={(e) => setForm({ ...form, receivingDate: e.target.value })} className={inputCls} /></F>
-          <F label="Receiving qty (KG)"><input type="number" value={form.receivingQty} onChange={(e) => setForm({ ...form, receivingQty: e.target.value })} className={inputCls} /></F>
-          <F label="CC weight (KG)"><input type="number" value={form.ccWeight} onChange={(e) => setForm({ ...form, ccWeight: e.target.value })} placeholder="Client's own weighbridge" className={inputCls} /></F>
+          <F label="Receiving qty (KG)"><input type="text" inputMode="decimal" title="Kg — or type 284 qtl / 28.4 MT" value={form.receivingQty} onChange={(e) => setForm({ ...form, receivingQty: e.target.value })} onBlur={(e) => { const kg = toKg(e.target.value, { vehicle: true }); if (kg !== null && conversionNote(e.target.value, kg)) setForm((f: any) => ({ ...f, receivingQty: String(kg) })); }} className={inputCls} /></F>
+          <F label="CC weight (KG)"><input type="text" inputMode="decimal" title="Kg — or type 284 qtl / 28.4 MT" value={form.ccWeight} onChange={(e) => setForm({ ...form, ccWeight: e.target.value })} onBlur={(e) => { const kg = toKg(e.target.value, { vehicle: true }); if (kg !== null && conversionNote(e.target.value, kg)) setForm((f: any) => ({ ...f, ccWeight: String(kg) })); }} placeholder="Client's own weighbridge" className={inputCls} /></F>
           {preview && (
             <div className="md:col-span-2 lg:col-span-3">
               <div className={`rounded-xl border px-4 py-3 ${

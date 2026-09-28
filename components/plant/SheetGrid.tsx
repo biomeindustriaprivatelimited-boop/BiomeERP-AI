@@ -1,5 +1,7 @@
 "use client";
 
+import MismatchFlag from "@/components/plant/MismatchFlag";
+import { toKg, conversionNote } from "@/lib/units";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Plus, Download, Trash2, Loader2, Upload, Calculator, Filter, ShieldCheck, ShieldAlert, ScanLine } from "lucide-react";
 import GlassCard from "@/components/GlassCard";
@@ -150,6 +152,8 @@ export default function SheetGrid({
   const [checking, setChecking] = useState<number | null>(null);
   const [plants, setPlants] = useState<Plant[]>([]);
   const [plant, setPlant] = useState("rewari");
+  // Office roles read the plant's book; only the plant manager enters rows.
+  const [readOnly, setReadOnly] = useState(false);
   const [columns, setColumns] = useState<Column[]>([]);
 
   /**
@@ -252,7 +256,7 @@ export default function SheetGrid({
           fetch(`/api/plant-data?what=vendors&plant=${plant}`, { cache: "no-store" }),
         ]);
         if (cancelled) return;
-        if (rowsRes.ok) setRows((await rowsRes.json()).rows || []);
+        if (rowsRes.ok) { const j = await rowsRes.json(); setRows(j.rows || []); setReadOnly(Boolean(j.readOnly)); }
         if (vendorRes.ok) setVendors((await vendorRes.json()).vendors || []);
       } catch {
         /* an empty sheet is better than a broken page */
@@ -266,7 +270,7 @@ export default function SheetGrid({
   // Coordination match (transport only): for each of THIS plant's
   // dispatches, whether the coordination team's manufacturing register has
   // the same vehicle on that date. Only a verdict — never their data.
-  const [match, setMatch] = useState<{ statuses: Record<string, string>; summary: any } | null>(null);
+  const [match, setMatch] = useState<{ statuses: Record<string, string>; flags?: Record<string, any>; summary: any } | null>(null);
   const loadMatch = useCallback(async () => {
     if (kind !== "transport") return;
     try {
@@ -318,14 +322,15 @@ export default function SheetGrid({
         o.amount = num(o.rate) * num(o.actualWeight) - num(o.daala);
         return o;
       }
-      if (plant === "gangakhed") {
+      // Every plant except Mayan uses the standard (single-deduction) book.
+      if ((plants.find((p) => p.id === plant) as any)?.layout !== "rewari" && plant !== "rewari") {
         o.netWeight = num(o.grossWeight) - num(o.tareWeight);
         o.payableWeight = num(o.netWeight) - num(o.anyDeduction);
         o.amount = num(o.finalWeight) * num(o.rate);
         o.finalAmount = num(o.amount) - num(o.weighbridgeCharge);
         return o;
       }
-      // Rewari
+      // Mayan (folder "rewari"): dust + moisture against allowances
       o.netWeight = num(o.grossWeight) - num(o.tareWeight);
       o.actualDust =
         num(o.dustPct) > num(o.dustAllowance)
@@ -345,7 +350,7 @@ export default function SheetGrid({
       o.finalBiomassValue = num(o.netPayableAmount) + num(o.shiftFinalPayment);
       return o;
     },
-    [kind, plant]
+    [kind, plant, plants]
   );
 
   const computed = useMemo(() => rows.map(compute), [rows, compute]);
@@ -438,6 +443,11 @@ export default function SheetGrid({
         <div>
           <h1 className="font-display text-xl font-semibold text-biome-text">{title}</h1>
           <p className="mt-1 max-w-2xl text-xs leading-relaxed text-biome-muted">{subtitle}</p>
+          {readOnly && (
+            <p className="mt-1.5 inline-block rounded-lg border border-sky-500/30 bg-sky-500/[.07] px-2.5 py-1 text-[11px] text-sky-700">
+              Read-only — the plant manager enters this sheet. You can write in the Accounts remarks column.
+            </p>
+          )}
           {kind === "transport" && match?.summary && (
             <p className="mt-1.5 flex flex-wrap gap-3 text-[11px]">
               <span className="font-semibold text-biome-text">Coordination match:</span>
@@ -448,14 +458,16 @@ export default function SheetGrid({
           )}
         </div>
         <div className="flex flex-wrap gap-2">
-          {kind === "biomass" && (
+          {kind === "biomass" && !readOnly && (
             <PremiumButton variant="ghost" onClick={() => setImportOpen((o) => !o)}>
               <Upload size={13} /> Import vendors
             </PremiumButton>
           )}
+          {!readOnly && (
           <PremiumButton variant="ghost" onClick={addRow}>
             <Plus size={13} /> Add row
           </PremiumButton>
+          )}
           <PremiumButton onClick={exportSheet} disabled={exporting}>
             {exporting ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
             Export to Excel
@@ -673,7 +685,11 @@ export default function SheetGrid({
                           bad.has(c.key) ? "bg-rose-500/12 ring-1 ring-inset ring-rose-500/40" : ""
                         }`}
                       >
-                        {c.kind === "derived" ? (
+                        {readOnly && c.kind === "entry" && c.key !== "accountsRemarks" ? (
+                          <span className={`block px-2 py-1 ${c.type === "number" ? "text-right font-mono tabular-nums" : ""} text-biome-text`}>
+                            {c.type === "number" && row[c.key] !== "" && row[c.key] != null ? Number(row[c.key]).toLocaleString("en-IN", { maximumFractionDigits: 2 }) : String(row[c.key] ?? "")}
+                          </span>
+                        ) : c.kind === "derived" ? (
                           <span className="block px-2 py-1 text-right font-mono tabular-nums text-biome-leafBright">
                             {Number(row[c.key] || 0).toLocaleString("en-IN", {
                               maximumFractionDigits: 2,
@@ -720,6 +736,25 @@ export default function SheetGrid({
                               </option>
                             ))}
                           </select>
+                        ) : (c as any).unit === "kg" ? (
+                          // Weight: type kg, "284 qtl" or "28.4 MT" — stored in kg on leaving the cell.
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            title="Kg. You can also type 284 qtl or 28.4 MT — it is converted to kg."
+                            value={row[c.key] ?? ""}
+                            onChange={(e) => setCell(i, c.key, e.target.value)}
+                            onBlur={(e) => {
+                              const raw = e.target.value;
+                              const kg = toKg(raw, { vehicle: true });
+                              const note = conversionNote(raw, kg);
+                              if (kg !== null && note) {
+                                setCell(i, c.key, kg);
+                                notify({ kind: "success", title: "Converted to kg", detail: `${c.label}: ${note}` });
+                              }
+                            }}
+                            className={`${inputCls} text-right font-mono`}
+                          />
                         ) : (
                           <input
                             type={c.type === "date" ? "date" : c.type === "number" ? "number" : "text"}
@@ -731,7 +766,7 @@ export default function SheetGrid({
                       </td>
                     ))}
                     <td className="whitespace-nowrap px-2 py-1">
-                      {kind === "transport" && match && <CoordMatch row={row} statuses={match.statuses} />}
+                      {kind === "transport" && match && <CoordMatch row={row} statuses={match.statuses} flags={match.flags || {}} onNoted={loadMatch} />}
                       {columns.some((c) => c.kind === "upload") && (
                         <button
                           onClick={() => verifyRow(i, row)}
@@ -762,12 +797,12 @@ export default function SheetGrid({
                           )}
                         </button>
                       )}
-                      <button
+                      {!readOnly && <button
                         onClick={() => setRows((r) => r.filter((_, x) => x !== i))}
                         className="rounded-lg p-1 text-biome-muted transition-colors hover:bg-biome-hover hover:text-rose-400"
                       >
                         <Trash2 size={12} />
-                      </button>
+                      </button>}
                     </td>
                   </tr>
                   );
@@ -807,7 +842,7 @@ export default function SheetGrid({
 
 
 /** ✓ / ⚠ / ✗ against the coordination manufacturing register, for one dispatch row. */
-function CoordMatch({ row, statuses }: { row: Record<string, any>; statuses: Record<string, string> }) {
+function CoordMatch({ row, statuses, flags, onNoted }: { row: Record<string, any>; statuses: Record<string, string>; flags: Record<string, any>; onNoted: () => void }) {
   const purpose = String(row.tripPurpose || "").trim();
   const vehicle = String(row.vehicleNo || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
   const date = String(row.date || "").slice(0, 10);
@@ -817,5 +852,12 @@ function CoordMatch({ row, statuses }: { row: Record<string, any>; statuses: Rec
     st === "matched" ? ["✓ Coord.", "text-emerald-600 border-emerald-500/35 bg-emerald-500/10", "Found in the coordination manufacturing register"]
     : st === "weight_differs" ? ["⚠ Wt", "text-amber-600 border-amber-500/35 bg-amber-500/10", "Vehicle and date match coordination, but the weight differs"]
     : ["✗ Coord.", "text-rose-500 border-rose-500/35 bg-rose-500/10", "Not in the coordination manufacturing register yet (same vehicle, date ±1 day)"];
-  return <span title={tip} className={`mr-1 rounded-full border px-1.5 py-0.5 text-[9px] font-bold ${cls}`}>{txt}</span>;
+  const flag = flags[`${date}|${vehicle}`];
+  return (
+    <>
+      <span title={tip} className={`mr-1 rounded-full border px-1.5 py-0.5 text-[9px] font-bold ${cls}`}>{txt}</span>
+      {flag && <MismatchFlag flag={flag} onNoted={onNoted} />}
+    </>
+  );
 }
+

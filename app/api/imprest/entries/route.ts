@@ -32,10 +32,13 @@ const KINDS: ImprestKind[] = ["advance", "expense", "return"];
  */
 function visibleTo(
   entries: ImprestEntry[],
-  opts: { viewAll: boolean; canApprove: boolean; myPersonId: string | null; myUserId: string }
+  opts: { viewAll: boolean; canApprove: boolean; myPersonId: string | null; myUserId: string; plantView?: string | null }
 ) {
   if (opts.viewAll) return entries;
   const own = (e: ImprestEntry) => opts.myPersonId && e.personId === opts.myPersonId;
+  // Plant manager: every holder at the plant this session is signed in
+  // for — read only, and never another plant's.
+  if (opts.plantView) return entries.filter((e) => own(e) || e.plant === opts.plantView);
   if (opts.canApprove) {
     return entries.filter(
       (e) => own(e) || e.status === "submitted" || e.decidedBy === opts.myUserId
@@ -55,7 +58,8 @@ export async function GET(req: NextRequest) {
   const people = loadPeople();
   const all = loadEntries();
   const me = personForUser(user.id) || null;
-  const scopeOpts = { viewAll, canApprove, myPersonId: me?.id ?? null, myUserId: user.id };
+  const plantView = hasPermission(user.role, "imprest.viewPlant") && auth.session.plant ? auth.session.plant : null;
+  const scopeOpts = { viewAll, canApprove, myPersonId: me?.id ?? null, myUserId: user.id, plantView };
 
   let entries = visibleTo(all, scopeOpts);
 
@@ -96,6 +100,8 @@ export async function GET(req: NextRequest) {
   // against pending entries, everyone else needs only their own record.
   const scope = viewAll
     ? people
+    : plantView
+    ? people.filter((p) => p.id === me?.id || p.plant === plantView)
     : canApprove
     ? people.filter((p) => p.id === me?.id || entries.some((e) => e.personId === p.id))
     : people.filter((p) => p.id === me?.id);
@@ -106,6 +112,7 @@ export async function GET(req: NextRequest) {
     me: me ? { ...me, balance: balanceFor(me.id, all) } : null,
     canApprove,
     viewAll,
+    plantView,
     canManage: hasPermission(user.role, "imprest.manage"),
     // Drives the first-run guide: an admin with no holders needs telling
     // where to start, not an empty screen.

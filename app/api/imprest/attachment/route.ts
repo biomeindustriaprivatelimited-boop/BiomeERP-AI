@@ -10,7 +10,7 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-async function requireEntryAccess(req: NextRequest, entryId: string) {
+async function requireEntryAccess(req: NextRequest, entryId: string, readOnly = false) {
   const session = await getSession(req);
   if (!session) return { error: NextResponse.json({ error: "Please sign in." }, { status: 401 }) };
   const user = findById(session.uid);
@@ -25,7 +25,10 @@ async function requireEntryAccess(req: NextRequest, entryId: string) {
   const canApprove = hasPermission(user.role, "imprest.approve");
   const mine = personForUser(user.id);
   const isOwn = Boolean(mine && entry.personId === mine.id);
-  if (!isOwn && !canApprove) {
+  // A plant manager may READ the bills of everyone at the plant they are
+  // signed in for — never change them, never another plant's.
+  const plantView = readOnly && hasPermission(user.role, "imprest.viewPlant") && !!session.plant && entry.plant === session.plant;
+  if (!isOwn && !canApprove && !plantView) {
     return { error: NextResponse.json({ error: "That entry isn't yours." }, { status: 403 }) };
   }
 
@@ -76,7 +79,7 @@ export async function GET(req: NextRequest) {
   const entryId = req.nextUrl.searchParams.get("entryId") || "";
   const attachmentId = req.nextUrl.searchParams.get("attachmentId") || "";
 
-  const access = await requireEntryAccess(req, entryId);
+  const access = await requireEntryAccess(req, entryId, true);
   if ("error" in access) return access.error;
   const { entry } = access;
 
@@ -102,7 +105,7 @@ export async function DELETE(req: NextRequest) {
   const entryId = req.nextUrl.searchParams.get("entryId") || "";
   const attachmentId = req.nextUrl.searchParams.get("attachmentId") || "";
 
-  const access = await requireEntryAccess(req, entryId);
+  const access = await requireEntryAccess(req, entryId, true);
   if ("error" in access) return access.error;
   const { user, entry, entries } = access;
 

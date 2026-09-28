@@ -122,7 +122,7 @@ export default function CloudPage() {
             { title: "Enable the Google Drive API", detail: "APIs & Services → Library → Google Drive API → Enable.", done: false },
             { title: "Configure the consent screen", detail: "External, add your Google address as a test user. The app only asks for files it creates itself.", done: false },
             { title: "Create an OAuth client (Web application)", detail: "Add the redirect URI exactly as printed below — Google rejects anything that differs by a character.", done: false },
-            { title: "Paste the three values into .env.local and restart", detail: "GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI. They stay on the server and are never sent to a browser.", done: false },
+            { title: "Paste the Client ID and Client Secret in the form below and press Save", detail: "No .env.local editing and no restart. They are stored encrypted on the server and never sent to a browser.", done: false },
           ]}
           footnote={
             <>Redirect URI to register:{" "}
@@ -134,6 +134,9 @@ export default function CloudPage() {
           }
         />
       )}
+
+      {/* ---- The Google OAuth client, set from here ---- */}
+      <GoogleClientForm onSaved={(t) => { setNote({ kind: "ok", text: t }); load(); }} onError={(t) => setNote({ kind: "bad", text: t })} open={!data.configured} />
 
       {/* ---- Connection ---- */}
       <section className="relative overflow-hidden rounded-2xl border border-biome-line bg-biome-bgSoft p-5">
@@ -529,3 +532,58 @@ function Row2({ label, value }: { label: string; value: string }) {
 
 const inputCls =
   "bmx-input w-full rounded-xl border border-biome-line bg-biome-bg px-3 py-2.5 text-[12px] text-biome-text outline-none";
+
+/**
+ * Google Drive API credentials, entered in the app. `.env.local` still
+ * wins when it has them; otherwise these are used straight away.
+ */
+function GoogleClientForm({ open, onSaved, onError }: { open: boolean; onSaved: (t: string) => void; onError: (t: string) => void }) {
+  const [cfg, setCfg] = useState<any>(null);
+  const [show, setShow] = useState(open);
+  const [f, setF] = useState({ clientId: "", clientSecret: "", redirectUri: "" });
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    fetch("/api/cloud/credentials", { cache: "no-store" }).then((r) => r.json()).then((j) => {
+      setCfg(j);
+      setF({ clientId: j.clientId || "", clientSecret: "", redirectUri: j.redirectUri || `${window.location.origin}/api/cloud/callback` });
+    }).catch(() => {});
+  }, []);
+  useEffect(() => { if (open) setShow(true); }, [open]);
+  async function save() {
+    setBusy(true);
+    try {
+      const r = await fetch("/api/cloud/credentials", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(f) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || "Not saved.");
+      onSaved(j.envOverrides ? "Saved — but .env.local also has GOOGLE_CLIENT_ID, and that one is used. Remove it from .env.local to use these." : "Google Drive API credentials saved and active. Now press Connect Google Drive.");
+      setCfg({ ...cfg, source: j.envOverrides ? "env" : "app", hasSecret: true });
+      setF({ ...f, clientSecret: "" });
+    } catch (e) { onError((e as Error).message); } finally { setBusy(false); }
+  }
+  const cls = "bmx-input w-full rounded-xl border border-biome-line bg-biome-bg px-3 py-2 text-[12px] text-biome-text outline-none";
+  return (
+    <section className="rounded-2xl border border-biome-line bg-biome-bgSoft p-5">
+      <button onClick={() => setShow(!show)} className="flex w-full items-center justify-between text-left">
+        <span className="flex items-center gap-2 text-[13px] font-semibold text-biome-text"><KeyRound size={15} className="text-biome-leaf" /> Google Drive API credentials</span>
+        <span className="text-[10.5px] text-biome-muted">
+          {cfg?.source === "env" ? "from .env.local" : cfg?.source === "app" ? "saved in the app" : "not set"} · {show ? "hide" : "edit"}
+        </span>
+      </button>
+      {show && (
+        <div className="mt-3 space-y-2">
+          <div className="grid gap-2 md:grid-cols-2">
+            <label><span className="mb-1 block text-[10px] font-bold uppercase tracking-[.13em] text-biome-muted">Client ID</span>
+              <input value={f.clientId} onChange={(e) => setF({ ...f, clientId: e.target.value })} placeholder="xxxx.apps.googleusercontent.com" className={cls} /></label>
+            <label><span className="mb-1 block text-[10px] font-bold uppercase tracking-[.13em] text-biome-muted">Client Secret {cfg?.hasSecret ? "(saved — leave blank to keep)" : ""}</span>
+              <input type="password" value={f.clientSecret} onChange={(e) => setF({ ...f, clientSecret: e.target.value })} placeholder={cfg?.hasSecret ? "••••••••" : "GOCSPX-…"} className={cls} autoComplete="off" /></label>
+          </div>
+          <label className="block"><span className="mb-1 block text-[10px] font-bold uppercase tracking-[.13em] text-biome-muted">Redirect URI (register exactly this in Google)</span>
+            <input value={f.redirectUri} onChange={(e) => setF({ ...f, redirectUri: e.target.value })} className={`${cls} font-mono`} /></label>
+          <button onClick={save} disabled={busy || !f.clientId} className="bmx-btn flex items-center gap-1.5 rounded-xl bg-biome-leaf px-4 py-2 text-[11.5px] font-bold text-white disabled:opacity-50">
+            {busy ? <Loader2 size={13} className="bmx-spin" /> : <Check size={13} />} Save &amp; activate
+          </button>
+        </div>
+      )}
+    </section>
+  );
+}

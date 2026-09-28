@@ -3,11 +3,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ShieldCheck, Loader2, AlertCircle, Check, X, Search, Users, ToggleLeft,
-  Megaphone, ScrollText, Lock, Unlock, Send, Pin, Mail, EyeOff,
+  Megaphone, ScrollText, Lock, Unlock, Send, Pin, Mail, EyeOff, Factory,
 } from "lucide-react";
 import FormPanel, { FormSection } from "@/components/FormPanel";
 import DataTab from "@/components/developer/DataTab";
 import ServerTab from "@/components/developer/ServerTab";
+import PlantsTab from "@/components/developer/PlantsTab";
 import { PERMISSION_INFO } from "@/lib/permissions";
 
 /**
@@ -23,7 +24,7 @@ import { PERMISSION_INFO } from "@/lib/permissions";
  * and if this account ever leaves the family the difference matters.
  */
 
-type Tab = "access" | "features" | "notices" | "activity" | "data" | "server";
+type Tab = "access" | "features" | "plants" | "notices" | "activity" | "data" | "server";
 
 interface DevUser {
   id: string; username: string; name: string; role: string;
@@ -56,6 +57,7 @@ export default function DeveloperPage() {
   const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
     { id: "access", label: "Access", icon: <Users size={13} /> },
     { id: "features", label: "Features", icon: <ToggleLeft size={13} /> },
+    { id: "plants", label: "Plants", icon: <Factory size={13} /> },
     { id: "notices", label: "Notices", icon: <Megaphone size={13} /> },
     { id: "activity", label: "My activity", icon: <ScrollText size={13} /> },
     { id: "server", label: "Server & devices", icon: <ShieldCheck size={13} /> },
@@ -98,6 +100,7 @@ export default function DeveloperPage() {
         : tab === "notices" ? <NoticesTab />
         : tab === "data" ? <DataTab />
         : tab === "server" ? <ServerTab />
+        : tab === "plants" ? <PlantsTab />
         : <ActivityTab activity={data.activity || []} />}
     </div>
   );

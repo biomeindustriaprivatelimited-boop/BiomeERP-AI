@@ -6,7 +6,7 @@ import {
   IndianRupee, SlidersHorizontal, Plus, Loader2, AlertCircle, Check,
   FileText, Lock, Unlock, Download, Mail, BadgeCheck, Wallet,
 } from "lucide-react";
-import { PLANTS } from "@/lib/permissions";
+import { usePlants } from "@/lib/usePlants";
 import SetupGuide, { EmptyState } from "@/components/SetupGuide";
 import FormPanel, { FormSection } from "@/components/FormPanel";
 import { buildPayslipPdf, payslipFileName, SlipData } from "@/lib/payslipPdf";
@@ -131,6 +131,7 @@ export default function PayrollPage() {
 /* ================= Salary sheet ================= */
 
 function SheetTab() {
+  const PLANTS = usePlants();
   const [runs, setRuns] = useState<any[]>([]);
   const [canApprove, setCanApprove] = useState(false);
   const [run, setRun] = useState<Run | null>(null);
@@ -679,6 +680,7 @@ function Detail({ label, value }: { label: string; value: string }) {
 /* ================= Statutory rules ================= */
 
 function RulesTab() {
+  const PLANTS = usePlants();
   const [settings, setSettings] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

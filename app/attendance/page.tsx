@@ -5,7 +5,7 @@ import { useLiveRefresh } from "@/lib/useLiveRefresh";
 import { CalendarDays, Loader2, AlertCircle, Check, Lock, Send, Plane, Bell, ShieldAlert, Sun } from "lucide-react";
 import { EmptyState } from "@/components/SetupGuide";
 import HolidayAnnounce from "@/components/attendance/HolidayAnnounce";
-import { PLANTS } from "@/lib/permissions";
+import { usePlants } from "@/lib/usePlants";
 
 /**
  * Attendance register.
@@ -37,6 +37,7 @@ const STYLE: Record<Mark, string> = {
 };
 
 export default function AttendancePage() {
+  const PLANTS = usePlants();
   const [month, setMonth] = useState(new Date().toISOString().slice(0, 7));
   const [data, setData] = useState<any>(null);
   const [rows, setRows] = useState<Row[]>([]);

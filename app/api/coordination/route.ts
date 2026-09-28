@@ -1,3 +1,4 @@
+import { toKg } from "@/lib/units";
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission, findById } from "@/lib/authServer";
 import { hasPermission } from "@/lib/permissions";
@@ -33,6 +34,11 @@ export const dynamic = "force-dynamic";
 
 const STATUSES = TRIP_STATUS.map((s) => s.id);
 
+function kgOf(v: unknown): number {
+  const kg = toKg(v, { vehicle: true });
+  return kg !== null && kg > 0 ? kg : 0;
+}
+
 function num(v: unknown): number {
   const n = Number(String(v ?? "").replace(/[,\s]/g, ""));
   return Number.isFinite(n) && n >= 0 ? n : 0;
@@ -57,7 +63,7 @@ function loadVendors(): Vendor[] {
 }
 
 export async function GET(req: NextRequest) {
-  const auth = await requirePermission(req, "operations");
+  const auth = await requirePermission(req, "coordination");
   if ("response" in auth) return auth.response;
   const user = findById(auth.session.uid)!;
 
@@ -458,12 +464,13 @@ function readTrip(body: any, reg: BusinessType): Partial<Trip> {
     vehicleNumber: str(body.vehicleNumber, 20).toUpperCase().replace(/[^A-Z0-9]/g, ""),
     vehicleEntryDate: str(body.vehicleEntryDate, 10),
     vendorChallanDate: str(body.vendorChallanDate, 10),
-    vendorChallanWeight: num(body.vendorChallanWeight),
+    // Weights in kg: "28.4 MT" / "284 qtl" / a bare 28.4 are converted.
+    vendorChallanWeight: kgOf(body.vendorChallanWeight),
     vendorChallanAmount: num(body.vendorChallanAmount),
     referenceNo: str(body.referenceNo, 40).toUpperCase().replace(/\s+/g, ""),
     receivingDate: str(body.receivingDate, 10),
-    receivingQty: num(body.receivingQty),
-    ccWeight: num(body.ccWeight),
+    receivingQty: kgOf(body.receivingQty),
+    ccWeight: kgOf(body.ccWeight),
     debitNoteNo: str(body.debitNoteNo, 40),
     creditNoteNo: str(body.creditNoteNo, 40),
     cancellationReason: str(body.cancellationReason, 300),
