@@ -2715,6 +2715,30 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    if (route === "/send" && req.method === "POST") {
+      // Send a plain text message from the linked account — used for vendor
+      // follow-ups (missing documents, pending credit notes, PO notices).
+      // Text only, one recipient, and only when the app asks: the agent never
+      // messages anyone on its own.
+      const body = await readBody(req);
+      if (!sock || state.status !== "connected") return json(res, 409, { error: "WhatsApp is not connected on the server." });
+      const digits = String(body.to || "").replace(/\D/g, "");
+      const number = digits.length === 10 ? `91${digits}` : digits;
+      if (number.length < 11 || number.length > 15) return json(res, 400, { error: "Give a mobile number with country code, e.g. 9198XXXXXXXX." });
+      const text = String(body.text || "").trim().slice(0, 4000);
+      if (!text) return json(res, 400, { error: "Nothing to send." });
+      try {
+        const [exists] = await sock.onWhatsApp(number).catch(() => [null]);
+        if (exists && exists.exists === false) return json(res, 404, { error: `${number} is not on WhatsApp.` });
+        const jid = (exists && exists.jid) || `${number}@s.whatsapp.net`;
+        const sent = await sock.sendMessage(jid, { text });
+        log(`follow-up sent to ${number}`);
+        return json(res, 200, { ok: true, id: sent?.key?.id || null, to: number });
+      } catch (err) {
+        return json(res, 500, { error: `WhatsApp refused the message: ${err.message}` });
+      }
+    }
+
     if (route === "/staged/sweep" && req.method === "POST") {
       // Re-offer every filed document of ours to the staging queue, so
       // paperwork held while the agent was off gets filed now.

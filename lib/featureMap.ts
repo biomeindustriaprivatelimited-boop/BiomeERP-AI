@@ -67,6 +67,7 @@ export const FEATURE_MAP: FeatureCategory[] = [
     id: "partners", label: "Partners", tagline: "Who you buy from and who you supply.", icon: "Handshake", tone: "from-lime-500/25 to-emerald-400/10",
     features: [
       { id: "vendors", label: "Vendor & Client Registration", href: "/partners", icon: "Handshake", perm: "partners", what: "One register with KYC upload and Submit & freeze. Coordinators: trading. Plant managers: manufacturing (own plant). Accounts/admin/developer: all + unlock." },
+      { id: "followups", label: "Follow-ups (email / WhatsApp)", href: "/followups", icon: "Inbox", perm: "partners", what: "Pending tax invoices, credit notes, supply documents, KYC papers, PO end/extend — ask the vendor or client by email or WhatsApp in one click." },
       { id: "clients", label: "Clients", href: "/clients", icon: "Users", perm: "customers", what: "The power plants you supply and the papers each one insists on." },
       { id: "contracts", label: "Contracts", href: "/contracts", icon: "FileSignature", perm: "developer", what: "Agreements, renewal dates, obligations and commitments." },
     ],

@@ -1820,7 +1820,7 @@ function TripDocuments({ tripId }: { tripId: string }) {
         <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-rose-500/30 bg-rose-500/[.06] px-3 py-2">
           <span className="text-[10px] font-bold uppercase tracking-[.1em] text-rose-500">Not received yet:</span>
           {d.missing.map((m: string) => <span key={m} className="rounded-full border border-rose-500/35 px-2 py-0.5 text-[10px] font-semibold text-rose-600">{m}</span>)}
-          <a href={`/partners?followup=${tripId}`} className="ml-auto flex items-center gap-1 text-[10.5px] font-semibold text-biome-leaf"><Mail size={11} /> Ask the vendor</a>
+          <a href={`/followups?tripId=${tripId}`} className="ml-auto flex items-center gap-1 text-[10.5px] font-semibold text-biome-leaf"><Mail size={11} /> Ask the vendor</a>
         </div>
       )}
 

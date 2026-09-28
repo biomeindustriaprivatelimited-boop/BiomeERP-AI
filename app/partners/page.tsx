@@ -387,6 +387,12 @@ export default function PartnersPage() {
             {editing && (
               <RegistrationEmailButton partner={editing} />
             )}
+            {editing && (editing.gaps.missing.length > 0 || editing.gaps.expired.length > 0 || editing.gaps.expiringSoon.length > 0) && (
+              <a href={`/followups?partnerId=${editing.id}`}
+                className="bmx-chip flex items-center gap-1.5 rounded-xl border border-amber-500/40 px-4 py-2.5 text-[11.5px] font-semibold text-amber-600">
+                <Mail size={13} /> Ask for missing papers
+              </a>
+            )}
             <button onClick={() => { setOpen(false); setEditing(null); }}
               className="bmx-chip rounded-xl border border-biome-line px-4 py-2.5 text-[11.5px] font-semibold text-biome-muted">Close</button>
             <button onClick={save} disabled={busy || editingLocked}
