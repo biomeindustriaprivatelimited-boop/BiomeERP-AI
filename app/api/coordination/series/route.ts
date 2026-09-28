@@ -3,7 +3,7 @@ import { requirePermission, findById } from "@/lib/authServer";
 import { hasPermission } from "@/lib/permissions";
 import {
   loadSeriesFile, saveSeriesFile, previewNext, formatSeriesNumber,
-  NumberSeries, DOC_TYPES,
+  NumberSeries, DOC_TYPES, NUMBERING_METHODS, methodOf,
 } from "@/lib/numberSeries";
 import { recordAudit } from "@/lib/audit";
 
@@ -29,7 +29,8 @@ export async function GET(req: NextRequest) {
 
   const f = loadSeriesFile();
   return NextResponse.json({
-    series: f.series.map((s) => ({ ...s, next: previewNext(s) })),
+    series: f.series.map((s) => ({ ...s, method: methodOf(s), next: previewNext(s) })),
+    methods: NUMBERING_METHODS,
     issued: f.issued.slice(0, 50),
     docTypes: DOC_TYPES,
     canEdit: canEdit(user.role),
@@ -75,6 +76,7 @@ export async function POST(req: NextRequest) {
     clientHints: Array.isArray(body.clientHints) ? body.clientHints.map(String) : [],
     note: String(body.note ?? "").slice(0, 500),
     active: body.active !== false,
+    method: methodOf({ method: body.method }),
   };
 
   f.series = [...f.series, series];
@@ -118,6 +120,7 @@ export async function PUT(req: NextRequest) {
     clientHints: Array.isArray(body.clientHints) ? body.clientHints.map(String) : before.clientHints,
     note: body.note !== undefined ? String(body.note).slice(0, 500) : before.note,
     active: body.active !== undefined ? body.active !== false : before.active,
+    method: body.method !== undefined ? methodOf({ method: body.method }) : methodOf(before),
   };
 
   if (!updated.pattern.includes("{SEQ}")) {
@@ -146,6 +149,8 @@ export async function PUT(req: NextRequest) {
   if (before.nextSeq !== updated.nextSeq) changes.push(`next count ${before.nextSeq} → ${updated.nextSeq}`);
   if (before.minDigits !== updated.minDigits) changes.push(`padding ${before.minDigits} → ${updated.minDigits}`);
   if (before.active !== updated.active) changes.push(updated.active ? "switched on" : "switched off");
+  if (methodOf(before) !== methodOf(updated)) changes.push(`numbering ${methodOf(before)} → ${methodOf(updated)}`);
+  if (before.name !== updated.name) changes.push(`name ${before.name} → ${updated.name}`);
 
   recordAudit({
     action: "SERIES_UPDATED",

@@ -70,7 +70,7 @@ interface ClientOption {
 }
 interface SeriesOption {
   id: string; name: string; docType: DocType; business: string;
-  pattern: string; clientHints: string[]; next: string;
+  pattern: string; clientHints: string[]; next: string; method?: "automatic" | "auto_manual_override" | "manual";
 }
 
 const VERDICT: Record<string, [string, string]> = {
@@ -101,6 +101,9 @@ export default function CoordinationPage() {
   const [editing, setEditing] = useState<Trip | null>(null);
   const [form, setForm] = useState<any>({ ...blank });
   const [issueOnSave, setIssueOnSave] = useState(false);
+  // Re-number an entry whose document type / series changed after its
+  // number was taken (old number is voided, never reused).
+  const [reissue, setReissue] = useState(false);
   const [filters, setFilters] = useState({ month: "", client: "", supplier: "", status: "all", docType: "all", search: "" });
   const [requestFor, setRequestFor] = useState<Trip | null>(null);
   const [showImport, setShowImport] = useState(false);
@@ -181,6 +184,7 @@ export default function CoordinationPage() {
   }, [seriesChoices, form.seriesId, editing]);
 
   function startAdd() {
+    setReissue(false);
     setEditing(null);
     setForm({ ...blank });
     setIssueOnSave(false);
@@ -188,6 +192,7 @@ export default function CoordinationPage() {
   }
 
   function edit(t: Trip) {
+    setReissue(false);
     if (t.lock.locked && !data?.canApprove) { setRequestFor(t); return; }
     setEditing(t);
     setIssueOnSave(false);
@@ -211,14 +216,14 @@ export default function CoordinationPage() {
         body: JSON.stringify({
           ...form,
           business,
-          issueNumber: issueOnSave && !form.ourDocNo,
+          issueNumber: issueOnSave && !form.ourDocNo, reissue,
           ...(editing ? { id: editing.id } : {}),
         }),
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) {
         if (json.poWarning && res.status === 409 && window.confirm(`${json.error}\n\nOverride with manager approval and save anyway?`)) {
-          const again = await fetch(editing ? "/api/coordination" : "/api/coordination", { method: editing ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...form, business, issueNumber: issueOnSave && !form.ourDocNo, ...(editing ? { id: editing.id } : {}), poOverride: true }) });
+          const again = await fetch(editing ? "/api/coordination" : "/api/coordination", { method: editing ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...form, business, issueNumber: issueOnSave && !form.ourDocNo, reissue, ...(editing ? { id: editing.id } : {}), poOverride: true }) });
           const j2 = await again.json().catch(() => ({}));
           if (!again.ok) throw new Error(j2.error || `Failed (${again.status}).`);
         } else throw new Error(json.error || `Failed (${res.status}).`);
@@ -244,6 +249,14 @@ export default function CoordinationPage() {
   })();
 
   const chosenSeries = seriesChoices.find((x) => x.id === form.seriesId);
+  const chosenMethod = chosenSeries?.method || "auto_manual_override";
+  // Tally-style: an automatic series takes its number on save by default;
+  // a manual one never does. Follows every change of type or series.
+  useEffect(() => {
+    if (form.ourDocNo && editing?.ourDocNo) return;
+    setIssueOnSave(chosenMethod !== "manual");
+  }, [form.seriesId, chosenMethod]); // eslint-disable-line react-hooks/exhaustive-deps
+  const seriesChanged = Boolean(editing?.ourDocNo && (form.seriesId !== editing.seriesId || form.docType !== editing.docType));
 
   return (
     <div className="space-y-5">
@@ -589,13 +602,37 @@ export default function CoordinationPage() {
           </F>
 
           <div className="md:col-span-2 lg:col-span-3">
-            {form.ourDocNo ? (
+            {/* An issued number shows as a badge; while typing one, the input stays. */}
+            {editing?.ourDocNo ? (
               <div className="flex flex-wrap items-center gap-3 rounded-xl border border-biome-line bg-biome-bg px-4 py-3">
                 <Hash size={14} className="text-biome-leaf" />
                 <span className="font-mono text-[13px] font-semibold text-biome-text">{form.ourDocNo}</span>
                 <span className="text-[10px] text-biome-muted">
                   {editing?.ourDocManual ? "entered by hand" : "issued from the series"}
                 </span>
+                {seriesChanged && chosenSeries && (
+                  <label className="ml-auto flex items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/[.07] px-2.5 py-1.5 text-[10.5px] font-semibold text-amber-700">
+                    <input type="checkbox" checked={reissue} onChange={(e) => setReissue(e.target.checked)} />
+                    Re-number from &ldquo;{chosenSeries.name}&rdquo; → {chosenSeries.next} (the old number is voided)
+                  </label>
+                )}
+              </div>
+            ) : chosenMethod === "manual" ? (
+              <div className="rounded-xl border border-biome-line bg-biome-bg px-4 py-3">
+                <F label={`Document number (manual series${chosenSeries ? ` — ${chosenSeries.name}` : ""})`}>
+                  <input value={form.ourDocNo} onChange={(e) => setForm({ ...form, ourDocNo: e.target.value })}
+                    placeholder={chosenSeries?.next || "Type the number"} className={`${inputCls} font-mono`} />
+                </F>
+                <p className="mt-1 text-[10px] text-biome-muted">Manual numbering: type the number printed on the document. A number already used is refused.</p>
+              </div>
+            ) : chosenMethod === "automatic" ? (
+              <div className="flex flex-wrap items-center gap-3 rounded-xl border border-biome-leaf/35 bg-biome-leaf/[.06] px-4 py-3">
+                <Hash size={14} className="text-biome-leaf" />
+                <span className="font-mono text-[13px] font-semibold text-biome-text">{chosenSeries ? chosenSeries.next : "Select a series"}</span>
+                <span className="text-[10.5px] text-biome-muted">Automatic numbering — taken when you save.</span>
+                <label className="ml-auto flex items-center gap-1.5 text-[10.5px] text-biome-muted">
+                  <input type="checkbox" checked={!issueOnSave} onChange={(e) => setIssueOnSave(!e.target.checked)} /> Save as draft without a number
+                </label>
               </div>
             ) : (
               <div className="grid gap-3 rounded-xl border border-biome-line bg-biome-bg px-4 py-3 sm:grid-cols-[1fr_auto_1fr] sm:items-center">
@@ -1166,7 +1203,9 @@ function ApprovalsPanel({ onClose, onDone }: { onClose: () => void; onDone: () =
 
 function SeriesPanel({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
   const [data, setData] = useState<any>(null);
-  const [drafts, setDrafts] = useState<Record<string, { nextSeq: string; pattern: string; minDigits: string }>>({});
+  const [drafts, setDrafts] = useState<Record<string, any>>({});
+  const [adding, setAdding] = useState(false);
+  const [nw, setNw] = useState<any>({ name: "", docType: "tax_invoice", business: "both", pattern: "BI/{FY}/{SEQ}", minDigits: "3", nextSeq: "1", resetOn: "financial_year", method: "auto_manual_override", clientHints: "" });
   const [busyId, setBusyId] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [saved, setSaved] = useState("");
@@ -1177,7 +1216,7 @@ function SeriesPanel({ onClose, onDone }: { onClose: () => void; onDone: () => v
     setData(json);
     const d: Record<string, any> = {};
     (json.series || []).forEach((s: any) => {
-      d[s.id] = { nextSeq: String(s.nextSeq), pattern: s.pattern, minDigits: String(s.minDigits) };
+      d[s.id] = { nextSeq: String(s.nextSeq), pattern: s.pattern, minDigits: String(s.minDigits), name: s.name, method: s.method, resetOn: s.resetOn, active: s.active, business: s.business };
     });
     setDrafts(d);
   }, []);
@@ -1189,7 +1228,7 @@ function SeriesPanel({ onClose, onDone }: { onClose: () => void; onDone: () => v
       const d = drafts[id];
       const res = await fetch("/api/coordination/series", {
         method: "PUT", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, nextSeq: Number(d.nextSeq), pattern: d.pattern, minDigits: Number(d.minDigits) }),
+        body: JSON.stringify({ id, nextSeq: Number(d.nextSeq), pattern: d.pattern, minDigits: Number(d.minDigits), name: d.name, method: d.method, resetOn: d.resetOn, active: d.active, business: d.business }),
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json.error || "Could not save that.");
@@ -1199,14 +1238,33 @@ function SeriesPanel({ onClose, onDone }: { onClose: () => void; onDone: () => v
     } catch (e) { setErr((e as Error).message); } finally { setBusyId(""); }
   }
 
+  async function create() {
+    setBusyId("new"); setErr(null);
+    try {
+      const res = await fetch("/api/coordination/series", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...nw, minDigits: Number(nw.minDigits), nextSeq: Number(nw.nextSeq), clientHints: String(nw.clientHints || "").split(",").map((x: string) => x.trim()).filter(Boolean) }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Could not add that series.");
+      setAdding(false); await load(); onDone();
+    } catch (e) { setErr((e as Error).message); } finally { setBusyId(""); }
+  }
+
   /** What the number would look like, worked out in the browser as they type. */
   function preview(id: string): string {
     const d = drafts[id];
     if (!d) return "";
     const seq = String(Math.max(0, Math.trunc(Number(d.nextSeq) || 0)))
       .padStart(Math.max(1, Number(d.minDigits) || 1), "0");
-    return d.pattern.replace(/\{SEQ\}/g, seq);
+    return fill(d.pattern, seq);
   }
+  const fill = (pattern: string, seq: string) => {
+    const now = new Date(); const y = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
+    return String(pattern || "").replace(/\{SEQ\}/g, seq).replace(/\{FY\}/g, `${y}-${String((y + 1) % 100).padStart(2, "0")}`)
+      .replace(/\{YY\}/g, String(now.getFullYear() % 100).padStart(2, "0")).replace(/\{MM\}/g, String(now.getMonth() + 1).padStart(2, "0"));
+  };
+  const methods = (data?.methods || []) as any[];
 
   const series = (data?.series || []) as any[];
 
@@ -1226,6 +1284,48 @@ function SeriesPanel({ onClose, onDone }: { onClose: () => void; onDone: () => v
         </div>
       )}
 
+      <div className="mb-4 rounded-xl border border-biome-line bg-biome-bg p-3">
+        <p className="text-[11px] leading-relaxed text-biome-muted">
+          Pattern tokens: <b className="font-mono">{"{SEQ}"}</b> running number · <b className="font-mono">{"{FY}"}</b> 2026-27 · <b className="font-mono">{"{YY}"}</b> 26 · <b className="font-mono">{"{MM}"}</b> 09.
+          Everything else is printed as typed (prefix / suffix). Choosing a document type and series on a trip shows its next number at once.
+        </p>
+        {!adding ? (
+          <button onClick={() => setAdding(true)} className="bmx-btn mt-2 flex items-center gap-1.5 rounded-xl bg-biome-leaf px-3.5 py-2 text-[11px] font-bold text-white"><Plus size={13} /> Add a number series</button>
+        ) : (
+          <div className="mt-3 grid gap-2 md:grid-cols-4">
+            <F label="Name"><input value={nw.name} onChange={(e) => setNw({ ...nw, name: e.target.value })} placeholder="Maharashtra tax invoices" className={inputCls} /></F>
+            <F label="Document type">
+              <select value={nw.docType} onChange={(e) => setNw({ ...nw, docType: e.target.value })} className={inputCls}>
+                <option value="tax_invoice">Tax invoice</option><option value="delivery_challan">Delivery challan</option>
+              </select>
+            </F>
+            <F label="Numbering method">
+              <select value={nw.method} onChange={(e) => setNw({ ...nw, method: e.target.value })} className={inputCls}>
+                {methods.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+              </select>
+            </F>
+            <F label="Used in">
+              <select value={nw.business} onChange={(e) => setNw({ ...nw, business: e.target.value })} className={inputCls}>
+                <option value="both">Trading + manufacturing</option><option value="trading">Trading only</option><option value="manufacturing">Manufacturing only</option>
+              </select>
+            </F>
+            <F label="Pattern"><input value={nw.pattern} onChange={(e) => setNw({ ...nw, pattern: e.target.value })} className={`${inputCls} font-mono`} /></F>
+            <F label="Pad count to"><input type="number" min={1} value={nw.minDigits} onChange={(e) => setNw({ ...nw, minDigits: e.target.value })} className={inputCls} /></F>
+            <F label="Start at"><input type="number" min={1} value={nw.nextSeq} onChange={(e) => setNw({ ...nw, nextSeq: e.target.value })} className={inputCls} /></F>
+            <F label="Restart">
+              <select value={nw.resetOn} onChange={(e) => setNw({ ...nw, resetOn: e.target.value })} className={inputCls}>
+                <option value="financial_year">Every financial year</option><option value="never">Never</option>
+              </select>
+            </F>
+            <div className="md:col-span-3"><F label="Clients that use it (comma separated, optional)"><input value={nw.clientHints} onChange={(e) => setNw({ ...nw, clientHints: e.target.value })} className={inputCls} /></F></div>
+            <div className="flex items-end gap-2">
+              <span className="flex-1 truncate rounded-xl border border-biome-line px-3 py-2.5 font-mono text-[12px]">{fill(nw.pattern, String(Number(nw.nextSeq) || 1).padStart(Number(nw.minDigits) || 1, "0"))}</span>
+              <button onClick={create} disabled={busyId === "new"} className="bmx-btn rounded-xl bg-biome-leaf px-3 py-2.5 text-[11px] font-bold text-white">{busyId === "new" ? <Loader2 size={13} className="bmx-spin" /> : "Add"}</button>
+            </div>
+          </div>
+        )}
+      </div>
+
       {series.map((s) => (
         <FormSection
           key={s.id}
@@ -1234,6 +1334,28 @@ function SeriesPanel({ onClose, onDone }: { onClose: () => void; onDone: () => v
           hint={s.note}
           columns={4}
         >
+          <F label="Name">
+            <input value={drafts[s.id]?.name ?? ""}
+              onChange={(e) => setDrafts({ ...drafts, [s.id]: { ...drafts[s.id], name: e.target.value } })} className={inputCls} />
+          </F>
+          <F label="Numbering method">
+            <select value={drafts[s.id]?.method ?? "auto_manual_override"}
+              onChange={(e) => setDrafts({ ...drafts, [s.id]: { ...drafts[s.id], method: e.target.value } })} className={inputCls}>
+              {methods.map((m) => <option key={m.id} value={m.id} title={m.help}>{m.label}</option>)}
+            </select>
+          </F>
+          <F label="Restart numbering">
+            <select value={drafts[s.id]?.resetOn ?? "never"}
+              onChange={(e) => setDrafts({ ...drafts, [s.id]: { ...drafts[s.id], resetOn: e.target.value } })} className={inputCls}>
+              <option value="never">Never</option><option value="financial_year">Every financial year (1 April)</option>
+            </select>
+          </F>
+          <F label="Used in">
+            <select value={drafts[s.id]?.business ?? "both"}
+              onChange={(e) => setDrafts({ ...drafts, [s.id]: { ...drafts[s.id], business: e.target.value } })} className={inputCls}>
+              <option value="both">Trading + manufacturing</option><option value="trading">Trading only</option><option value="manufacturing">Manufacturing only</option>
+            </select>
+          </F>
           <F label="Pattern">
             <input value={drafts[s.id]?.pattern ?? ""}
               onChange={(e) => setDrafts({ ...drafts, [s.id]: { ...drafts[s.id], pattern: e.target.value } })}
@@ -1261,6 +1383,10 @@ function SeriesPanel({ onClose, onDone }: { onClose: () => void; onDone: () => v
               </button>
             </div>
           </div>
+          <label className="flex items-center gap-2 text-[11px] text-biome-muted md:col-span-2 lg:col-span-4">
+            <input type="checkbox" checked={drafts[s.id]?.active !== false}
+              onChange={(e) => setDrafts({ ...drafts, [s.id]: { ...drafts[s.id], active: e.target.checked } })} /> Series in use (untick to retire it — its numbers stay on record)
+          </label>
           {s.lastIssued && (
             <p className="text-[10px] text-biome-muted md:col-span-2 lg:col-span-4">
               Last issued {s.lastIssued.number} by {s.lastIssued.by} on {s.lastIssued.at.slice(0, 10)}.

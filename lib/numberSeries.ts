@@ -56,8 +56,28 @@ export const BUSINESS_TYPES: { id: BusinessType; label: string; help: string }[]
   },
 ];
 
+/**
+ * How a series numbers its documents — the same three choices Tally
+ * gives a voucher type:
+ *
+ *   automatic              the next number is taken when the entry is saved;
+ *                          nobody types one (an admin can still correct it)
+ *   auto_manual_override   the next number is taken on save, but a person
+ *                          may type a different one (checked for duplicates)
+ *   manual                 the number is always typed; duplicates refused
+ */
+export type NumberingMethod = "automatic" | "auto_manual_override" | "manual";
+
+export const NUMBERING_METHODS: { id: NumberingMethod; label: string; help: string }[] = [
+  { id: "automatic", label: "Automatic", help: "Next number on save. Cannot be typed over." },
+  { id: "auto_manual_override", label: "Automatic (manual override)", help: "Next number on save; a different number may be typed." },
+  { id: "manual", label: "Manual", help: "Always typed. Duplicates are refused." },
+];
+
 export interface NumberSeries {
   id: string;
+  /** Tally-style numbering method. Older series: automatic with manual override. */
+  method?: NumberingMethod;
   /** What a person calls it — shown in the picker. */
   name: string;
   docType: DocType;
@@ -374,6 +394,10 @@ export function issueNumber(
  * Deliberately does NOT give the number back. The register keeps the row
  * so the book has no hole in it, which is what an auditor is looking for.
  */
+export function methodOf(s: Pick<NumberSeries, "method"> | undefined | null): NumberingMethod {
+  return s?.method === "automatic" || s?.method === "manual" ? s.method : "auto_manual_override";
+}
+
 export function voidNumber(number: string, reason: string): void {
   if (!number) return;
   const f = loadSeriesFile();

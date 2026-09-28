@@ -10,7 +10,7 @@ import {
   TRIP_STATUS, DEFAULT_SHORTAGE_RULES, FREEZE_DAYS, Trip, TripStatus,
 } from "@/lib/coordination";
 import {
-  issueNumber, voidNumber, numberClash, registerManualNumber,
+  issueNumber, voidNumber, numberClash, registerManualNumber, seriesById, methodOf,
   previewNext, loadSeriesFile, BUSINESS_TYPES, DOC_TYPES, BusinessType, DocType,
 } from "@/lib/numberSeries";
 import { recordAudit } from "@/lib/audit";
@@ -362,7 +362,26 @@ function assignDocumentNumber(
   body: any,
   user: { id: string; name: string }
 ): { error?: string; status?: number } {
-  const typed = str(body.ourDocNo, 60);
+  let typed = str(body.ourDocNo, 60);
+  const series = trip.seriesId ? seriesById(trip.seriesId) : undefined;
+  const method = methodOf(series);
+
+  // Re-number: the document type or book changed after a number was taken.
+  // The old number is voided (it stays in the register, never reused) and
+  // the next one comes from the chosen series — Tally's "change voucher type".
+  if (body.reissue === true && trip.ourDocNo) {
+    if (!trip.seriesId) return { error: "Pick the number series to re-number from." };
+    voidNumber(trip.ourDocNo, `Re-numbered by ${user.name} into ${series?.name || trip.seriesId}`);
+    trip.ourDocNo = "";
+    trip.biomeChallanNo = "";
+    typed = "";
+    body.issueNumber = true;
+  } else if (method === "automatic" && typed && typed !== trip.ourDocNo && !body.adminOverride) {
+    return { error: `"${series?.name}" numbers automatically — the number cannot be typed. An admin can change the series to allow manual override.`, status: 400 };
+  }
+  if (method === "manual" && !typed && !trip.ourDocNo && body.issueNumber === true) {
+    return { error: `"${series?.name}" is a manual series — type the document number.`, status: 400 };
+  }
 
   if (typed && typed !== trip.ourDocNo) {
     const clash = numberClash(typed, trip.id);
