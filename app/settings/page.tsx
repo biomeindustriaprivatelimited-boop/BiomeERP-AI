@@ -288,25 +288,10 @@ export default function SettingsPage() {
               </p>
             )}
             <p className="text-[11px] text-biome-muted">
-              Until this is fixed, uploaded documents can&apos;t be read and WhatsApp documents stay
-              in “Needs review”. Add one working key:
+              Documents are still read with the free offline OCR. An AI key reads difficult layouts better —
+              the Gemini key is <b>free</b>: open aistudio.google.com/apikey, sign in with Google, &ldquo;Create API key&rdquo;, paste it here.
             </p>
-            <ol className="list-decimal space-y-1 pl-4 text-[11px] text-biome-muted">
-              <li>
-                Open <span className="font-mono text-biome-text">.env.local</span> in the project
-                folder.
-              </li>
-              <li>
-                Set <span className="font-mono text-biome-text">ANTHROPIC_API_KEY=sk-ant-…</span>{" "}
-                (from console.anthropic.com) — or a Gemini key that starts with{" "}
-                <span className="font-mono text-biome-text">AIza</span> (from
-                aistudio.google.com/apikey).
-              </li>
-              <li>
-                Restart (<span className="font-mono text-biome-text">npm run dev</span>, or relaunch
-                the desktop build).
-              </li>
-            </ol>
+            <AiKeyForm onSaved={() => fetch("/api/ai-status").then((r) => r.json()).then(setAiStatus).catch(() => {})} />
           </div>
         )}
       </GlassCard>
@@ -650,6 +635,31 @@ export default function SettingsPage() {
           />
         </label>
       </GlassCard>
+    </div>
+  );
+}
+
+
+/** Paste the free Gemini key once; it is verified with Google, stored encrypted, and used by the OCR scanner and the WhatsApp agent. */
+function AiKeyForm({ onSaved }: { onSaved: () => void }) {
+  const [key, setKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  async function save() {
+    setBusy(true); setMsg(null);
+    try {
+      const r = await fetch("/api/ai-status", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ gemini: key }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || "Not saved.");
+      setMsg({ ok: true, text: "Saved and verified — AI reading is on for the OCR scanner and WhatsApp documents." }); setKey(""); onSaved();
+    } catch (e) { setMsg({ ok: false, text: (e as Error).message }); } finally { setBusy(false); }
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <input value={key} onChange={(e) => setKey(e.target.value)} placeholder="Gemini API key (AIza…)" type="password"
+        className="min-w-[240px] flex-1 rounded-xl border border-biome-line bg-biome-bg px-3 py-2 text-[12px] text-biome-text outline-none" />
+      <button onClick={save} disabled={!key.trim() || busy} className="rounded-xl bg-biome-leaf px-4 py-2 text-[11.5px] font-bold text-white disabled:opacity-50">{busy ? "Checking…" : "Save key"}</button>
+      {msg && <p className={`w-full text-[11px] ${msg.ok ? "text-emerald-500" : "text-rose-400"}`}>{msg.text}</p>}
     </div>
   );
 }

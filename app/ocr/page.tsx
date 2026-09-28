@@ -208,7 +208,7 @@ export default function OcrScannerPage() {
             if (aiErr?.code === "NO_API_KEY") {
               setAiAvailable(false);
               setBanner(
-                "AI-powered reading isn't configured — no ANTHROPIC_API_KEY found. Falling back to offline OCR for now. Add a key to .env.local (see .env.local.example) and restart the dev server for much higher accuracy."
+                "Reading with the free offline OCR. For difficult scans, add the free Gemini key once in Settings → AI OCR Engine (aistudio.google.com/apikey) — no restart needed."
               );
             } else {
               setBanner(

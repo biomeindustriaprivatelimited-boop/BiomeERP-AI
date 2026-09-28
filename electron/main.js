@@ -161,6 +161,8 @@ function startWhatsappAgent() {
       NODE_ENV: "production",
       ELECTRON_RUN_AS_NODE: "1",
       BIOME_WA_AGENT_PORT: String(WHATSAPP_AGENT_PORT),
+      // Same secret as the server, so the agent can read keys saved from Settings.
+      BIOME_AUTH_SECRET: authSecret(),
     },
     stdio: "inherit",
   });

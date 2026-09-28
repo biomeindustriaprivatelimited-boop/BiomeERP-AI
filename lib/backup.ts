@@ -48,6 +48,7 @@ const SENSITIVE_FILES: string[] = [
   // encryption passphrase). Both belong to THIS server, not to the data.
   "config/gdrive.json",
   "config/backup-schedule.json",
+  "config/ai-keys.json",
 ];
 
 /**
@@ -61,6 +62,7 @@ export const KEEP_ON_RESTORE: string[] = [
   "config/cloud-service-account.json",
   "config/gdrive.json",
   "config/backup-schedule.json",
+  "config/ai-keys.json",
   "runtime",
   "backups",
 ];

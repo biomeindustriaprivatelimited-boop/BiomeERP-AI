@@ -35,6 +35,8 @@ import path from "path";
  * key and will always 401 against generativelanguage — so we reject it
  * up front and tell the user plainly, instead of silently failing.
  */
+import { applyStoredAiKeys } from "@/lib/aiKeys";
+
 export function isPlausibleGeminiKey(key: string | undefined | null): boolean {
   const k = (key || "").trim();
   // Accept both issued formats. Anything shorter than 20 characters, or
@@ -61,6 +63,7 @@ export interface KeyDiagnosis {
 }
 
 export function diagnoseKeys(): KeyDiagnosis {
+  applyStoredAiKeys();
   const geminiRaw = (process.env.GEMINI_API_KEY || "").trim();
   const anthropicRaw = (process.env.ANTHROPIC_API_KEY || "").trim();
 
@@ -211,6 +214,7 @@ async function callAnthropic(key: string, opts: AiCallOptions): Promise<string> 
  * raw text the model produced (usually JSON — parse it yourself).
  */
 export async function runVision(opts: AiCallOptions): Promise<{ text: string; provider: string }> {
+  applyStoredAiKeys();
   const diag = diagnoseKeys();
   if (!diag.configured) {
     throw new AiError(diag.problem || "No usable AI key is configured.", 400, "config");

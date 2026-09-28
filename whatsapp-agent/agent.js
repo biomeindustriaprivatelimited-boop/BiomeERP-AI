@@ -36,6 +36,7 @@ const { classifyDocument, readLocally, DOC_TYPE_LABEL } = require("./lib/classif
 const learning = require("./lib/learning");
 const sampleStore = require("./lib/samples");
 const { planFiling, saveFile } = require("./lib/filing");
+const { aiKeys } = require("./lib/aiKeys");
 const store = require("./lib/store");
 const { BUILD } = require("./lib/version");
 const { ensureSeeded, loadClients, matchClient, loadPlants } = require("./lib/clients");
@@ -1209,8 +1210,8 @@ async function handleMedia(msg, media) {
   log(`[1/6] read "${media.fileName}" (${(buffer.length / 1024).toFixed(0)} KB) from ${sender.name || "unknown"}`);
 
   const ai = await classifyDocument(buffer, media.mimeType, {
-    geminiKey: process.env.GEMINI_API_KEY,
-    anthropicKey: process.env.ANTHROPIC_API_KEY,
+    geminiKey: aiKeys().gemini,
+    anthropicKey: aiKeys().anthropic,
     vendors: vendorList.map((v) => ({ code: v.code, name: v.name })),
     clients: loadClients().map((c) => ({ name: c.name, shortName: c.shortName, aliases: c.aliases })),
     chatContext,
@@ -1644,8 +1645,8 @@ async function reprocess(id) {
   const vendorList = vendors();
   const cfg = settings();
   const ai = await classifyDocument(buffer, rec.mimeType, {
-    geminiKey: process.env.GEMINI_API_KEY,
-    anthropicKey: process.env.ANTHROPIC_API_KEY,
+    geminiKey: aiKeys().gemini,
+    anthropicKey: aiKeys().anthropic,
     vendors: vendorList.map((v) => ({ code: v.code, name: v.name })),
   });
   if (!ai.ok) throw new Error(ai.message);
@@ -2042,8 +2043,8 @@ const server = http.createServer(async (req, res) => {
       let ai;
       try {
         ai = await classifyDocument(buffer, mimeType, {
-          geminiKey: process.env.GEMINI_API_KEY,
-          anthropicKey: process.env.ANTHROPIC_API_KEY,
+          geminiKey: aiKeys().gemini,
+          anthropicKey: aiKeys().anthropic,
           vendors: vendorList.map((v) => ({ code: v.code, name: v.name })),
           clients: clientList.map((c) => ({ name: c.name, shortName: c.shortName, aliases: c.aliases })),
           companyCodes: cfg.companyCodes,
@@ -2267,8 +2268,8 @@ const server = http.createServer(async (req, res) => {
       let ai;
       try {
         ai = await classifyDocument(buffer, mimeType, {
-          geminiKey: process.env.GEMINI_API_KEY,
-          anthropicKey: process.env.ANTHROPIC_API_KEY,
+          geminiKey: aiKeys().gemini,
+          anthropicKey: aiKeys().anthropic,
           vendors: vendorList.map((v) => ({ code: v.code, name: v.name })),
           clients: clientList.map((c) => ({ name: c.name, shortName: c.shortName, aliases: c.aliases })),
           companyCodes: cfg.companyCodes,
@@ -2480,8 +2481,8 @@ const server = http.createServer(async (req, res) => {
       let ai;
       try {
         ai = await classifyDocument(buffer, mimeType, {
-          geminiKey: process.env.GEMINI_API_KEY,
-          anthropicKey: process.env.ANTHROPIC_API_KEY,
+          geminiKey: aiKeys().gemini,
+          anthropicKey: aiKeys().anthropic,
           vendors: vendorList.map((v) => ({ code: v.code, name: v.name })),
           clients: clientList.map((c) => ({ name: c.name, shortName: c.shortName, aliases: c.aliases })),
           companyCodes: cfg.companyCodes,
@@ -3088,7 +3089,7 @@ server.listen(activePort, HOST, () => {
   selfTest();
   log(`listening on http://${HOST}:${activePort}`);
   log(`data root: ${PATHS.root}`);
-  if (!process.env.GEMINI_API_KEY && !process.env.ANTHROPIC_API_KEY) {
+  if (!aiKeys().gemini && !aiKeys().anthropic) {
     log(
       "NOTE: no GEMINI_API_KEY / ANTHROPIC_API_KEY — documents are read with the built-in offline OCR " +
         "(free, no internet). A key is optional and only helps with unusual layouts."

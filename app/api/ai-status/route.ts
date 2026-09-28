@@ -35,3 +35,18 @@ return NextResponse.json({
     problem: d.problem,
   });
 }
+
+/** Save the free Gemini key (or an Anthropic key) from Settings → AI. */
+export async function POST(req: NextRequest) {
+  const auth = await requirePermission(req, "settings");
+  if ("response" in auth) return auth.response;
+  const body = await req.json().catch(() => ({}));
+  const { saveAiKeys } = await import("@/lib/aiKeys");
+  const gemini = typeof body.gemini === "string" ? body.gemini.trim() : undefined;
+  if (gemini) {
+    const live = await verifyGeminiKey(gemini);
+    if (!live.ok) return NextResponse.json({ error: `Google did not accept that key: ${live.message}` }, { status: 400 });
+  }
+  saveAiKeys({ gemini, anthropic: typeof body.anthropic === "string" ? body.anthropic : undefined });
+  return NextResponse.json({ ok: true });
+}
