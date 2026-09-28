@@ -7,6 +7,7 @@ import { Sun, Moon, Factory, Bot, ChevronDown, User, LogOut, Menu } from "lucide
 import GlobalSearch from "@/components/GlobalSearch";
 import StatusCluster from "@/components/StatusCluster";
 import NotificationBell from "@/components/NotificationBell";
+import AndroidAppButton from "@/components/AndroidAppButton";
 import { getColorMode, setColorMode, type ColorMode } from "@/lib/preferences";
 import { useSession } from "@/lib/session";
 import { ROLES, PLANTS } from "@/lib/permissions";
@@ -63,6 +64,8 @@ export default function Navbar() {
         <div className="ml-auto flex items-center gap-2">
           {/* Clock and connectivity — desktop only; a phone has its own. */}
           <div className="max-lg:hidden"><StatusCluster /></div>
+
+          <AndroidAppButton />
 
           <button
             onClick={toggleTheme}

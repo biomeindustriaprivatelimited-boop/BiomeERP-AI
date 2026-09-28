@@ -322,6 +322,7 @@ export const ROUTE_PERMISSIONS: { prefix: string; permission: Permission }[] = [
   { prefix: "/api/imprest/people", permission: "imprest.manage" },
   { prefix: "/api/imprest/decision", permission: "imprest.approve" },
   { prefix: "/api/support", permission: "support" },
+  { prefix: "/api/release/files", permission: "release.read" },
   { prefix: "/api/release", permission: "release.read" },
   { prefix: "/api/imprest", permission: "imprest.view" },
   { prefix: "/api/payroll/employees", permission: "employee.view" },

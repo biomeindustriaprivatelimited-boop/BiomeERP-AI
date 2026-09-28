@@ -14,6 +14,7 @@ import ServerGuard from "@/components/ServerGuard";
 import { PageWipe } from "@/components/motion/kit";
 import FeatureShell from "@/components/FeatureShell";
 import { CursorGlow, Particles, Ripples } from "@/components/fx";
+import DeviceHeartbeat from "@/components/DeviceHeartbeat";
 import { NotificationsProvider } from "@/lib/notifications";
 import { SessionProvider, useSession } from "@/lib/session";
 
@@ -102,6 +103,7 @@ function Gate({ children }: { children: React.ReactNode }) {
   if (isMobileScreen) {
     return (
       <ServerGuard>
+        <DeviceHeartbeat />
         <NotificationsProvider>{children}</NotificationsProvider>
       </ServerGuard>
     );
@@ -114,6 +116,7 @@ function Gate({ children }: { children: React.ReactNode }) {
       <Particles density={60} />
       <Ripples />
       <PreferencesInit />
+      <DeviceHeartbeat />
       <NotificationsProvider>
         <div className="flex h-screen overflow-hidden">
           <Sidebar />

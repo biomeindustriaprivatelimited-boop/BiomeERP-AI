@@ -45,7 +45,12 @@ export default function UpdateBanner() {
         if (!res.ok) return; // 404 for a role without release.read — say nothing
         const json = await res.json();
         if (cancelled || !json.release) return;
-        if (!isNewer(json.release.version, json.current)) return;
+        // Inside the desktop app, compare with THIS PC's installed version:
+        // a client PC shows the server's (already new) pages but may still
+        // run an old desktop shell. In a browser the server's version counts.
+        const shell = (window as any).biomeDesktop?.getAppInfo ? await (window as any).biomeDesktop.getAppInfo().catch(() => null) : null;
+        const current = shell?.version || json.current;
+        if (!isNewer(json.release.version, current)) return;
 
         setRelease(json.release);
         let seen = false;
@@ -77,16 +82,14 @@ export default function UpdateBanner() {
         )}
       </div>
 
-      {release.url && (
-        <a
-          href={release.url}
+      <a
+          href={release.url || "/api/release/files?kind=windows"}
           target="_blank"
           rel="noreferrer"
           className="bmx-btn flex items-center gap-1.5 rounded-xl bg-biome-leaf px-3.5 py-2 text-[11px] font-bold text-white"
         >
-          <Download size={13} /> Download
+          <Download size={13} /> Download &amp; install
         </a>
-      )}
 
       {!release.mandatory && (
         <button

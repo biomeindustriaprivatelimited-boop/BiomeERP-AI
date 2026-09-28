@@ -19,6 +19,7 @@ import { paths, readJson, writeJsonAtomic, ensureDir } from "@/lib/dataRoot";
 import { Role, Permission, hasPermission } from "@/lib/permissions";
 import { AccessOverride, effectivePermissions, featureBlocks } from "@/lib/access";
 import { SESSION_COOKIE, SessionPayload, verifySession } from "@/lib/authToken";
+import { isBlocked, DEVICE_COOKIE } from "@/lib/devices";
 
 export interface User {
   id: string;
@@ -202,6 +203,14 @@ export async function requirePermission(
         { error: "Your access was changed. Please sign in again.", code: "ACCESS_CHANGED" },
         { status: 401 }
       ),
+    };
+  }
+
+  // A device the developer blocked (Developer → Server & devices) is
+  // refused everywhere, whoever signs in on it.
+  if (user.role !== "developer" && isBlocked(req.cookies.get(DEVICE_COOKIE)?.value)) {
+    return {
+      response: NextResponse.json({ error: "This device has been blocked by the administrator.", code: "DEVICE_BLOCKED" }, { status: 403 }),
     };
   }
 

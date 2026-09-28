@@ -11,4 +11,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("biomeDesktop", {
   getSyncConfig: () => ipcRenderer.invoke("biome:getSyncConfig"),
   setSyncConfig: (cfg) => ipcRenderer.invoke("biome:setSyncConfig", cfg),
+  // Version of THIS installed desktop app (not the server's), so the
+  // update notice can tell whether this PC still needs the new installer.
+  getAppInfo: () => ipcRenderer.invoke("biome:getAppInfo"),
 });

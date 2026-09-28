@@ -6,6 +6,8 @@ import {
   Megaphone, ScrollText, Lock, Unlock, Send, Pin, Mail, EyeOff,
 } from "lucide-react";
 import FormPanel, { FormSection } from "@/components/FormPanel";
+import DataTab from "@/components/developer/DataTab";
+import ServerTab from "@/components/developer/ServerTab";
 import { PERMISSION_INFO } from "@/lib/permissions";
 
 /**
@@ -21,7 +23,7 @@ import { PERMISSION_INFO } from "@/lib/permissions";
  * and if this account ever leaves the family the difference matters.
  */
 
-type Tab = "access" | "features" | "notices" | "activity";
+type Tab = "access" | "features" | "notices" | "activity" | "data" | "server";
 
 interface DevUser {
   id: string; username: string; name: string; role: string;
@@ -56,6 +58,8 @@ export default function DeveloperPage() {
     { id: "features", label: "Features", icon: <ToggleLeft size={13} /> },
     { id: "notices", label: "Notices", icon: <Megaphone size={13} /> },
     { id: "activity", label: "My activity", icon: <ScrollText size={13} /> },
+    { id: "server", label: "Server & devices", icon: <ShieldCheck size={13} /> },
+    { id: "data", label: "Data (delete)", icon: <AlertCircle size={13} /> },
   ];
 
   return (
@@ -92,6 +96,8 @@ export default function DeveloperPage() {
         : tab === "access" ? <AccessTab data={data} onChanged={load} />
         : tab === "features" ? <FeaturesTab data={data} onChanged={load} />
         : tab === "notices" ? <NoticesTab />
+        : tab === "data" ? <DataTab />
+        : tab === "server" ? <ServerTab />
         : <ActivityTab activity={data.activity || []} />}
     </div>
   );

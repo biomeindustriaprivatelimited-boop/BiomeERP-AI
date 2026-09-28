@@ -319,6 +319,8 @@ ipcMain.handle("biome:getSyncConfig", () => ({
   configFile: syncConfigFile(),
 }));
 
+ipcMain.handle("biome:getAppInfo", () => ({ version: app.getVersion(), mode: SYNC.mode, serverUrl: SYNC.serverUrl }));
+
 ipcMain.handle("biome:setSyncConfig", (_evt, cfg) => {
   const mode = cfg && cfg.mode === "client" ? "client" : "server";
   let serverUrl = "";
