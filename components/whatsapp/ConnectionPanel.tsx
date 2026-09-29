@@ -191,16 +191,15 @@ export default function ConnectionPanel({ state, loadError, onConnect, onDisconn
         </div>
       )}
 
-      {/* ---- No AI key: documents still save, but stay unclassified ---- */}
+      {/* ---- No AI key: offline OCR still reads and files; a key only helps odd layouts ---- */}
       {state && !state.hasAiKey && (
         <div className="mt-4 flex items-start gap-2.5 rounded-xl border border-biome-bolt/25 bg-biome-bolt/5 px-3 py-2.5">
           <Sparkles size={14} className="mt-0.5 shrink-0 text-biome-bolt" />
           <p className="text-[11.5px] leading-relaxed text-biome-bolt/90">
-            No AI reader is configured, so documents will be downloaded and saved but not classified —
-            they&apos;ll land in <span className="font-mono">_Needs Review</span>. Add a{" "}
-            <span className="font-mono">GEMINI_API_KEY</span> to <span className="font-mono">.env.local</span>{" "}
-            (free at aistudio.google.com/apikey) and restart, then use Re-scan on anything already
-            received.
+            Documents are read with the built-in offline OCR (free, no internet) and filed automatically.
+            For better reading of unusual or handwritten layouts, add a free Gemini key in{" "}
+            <a href="/settings" className="font-semibold underline">Settings → AI OCR Engine</a>{" "}
+            (aistudio.google.com/apikey) — no restart needed.
           </p>
         </div>
       )}

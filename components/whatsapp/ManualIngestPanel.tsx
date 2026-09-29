@@ -67,7 +67,12 @@ export default function ManualIngestPanel() {
       </button>
       <input ref={input} type="file" multiple accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/*" className="hidden" onChange={(e) => send(e.target.files)} />
       {results.length > 0 && (
-        <ul className="mt-3 space-y-1">
+        <div className="mt-3 rounded-xl border border-biome-line bg-biome-bg/60 p-2">
+        <div className="mb-1 flex items-center justify-between px-1">
+          <span className="text-[10px] font-bold uppercase tracking-[.13em] text-biome-muted">This upload · {results.length}</span>
+          {!busy && <button onClick={() => setResults([])} className="text-[10.5px] font-semibold text-biome-muted hover:text-biome-text">Clear</button>}
+        </div>
+        <ul className="max-h-40 space-y-1 overflow-y-auto pr-1">
           {results.map((r, i) => (
             <li key={i} className="flex items-start gap-2 text-[11px]">
               {r.ok ? <CheckCircle2 size={13} className="mt-px shrink-0 text-emerald-600" /> : <AlertTriangle size={13} className="mt-px shrink-0 text-amber-500" />}
@@ -75,6 +80,7 @@ export default function ManualIngestPanel() {
             </li>
           ))}
         </ul>
+        </div>
       )}
     </GlassCard>
   );

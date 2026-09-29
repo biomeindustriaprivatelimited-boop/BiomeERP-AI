@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { GraduationCap, Upload, Loader2, Trash2, CheckCircle2, AlertCircle, FileText } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { GraduationCap, Upload, Loader2, Trash2, CheckCircle2, AlertCircle, FileText, ChevronDown } from "lucide-react";
 import GlassCard from "@/components/GlassCard";
 
 /**
@@ -49,6 +49,17 @@ export default function TrainAgentPanel() {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const [showList, setShowList] = useState(false);
+  const [filter, setFilter] = useState("");
+
+  // Samples grouped by document type, newest first inside each group.
+  const groups = useMemo(() => {
+    const m = new Map<string, Sample[]>();
+    for (const s of samples || []) m.set(s.documentType, [...(m.get(s.documentType) || []), s]);
+    return Array.from(m.entries())
+      .map(([type, items]) => ({ type, label: TYPES.find((t) => t.id === type)?.label || type, items: items.sort((a, b) => String(b.addedAt).localeCompare(String(a.addedAt))) }))
+      .sort((a, b) => b.items.length - a.items.length);
+  }, [samples]);
 
   const load = useCallback(async () => {
     try {
@@ -159,22 +170,62 @@ export default function TrainAgentPanel() {
       )}
 
       {samples && samples.length > 0 && (
-        <div className="mt-4 space-y-1.5">
-          <p className="text-[9.5px] font-bold uppercase tracking-[.14em] text-biome-muted">
-            {samples.length} labelled sample{samples.length === 1 ? "" : "s"}
-          </p>
-          {samples.map((s) => (
-            <div key={s.id} className="flex items-center gap-2.5 rounded-xl border border-biome-line bg-biome-bg px-3 py-2">
-              <FileText size={13} className="shrink-0 text-biome-muted" />
-              <span className="min-w-0 flex-1 truncate text-[11px] text-biome-text">{s.fileName}</span>
-              <span className="shrink-0 rounded-full border border-biome-leaf/30 bg-biome-leaf/[.08] px-2 py-0.5 text-[9.5px] font-semibold text-biome-leafBright">
-                {TYPES.find((t) => t.id === s.documentType)?.label || s.documentType}
-              </span>
-              <button onClick={() => remove(s.id)} className="bmx-chip shrink-0 rounded-lg border border-biome-line p-1.5 text-rose-500" aria-label="Remove sample">
-                <Trash2 size={11} />
-              </button>
+        <div className="mt-4 rounded-xl border border-biome-line bg-biome-bg/60">
+          {/* Collapsed by default: one summary line, not a list that grows down the page. */}
+          <button
+            type="button"
+            onClick={() => setShowList((v) => !v)}
+            className="flex w-full items-center gap-2 px-3 py-2.5 text-left"
+            aria-expanded={showList}
+          >
+            <ChevronDown size={14} className={`shrink-0 text-biome-muted transition-transform ${showList ? "rotate-180" : ""}`} />
+            <span className="text-[11px] font-semibold text-biome-text">
+              {samples.length} labelled sample{samples.length === 1 ? "" : "s"}
+            </span>
+            <span className="flex min-w-0 flex-1 flex-wrap justify-end gap-1">
+              {groups.slice(0, showList ? 0 : 4).map((g) => (
+                <span key={g.type} className="rounded-full border border-biome-leaf/30 bg-biome-leaf/[.08] px-2 py-0.5 text-[9.5px] font-semibold text-biome-leafBright">
+                  {g.label} · {g.items.length}
+                </span>
+              ))}
+              {!showList && groups.length > 4 && <span className="text-[9.5px] text-biome-muted">+{groups.length - 4} more</span>}
+            </span>
+          </button>
+
+          {showList && (
+            <div className="border-t border-biome-line px-2 pb-2 pt-1.5">
+              <select
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                className="bmx-input mb-2 w-full rounded-lg border border-biome-line bg-biome-bg px-2.5 py-1.5 text-[11px] text-biome-text outline-none"
+              >
+                <option value="">All types ({samples.length})</option>
+                {groups.map((g) => <option key={g.type} value={g.type}>{g.label} ({g.items.length})</option>)}
+              </select>
+              <div className="max-h-64 space-y-1 overflow-y-auto pr-1">
+                {groups.filter((g) => !filter || g.type === filter).map((g) => (
+                  <details key={g.type} open={!!filter} className="rounded-lg border border-biome-line/70">
+                    <summary className="flex cursor-pointer list-none items-center justify-between px-2.5 py-1.5 text-[10.5px] font-semibold text-biome-text">
+                      <span>{g.label}</span>
+                      <span className="rounded-full bg-biome-leaf/[.1] px-1.5 text-[9.5px] text-biome-leafBright">{g.items.length}</span>
+                    </summary>
+                    <div className="space-y-1 px-1.5 pb-1.5">
+                      {g.items.map((s) => (
+                        <div key={s.id} className="flex items-center gap-2 rounded-lg bg-biome-bg px-2.5 py-1.5">
+                          <FileText size={12} className="shrink-0 text-biome-muted" />
+                          <span className="min-w-0 flex-1 truncate text-[10.5px] text-biome-text" title={s.fileName}>{s.fileName}</span>
+                          <span className="shrink-0 text-[9.5px] text-biome-muted">{new Date(s.addedAt).toLocaleDateString("en-IN")}</span>
+                          <button onClick={() => remove(s.id)} className="bmx-chip shrink-0 rounded-md border border-biome-line p-1 text-rose-500" aria-label="Remove sample">
+                            <Trash2 size={10} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                ))}
+              </div>
             </div>
-          ))}
+          )}
         </div>
       )}
     </GlassCard>
