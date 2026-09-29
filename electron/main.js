@@ -6,6 +6,19 @@ const fs = require("fs");
 const os = require("os");
 const crypto = require("crypto");
 
+/**
+ * Keep the window painting. Windows' "native occlusion" check decides a
+ * window is hidden when something sits over it (the taskbar weather
+ * widget, a screen recorder, another app) and Chromium then stops drawing
+ * frames and running animation callbacks. Page transitions froze half-way,
+ * leaving the main area blank. A desktop ERP that someone keeps open all
+ * day should never be throttled that way.
+ */
+app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
+app.commandLine.appendSwitch("disable-renderer-backgrounding");
+app.commandLine.appendSwitch("disable-background-timer-throttling");
+app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+
 const PORT = 4173;
 const WHATSAPP_AGENT_PORT = 4174;
 
@@ -120,6 +133,38 @@ function authSecret() {
   return generated;
 }
 
+/**
+ * Child-process output goes to log files in the profile folder
+ * (%APPDATA%\Biome\logs). The installed app has no console window, so
+ * without these a crash left nothing behind to diagnose.
+ */
+function logStream(name) {
+  try {
+    const dir = path.join(app.getPath("userData"), "logs");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, name);
+    // Keep the file from growing forever: start fresh past 5 MB.
+    try { if (fs.existsSync(file) && fs.statSync(file).size > 5 * 1024 * 1024) fs.renameSync(file, file + ".old"); } catch (_) {}
+    const out = fs.createWriteStream(file, { flags: "a" });
+    out.write(`\n===== ${new Date().toISOString()} start (app ${app.getVersion()}) =====\n`);
+    return out;
+  } catch (_) {
+    return null;
+  }
+}
+
+function pipeTo(child, name) {
+  const out = logStream(name);
+  for (const s of [child.stdout, child.stderr]) {
+    if (!s) continue;
+    s.on("data", (d) => {
+      if (out) out.write(d);
+      if (!app.isPackaged) process.stdout.write(d);
+    });
+  }
+}
+
+let serverRestarts = 0;
 function startNextServer() {
   const root = appRootDir();
   const nextBin = path.join(root, "node_modules", "next", "dist", "bin", "next");
@@ -135,11 +180,21 @@ function startNextServer() {
       BIOME_AUTH_SECRET: authSecret(),
       PORT: String(PORT),
     },
-    stdio: "inherit",
+    stdio: ["ignore", "pipe", "pipe"],
   });
+  pipeTo(serverProcess, "server.log");
 
   serverProcess.on("error", (err) => {
     console.error("Failed to start the Biome server:", err);
+  });
+
+  // The server must not stay down: every PC on the network depends on it.
+  serverProcess.on("exit", (code) => {
+    serverProcess = null;
+    if (quitting) return;
+    serverRestarts += 1;
+    console.error(`Biome server exited with code ${code}; restarting (${serverRestarts}).`);
+    setTimeout(startNextServer, Math.min(30000, 1500 * serverRestarts));
   });
 }
 
@@ -164,8 +219,9 @@ function startWhatsappAgent() {
       // Same secret as the server, so the agent can read keys saved from Settings.
       BIOME_AUTH_SECRET: authSecret(),
     },
-    stdio: "inherit",
+    stdio: ["ignore", "pipe", "pipe"],
   });
+  pipeTo(whatsappAgentProcess, "whatsapp-agent.log");
 
   whatsappAgentProcess.on("error", (err) => {
     console.error("Failed to start the WhatsApp agent:", err);
@@ -176,17 +232,13 @@ function startWhatsappAgent() {
     if (quitting || code === 0) return;
     // Bring it back, but give up after a few tries so a genuinely broken
     // install doesn't spin forever.
-    if (whatsappRestarts < 5) {
-      whatsappRestarts += 1;
-      console.error(
-        `WhatsApp agent exited with code ${code}; restarting (attempt ${whatsappRestarts}/5).`
-      );
-      setTimeout(startWhatsappAgent, 2000 * whatsappRestarts);
-    } else {
-      console.error(
-        "WhatsApp agent kept exiting — giving up. The WhatsApp Documents page will explain this."
-      );
-    }
+    // Quick retries first, then once a minute for as long as the app is
+    // open — a document automation that silently stays off is the worst
+    // outcome, and the page shows the reason from whatsapp-agent-error.json.
+    whatsappRestarts += 1;
+    const wait = whatsappRestarts <= 5 ? 2000 * whatsappRestarts : 60000;
+    console.error(`WhatsApp agent exited with code ${code}; restarting in ${wait / 1000}s (attempt ${whatsappRestarts}).`);
+    setTimeout(startWhatsappAgent, wait);
   });
 }
 
@@ -269,11 +321,21 @@ function createMainWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       preload: path.join(__dirname, "preload.js"),
+      backgroundThrottling: false,
     },
   });
 
   mainWindow.setMenuBarVisibility(false);
   mainWindow.loadURL(appOrigin());
+
+  // A crashed or killed page (GPU driver reset, out of memory) comes back
+  // by itself instead of leaving an empty window.
+  mainWindow.webContents.on("render-process-gone", (_e, details) => {
+    console.error("Renderer gone:", details && details.reason);
+    if (quitting || !mainWindow || mainWindow.isDestroyed()) return;
+    setTimeout(() => { try { mainWindow.loadURL(appOrigin()); } catch (_) {} }, 1000);
+  });
+  mainWindow.on("unresponsive", () => console.error("Window unresponsive"));
 
   mainWindow.once("ready-to-show", () => {
     if (loadingWindow && !loadingWindow.isDestroyed()) loadingWindow.close();

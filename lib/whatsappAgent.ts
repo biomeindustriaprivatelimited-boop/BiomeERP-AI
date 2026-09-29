@@ -53,8 +53,9 @@ export class AgentUnavailableError extends Error {
 }
 
 const AGENT_DOWN_MESSAGE =
-  "The WhatsApp background agent isn't running. It starts with the app — if you've just updated, " +
-  "run `npm install` once (it needs new packages), then `npm run dev`.";
+  "The WhatsApp background agent isn't running yet. It starts with the desktop app on the server PC and " +
+  "restarts itself within a minute if it stops. If this stays, close Biome completely and open it again; " +
+  "the reason is written in %APPDATA%\\Biome\\logs\\whatsapp-agent.log.";
 
 /**
  * Call the background agent. Throws AgentUnavailableError when the agent
@@ -68,7 +69,7 @@ export async function agentFetch(
   if (!handshake) {
     // Prefer the agent's own account of why it died over a generic message.
     const crash = readAgentCrash();
-    throw new AgentUnavailableError(crash?.message || AGENT_DOWN_MESSAGE);
+    throw new AgentUnavailableError(crash ? `${crash.message}${crash.detail ? ` (${crash.detail.slice(0, 240)})` : ""}` : AGENT_DOWN_MESSAGE);
   }
 
   const { timeoutMs = 30000, headers, ...rest } = init;

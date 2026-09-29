@@ -121,17 +121,16 @@ export function PathLogo({ size = 96, loop = false, stroke = "#9fe870" }: { size
 
 /* ---------- Page wipe (route transitions) ---------- */
 export function PageWipe({ children, id }: { children: React.ReactNode; id: string }) {
-  const reduce = useReducedMotion();
+  // A plain CSS entrance, keyed by route. This used to be AnimatePresence
+  // mode="wait": the new page mounted only after the old one's exit
+  // animation reported done — and in the desktop app, when that callback
+  // never came (window in the background, two quick clicks), the page
+  // stayed mounted-but-invisible: sidebar fine, main area blank. A CSS
+  // animation is time-based and its resting state is fully visible, so the
+  // worst case is "no animation", never "no page".
   return (
-    <AnimatePresence mode="wait" initial={false}>
-      <motion.div key={id}
-        initial={reduce ? false : { opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        exit={reduce ? undefined : { opacity: 0, y: -6, transition: { duration: 0.15 } }}
-        transition={{ duration: 0.3, ease: EASE }}
-        style={{ minHeight: 0 }}>
-        {children}
-      </motion.div>
-    </AnimatePresence>
+    <div key={id} style={{ minHeight: 0 }}>
+      {children}
+    </div>
   );
 }

@@ -71,6 +71,7 @@
       ".next/**",
       "public/**",
       "whatsapp-agent/**",
+      "templates/**",
       "node_modules/**",
       "package.json",
       "next.config.js"

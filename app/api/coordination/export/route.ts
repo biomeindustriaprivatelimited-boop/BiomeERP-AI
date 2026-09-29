@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createRequire } from "module";
 import { requirePermission } from "@/lib/authServer";
 import { loadTrips, shortageFor, derivedStatus, summarise, byParty, lockStateFor } from "@/lib/coordination";
 
@@ -13,7 +12,9 @@ function docLabel(v: string): string {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const nodeRequire = createRequire(import.meta.url);
+// createRequire() is special-cased by webpack and cannot load files by
+// absolute path from a server bundle; the runtime require can.
+const nodeRequire: NodeRequire = eval("require");
 
 /**
  * The register as an Excel workbook.

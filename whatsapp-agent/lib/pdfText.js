@@ -28,26 +28,37 @@ let loadFailed = null;
  * pdfjs ships several builds. The legacy one is the CommonJS build
  * meant for Node; the default is ESM and browser-targeted.
  */
-function loadPdfjs() {
+async function loadPdfjs() {
   if (pdfjs) return pdfjs;
   if (loadFailed) throw new Error(loadFailed);
 
+  // pdfjs-dist 4+ ships ES modules only. require() of an ES module works
+  // on Node 22, but the installed app runs this on Electron's Node 20,
+  // where it throws — every PDF then came back unread and no supply set
+  // could ever complete. import() works on both; the legacy build is the
+  // one meant for Node (the default build needs browser DOMMatrix).
   const candidates = [
-    "pdfjs-dist/legacy/build/pdf.js",
     "pdfjs-dist/legacy/build/pdf.mjs",
-    "pdfjs-dist/build/pdf.js",
+    "pdfjs-dist/legacy/build/pdf.js",
+    "pdfjs-dist/build/pdf.mjs",
     "pdfjs-dist",
   ];
-  for (const path of candidates) {
-    try {
-      const mod = require(path);
-      pdfjs = mod.default || mod;
-      if (typeof pdfjs.getDocument === "function") return pdfjs;
-    } catch {
-      // try the next build
+  const errors = [];
+  for (const spec of candidates) {
+    for (const load of [() => require(spec), () => import(spec)]) {
+      try {
+        const mod = await load();
+        const lib = mod && typeof mod.getDocument === "function" ? mod : mod && mod.default;
+        if (lib && typeof lib.getDocument === "function") {
+          pdfjs = lib;
+          return pdfjs;
+        }
+      } catch (err) {
+        errors.push(`${spec}: ${err && err.message ? err.message.split("\n")[0] : err}`);
+      }
     }
   }
-  loadFailed = "pdfjs-dist could not be loaded — run `npm install` in the project folder.";
+  loadFailed = `pdfjs-dist could not be loaded (${errors.slice(-2).join("; ")}).`;
   throw new Error(loadFailed);
 }
 
@@ -78,7 +89,7 @@ async function safelyAsync(fn) {
  */
 async function extractPdfPages(buffer, options = {}) {
   const maxPages = options.maxPages || 20;
-  const lib = loadPdfjs();
+  const lib = await loadPdfjs();
 
   const task = lib.getDocument({
     data: new Uint8Array(buffer),

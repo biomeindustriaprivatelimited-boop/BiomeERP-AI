@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/lib/authServer";
-import { createRequire } from "module";
 import fs from "fs";
 import path from "path";
 import { paths } from "@/lib/dataRoot";
@@ -12,7 +11,9 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
 
-const nodeRequire = createRequire(import.meta.url);
+// createRequire() is special-cased by webpack and cannot load files by
+// absolute path from a server bundle; the runtime require can.
+const nodeRequire: NodeRequire = eval("require");
 
 /**
  * Read an uploaded weight slip and check it against what was typed.

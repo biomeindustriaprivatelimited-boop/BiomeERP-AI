@@ -113,7 +113,33 @@ const SEED_CLIENTS = [
  * everything sitting unmatched until someone types the list in by hand.
  * Never overwritten once it exists — the user owns it after that.
  */
+function seedVendorRows() {
+  return SEED_VENDORS.map((v) => ({
+    code: v.code,
+    name: v.name,
+    aliases: v.aliases,
+    active: true,
+    kyc: [],
+    createdAt: new Date().toISOString(),
+  }));
+}
+
 function ensureVendorsSeeded() {
+  // An EMPTY list is not "the user's own list" — it is what an early
+  // Registration sync wrote before this file existed, and it left every
+  // document unmatched. Put the company's master back; Registration then
+  // adds to it.
+  try {
+    if (fs.existsSync(PATHS.vendorsFile)) {
+      const f = JSON.parse(fs.readFileSync(PATHS.vendorsFile, "utf8"));
+      if (!Array.isArray(f.vendors) || f.vendors.length === 0) {
+        f.vendors = seedVendorRows();
+        f.reseededAt = new Date().toISOString();
+        fs.writeFileSync(PATHS.vendorsFile, JSON.stringify(f, null, 2), "utf8");
+        return;
+      }
+    }
+  } catch { /* unreadable — handled below */ }
   if (fs.existsSync(PATHS.vendorsFile)) {
     // Earlier releases split the shared SGE code into SGE2/SGE3. The
     // business wants the code kept as issued, so those revert to SGE.
@@ -130,14 +156,7 @@ function ensureVendorsSeeded() {
     PATHS.vendorsFile,
     JSON.stringify(
       {
-        vendors: SEED_VENDORS.map((v) => ({
-          code: v.code,
-          name: v.name,
-          aliases: v.aliases,
-          active: true,
-          kyc: [],
-          createdAt: new Date().toISOString(),
-        })),
+        vendors: seedVendorRows(),
         seededFrom: "Vendor Master Directory supplied by the company",
         seededAt: new Date().toISOString(),
       },
@@ -149,17 +168,48 @@ function ensureVendorsSeeded() {
 }
 
 /** Our own plants, used to recognise manufacturing references. */
+/**
+ * config/plants.json is SHARED with the app's plant master (lib/plants.ts),
+ * which writes { code, label, state, location, active }. The agent needs
+ * { code, name, aliases, weightAdjustmentKg }. Each side keeps the other's
+ * fields; here the agent's view is derived from whatever is there, with
+ * the seed filling what the app never sets (Gangakhed's +500 kg).
+ */
+const APP_SEED = {
+  REW: { label: "Mayan", state: "HR", location: "Mayan Village, Rewari, Haryana" },
+  GKD: { label: "Gangakhed", state: "MH", location: "Gangakhed, Maharashtra" },
+};
+
+function toAgentPlant(p) {
+  const code = String(p.code || "").toUpperCase();
+  const seed = SEED_PLANTS.find((s) => s.code === code) || {};
+  const label = String(p.label || "").trim();
+  const name = String(p.name || (label ? `${label} Plant` : seed.name || code));
+  const aliases = Array.from(new Set([
+    ...(Array.isArray(p.aliases) ? p.aliases : []),
+    ...(seed.aliases || []),
+    code.toLowerCase(),
+    ...(label ? [label.toLowerCase()] : []),
+  ].filter(Boolean)));
+  const adj = p.weightAdjustmentKg !== undefined && p.weightAdjustmentKg !== null && p.weightAdjustmentKg !== "" ? Number(p.weightAdjustmentKg) : Number(seed.weightAdjustmentKg || 0);
+  return { ...p, code, name, aliases, weightAdjustmentKg: Number.isFinite(adj) ? adj : 0, active: p.active !== false };
+}
+
 function loadPlants() {
   try {
     const file = path.join(PATHS.configDir, "plants.json");
     if (!fs.existsSync(file)) {
       ensureDir(PATHS.configDir);
-      fs.writeFileSync(file, JSON.stringify({ plants: SEED_PLANTS }, null, 2), "utf8");
-      return SEED_PLANTS;
+      const now = new Date().toISOString();
+      // Written in the shape BOTH readers understand.
+      const rows = SEED_PLANTS.map((p) => ({ ...(APP_SEED[p.code] || { label: p.name.replace(/ Plant$/, ""), state: "DL", location: "" }), ...p, active: true, createdAt: now, updatedAt: now }));
+      fs.writeFileSync(file, JSON.stringify({ plants: rows, updatedAt: now }, null, 2), "utf8");
+      return rows.map(toAgentPlant);
     }
-    return JSON.parse(fs.readFileSync(file, "utf8")).plants || SEED_PLANTS;
+    const list = JSON.parse(fs.readFileSync(file, "utf8")).plants;
+    return (Array.isArray(list) && list.length ? list : SEED_PLANTS).map(toAgentPlant).filter((p) => p.active !== false);
   } catch {
-    return SEED_PLANTS;
+    return SEED_PLANTS.map(toAgentPlant);
   }
 }
 

@@ -18,12 +18,13 @@ import fs from "fs";
  * The route reports that plainly rather than failing with a module error.
  */
 
-import { createRequire } from "module";
 import path from "path";
 import crypto from "crypto";
 import { paths, readJson, writeJsonAtomic, ensureDir } from "@/lib/dataRoot";
 
-const nodeRequire = createRequire(import.meta.url);
+// createRequire() is special-cased by webpack and cannot load files by
+// absolute path from a server bundle; the runtime require can.
+const nodeRequire: NodeRequire = eval("require");
 
 export interface MailSettings {
   enabled: boolean;

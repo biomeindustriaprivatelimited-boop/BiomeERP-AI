@@ -24,6 +24,7 @@ import DataManagementPanel from "@/components/whatsapp/DataManagementPanel";
 import GroupPicker from "@/components/whatsapp/GroupPicker";
 import LearningHeader from "@/components/whatsapp/LearningHeader";
 import TrainAgentPanel from "@/components/whatsapp/TrainAgentPanel";
+import ManualIngestPanel from "@/components/whatsapp/ManualIngestPanel";
 import { useNotifications } from "@/lib/notifications";
 import type { AgentState, SupplySet, WhatsappDocument } from "@/lib/whatsapp";
 
@@ -295,6 +296,7 @@ export default function WhatsappPage() {
       {/* "Agent ko documents dikha kar samjhao" — labelled exemplars the
           classifier consults before it guesses. */}
       <TrainAgentPanel />
+      <ManualIngestPanel />
 
       <GroupPicker connected={state?.status === "connected"} onChanged={refresh} />
 

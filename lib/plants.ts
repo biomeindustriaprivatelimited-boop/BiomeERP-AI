@@ -58,6 +58,14 @@ export interface Plant {
   active: boolean;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Kept for the WhatsApp agent, which shares this file: names and
+   * aliases it recognises on documents, and the kg a plant's paperwork
+   * runs above the weighbridge (Gangakhed +500). The app never drops them.
+   */
+  name?: string;
+  aliases?: string[];
+  weightAdjustmentKg?: number;
 }
 
 interface PlantFile { plants: Plant[]; updatedAt?: string; }
@@ -79,6 +87,18 @@ function seed(): Plant[] {
   ];
 }
 
+/** States for the two original plants when a row (written by the agent) has none. */
+const DEFAULT_STATE: Record<string, string> = { REW: "HR", GKD: "MH" };
+
+function plantLabel(p: Partial<Plant>): string {
+  const code = String(p.code || "").toUpperCase();
+  let label = String(p.label || "").trim() || String(p.name || "").replace(/\s+plant$/i, "").trim() || code;
+  // Plant 1 is the MAYAN plant (Mayan village, Rewari district); rows
+  // written when it was called "Rewari" read as Mayan.
+  if (code === "REW" && /^rewari$/i.test(label)) label = "Mayan";
+  return label;
+}
+
 export function loadPlants(): Plant[] {
   const f = readJson<PlantFile>(file(), { plants: [] });
   if (!Array.isArray(f.plants) || f.plants.length === 0) {
@@ -87,11 +107,12 @@ export function loadPlants(): Plant[] {
     return seeded;
   }
   return f.plants.map((p) => ({
+    ...p,
     code: String(p.code || "").toUpperCase(),
     // The first plant is the MAYAN plant (Mayan village, Rewari district).
     // Records written when it was called "Rewari" read as Mayan.
-    label: String(p.code).toUpperCase() === "REW" && String(p.label || "").trim().toLowerCase() === "rewari" ? "Mayan" : String(p.label || p.code || ""),
-    state: String(p.state || "DL").toUpperCase(),
+    label: plantLabel(p),
+    state: String(p.state || DEFAULT_STATE[String(p.code || "").toUpperCase()] || "DL").toUpperCase(),
     location: String(p.code).toUpperCase() === "REW" && String(p.location || "").trim().toLowerCase() === "rewari, haryana" ? "Mayan Village, Rewari, Haryana" : String(p.location || ""),
     active: p.active !== false,
     createdAt: String(p.createdAt || ""),

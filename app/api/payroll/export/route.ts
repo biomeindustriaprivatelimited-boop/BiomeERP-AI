@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createRequire } from "module";
 import { requirePermission } from "@/lib/authServer";
 import { loadRuns, Payslip } from "@/lib/payroll";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const nodeRequire = createRequire(import.meta.url);
+// createRequire() is special-cased by webpack and cannot load files by
+// absolute path from a server bundle; the runtime require can.
+const nodeRequire: NodeRequire = eval("require");
 
 /**
  * The salary sheet as a real Excel workbook.

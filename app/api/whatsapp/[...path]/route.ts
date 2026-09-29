@@ -38,6 +38,9 @@ const ALLOWED: Record<string, ("GET" | "POST")[]> = {
   // Labelled exemplars — "train the agent with real documents".
   samples: ["GET", "POST"],
   learning: ["GET"],
+  // A document uploaded by hand goes through exactly the WhatsApp path —
+  // read, match, hold or file — for papers that arrived by email or on paper.
+  ingest: ["POST"],
 };
 
 function unavailable(err: AgentUnavailableError) {

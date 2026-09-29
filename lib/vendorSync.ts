@@ -37,17 +37,30 @@ export function importMasterIntoRegistration(): number {
   return added;
 }
 
-/** Registration → vendors.json (what the agent reads). Keeps every extra field the master file already had. */
-export function syncMasterFromRegistration(): void {
+/**
+ * Registration → vendors.json (what the agent reads).
+ *
+ * ADDS and UPDATES; it does not replace. It used to rebuild the file from
+ * Registration alone, so on a fresh install (Registration still empty, or
+ * holding one test vendor) the first save wiped the company's 53-code
+ * master and every WhatsApp document went unmatched. A vendor leaves the
+ * master only when it is deleted from Registration (`removedCodes`).
+ */
+export function syncMasterFromRegistration(removedCodes: string[] = []): void {
   let file: any = { vendors: [] };
   try { file = JSON.parse(fs.readFileSync(paths.vendorsFile, "utf8")); } catch { /* fresh */ }
-  const existing = new Map<string, MasterVendor>((file.vendors || []).map((v: MasterVendor) => [`${String(v.code).toUpperCase()}|${v.name.trim().toLowerCase()}`, v]));
-  const vendors: MasterVendor[] = [];
-  for (const p of loadPartners().filter((p) => p.kind === "biomass_vendor" && p.code)) {
-    const key = `${p.code.toUpperCase()}|${p.name.trim().toLowerCase()}`;
-    const prev: Partial<MasterVendor> = existing.get(key) || {};
-    const aliases = Array.from(new Set([...(prev.aliases || []), ...((p as any).aliases || []), p.name.toLowerCase(), ...(p.legalName ? [p.legalName.toLowerCase()] : [])])).filter(Boolean);
-    vendors.push({ ...prev, code: p.code.toUpperCase(), name: p.name, aliases, active: p.status !== "blocked", gstin: p.gstin || prev.gstin || "", category: p.category, kyc: prev.kyc || [] });
+  const removed = new Set(removedCodes.map((c) => String(c).toUpperCase()));
+  const byCode = new Map<string, MasterVendor>();
+  for (const v of (Array.isArray(file.vendors) ? file.vendors : []) as MasterVendor[]) {
+    const code = String(v.code || "").toUpperCase();
+    if (!code || removed.has(code)) continue;
+    byCode.set(code, v);
   }
-  writeJsonAtomic(paths.vendorsFile, { ...file, vendors, syncedFromRegistrationAt: new Date().toISOString() });
+  for (const p of loadPartners().filter((p) => p.kind === "biomass_vendor" && p.code)) {
+    const code = p.code.toUpperCase();
+    const prev: Partial<MasterVendor> = byCode.get(code) || {};
+    const aliases = Array.from(new Set([...(prev.aliases || []), ...((p as any).aliases || []), p.name.toLowerCase(), ...(p.legalName ? [p.legalName.toLowerCase()] : [])])).filter(Boolean);
+    byCode.set(code, { ...prev, code, name: p.name, aliases, active: p.status !== "blocked", gstin: p.gstin || prev.gstin || "", category: p.category, kyc: prev.kyc || [] });
+  }
+  writeJsonAtomic(paths.vendorsFile, { ...file, vendors: Array.from(byCode.values()), syncedFromRegistrationAt: new Date().toISOString() });
 }

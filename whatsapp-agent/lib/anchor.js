@@ -37,6 +37,23 @@ function anchorDateFor(referenceCanonical) {
 }
 
 /**
+ * The client the whole supply set is filed under: the client on OUR
+ * tax invoice / delivery challan. A vendor's weight slip or e-way bill
+ * often reads the client name badly (or names the weighbridge), and
+ * filing each paper under its own guess split one supply across two
+ * client folders.
+ */
+function anchorClientFor(referenceCanonical) {
+  if (!referenceCanonical) return null;
+  for (const d of store.all()) {
+    if (d.reference?.canonical !== referenceCanonical) continue;
+    const t = d.extracted?.documentType;
+    if ((t === "biome_tax_invoice" || t === "biome_delivery_challan") && d.extracted?.clientName) return d.extracted.clientName;
+  }
+  return null;
+}
+
+/**
  * Pull every already-filed document for a reference onto the correct
  * anchor date. Runs the moment one of our invoices/challans lands, so a
  * set that trickled in over three days still ends up in one folder.
@@ -44,6 +61,7 @@ function anchorDateFor(referenceCanonical) {
 function reanchorReference(referenceCanonical, anchorDate, logFn = () => {}) {
   if (!referenceCanonical || !anchorDate) return 0;
   let moved = 0;
+  const anchorClient = anchorClientFor(referenceCanonical);
 
   for (const rec of store.all()) {
     if (rec.reference?.canonical !== referenceCanonical) continue;
@@ -52,7 +70,9 @@ function reanchorReference(referenceCanonical, anchorDate, logFn = () => {}) {
 
     const plan = planFiling({
       reference: rec.reference,
-      extracted: rec.extracted,
+      // Lab reports keep their own client/month layout; everything else in
+      // the set follows our document's client.
+      extracted: anchorClient && rec.extracted?.documentType !== "lab_report" ? { ...(rec.extracted || {}), clientName: anchorClient } : rec.extracted,
       originalName: rec.originalName,
       mimeType: rec.mimeType,
       receivedAt: new Date(rec.receivedAt),
@@ -107,4 +127,4 @@ function reanchorAll(logFn = () => {}) {
   return { references: refs.size, moved };
 }
 
-module.exports = { anchorDateFor, reanchorReference, reanchorAll };
+module.exports = { anchorDateFor, anchorClientFor, reanchorReference, reanchorAll };

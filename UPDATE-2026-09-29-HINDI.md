@@ -57,3 +57,34 @@ Biomass / transport sheet ka Excel (plant manager ya koi bhi export kare):
 - Plant ka naam + address (jaise MAYAN PLANT · Mayan Village, Rewari, Haryana)
 - Sheet ka title + date range + "All weights in kg" + kisne export kiya
 - Hari header row, zebra rows, TOTAL row, print me landscape + page number.
+
+---
+
+# Fix update — installed .exe (29-09-2026, dopahar)
+
+## A. WhatsApp agent "Agent Not Running" — theek
+- Wajah: installed app ke andar Node 20 chalta hai; WhatsApp library (Baileys) aur PDF reader (pdfjs) naye version me
+  sirf ES-module hain, jo purane code se load nahi hote the → agent start hote hi band ho jata tha, aur PDF kabhi padhe nahi jaate the.
+- Ab dono sahi load hote hain. Agent band ho jaye to app use khud dobara chalu karta hai (pehle 5 baar jaldi, phir har minute).
+- Log files: `%APPDATA%\Biome\logs\whatsapp-agent.log` aur `server.log` — problem ho to ye file bhejo.
+
+## B. 15 second baad screen blank — theek
+- Page badalne wala animation atak jaata tha (Windows ko window "chhupi" lagti to animation ruk jata) → content invisible.
+- Ab page seedha dikhta hai (simple CSS animation), window kabhi throttle nahi hoti, aur page crash ho to
+  "This screen hit a problem · Try again" dikhega — blank nahi.
+
+## C. Audit me mile aur theek kiye bugs
+1. **Vendor master khali ho jaata tha** (Registration sync 53 vendors mita deta tha) → ab sync sirf jodta/badalta hai; khali ho to master wapas aa jaata hai.
+2. **plants.json do format me** (agent vs app) → Gangakhed ka +500 kg adjustment mit jaata tha / state galat → ab ek hi format.
+3. **Weight slip galat client folder me** jaati thi → ab poora supply set hamare invoice ke client ke folder me.
+4. **Weight slip OCR verify (plant)** installed app me fail → theek.
+5. **Delivery challan template** installer me shamil nahi tha → ab shamil.
+6. Agent me `/test` aur `/chats` code teen baar copy tha → saaf kiya.
+
+## D. Naya: "Add documents by hand"
+WhatsApp Documents page par — email/scan wale papers upload karo, woh WhatsApp jaisa hi padhe, match, hold ya file hote hain.
+
+## E. Test result (installed-app runtime par)
+Vendor invoice + weight slip + scanned e-way bill pehle aaye → held; hamara tax invoice aaya → chaaron ek folder
+`September-2026/Jhajjar Power Limited/20-09-2026/BDC_45_JSR_15/` me file; same invoice dobara → duplicate skip;
+vendor invoice baad me aaya → seedha supply me judaa. Sab APIs 2xx (Tally/Mail sirf set na hone par 502).

@@ -84,7 +84,7 @@ export async function POST(req: NextRequest) {
       label = p.name;
       savePartners(all.filter((x) => x.id !== id));
       try { fs.rmSync(path.join(partnersDir(), p.id), { recursive: true, force: true }); } catch { /* files gone */ }
-      try { syncMasterFromRegistration(); } catch { /* derived */ }
+      try { syncMasterFromRegistration(p.kind === "biomass_vendor" && p.code ? [p.code] : []); } catch { /* derived */ }
     } else if (kind === "client") {
       const f = readJson<{ clients: any[] }>(paths.clientsFile, { clients: [] });
       if (!(f.clients || []).some((c: any) => c.name === id)) return NextResponse.json({ error: "Not found." }, { status: 404 });

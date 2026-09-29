@@ -61,9 +61,31 @@ let makeWASocket,
   pino,
   QRCode;
 
+/**
+ * Baileys 6.7.2x ships as an ES module. The installed app runs this agent
+ * on Electron's bundled Node 20, where require() of an ES module throws
+ * ERR_REQUIRE_ESM — the agent died on start and the page said "Agent Not
+ * Running". So: require() where it works, import() where it doesn't, and
+ * the HTTP server only starts once the packages are in.
+ */
+async function loadModule(name) {
+  try {
+    return require(name);
+  } catch (err) {
+    if (err && (err.code === "ERR_REQUIRE_ESM" || err.code === "ERR_REQUIRE_ASYNC_MODULE" || /ES Module/i.test(err.message || ""))) {
+      const mod = await import(name);
+      return mod;
+    }
+    throw err;
+  }
+}
+
+const depsReady = (async () => {
 try {
-  const baileys = require("@whiskeysockets/baileys");
-  makeWASocket = baileys.default || baileys.makeWASocket;
+  const baileysMod = await loadModule("@whiskeysockets/baileys");
+  // import() puts CommonJS-style exports under .default; ESM puts them on the namespace.
+  const baileys = baileysMod.makeWASocket || baileysMod.useMultiFileAuthState ? baileysMod : baileysMod.default || baileysMod;
+  makeWASocket = baileys.makeWASocket || (typeof baileys.default === "function" ? baileys.default : baileys.default?.default);
   ({
     useMultiFileAuthState,
     DisconnectReason,
@@ -71,12 +93,15 @@ try {
     fetchLatestBaileysVersion,
     makeCacheableSignalKeyStore,
   } = baileys);
-  pino = require("pino");
-  QRCode = require("qrcode");
+  if (typeof makeWASocket !== "function") throw new Error("Baileys loaded but makeWASocket was not found.");
+  const pinoMod = await loadModule("pino");
+  pino = typeof pinoMod === "function" ? pinoMod : pinoMod.default || pinoMod.pino;
+  const qrMod = await loadModule("qrcode");
+  QRCode = qrMod.toDataURL ? qrMod : qrMod.default;
 } catch (err) {
   const message =
-    "The WhatsApp agent can't start because its packages aren't installed. " +
-    "Open a terminal in the project folder and run `npm install`, then start the app again.";
+    "The WhatsApp agent couldn't load its WhatsApp library. Reinstall the latest Biome setup on the server PC " +
+    "(or, when running from source, run `npm install`), then start the app again.";
   console.error(`\n[Biome WhatsApp Agent] ${message}\n(underlying error: ${err.message})\n`);
 
   // Leave a note on disk so the app can show the real reason instead of a
@@ -112,6 +137,7 @@ try {
   }
   process.exit(1);
 }
+})();
 
 // ---------------------------------------------------------------------
 // Environment: read .env.local the same way Next.js does
@@ -1128,8 +1154,10 @@ async function handleMedia(msg, media) {
   // from an old chat may no longer be downloadable at all. That is a
   // limitation of the platform, not a failure worth hiding — record it
   // against the document so it's visible rather than silently absent.
-  let buffer;
-  try {
+  // `media.buffer` is set when a file comes in through /ingest (a manual
+  // upload or a test) rather than from WhatsApp — same path from here on.
+  let buffer = media.buffer || null;
+  if (!buffer) try {
     buffer = await downloadMediaMessage(
       msg,
       "buffer",
@@ -2222,442 +2250,35 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, allowedChats: allowed, trackingAll: watchAll, receivingChats, labChats, learnChats });
     }
 
-    if (route === "/test" && req.method === "POST") {
-      // Run the whole pipeline on one file and report EVERY step —
-      // without WhatsApp, without saving anything.
-      //
-      // This exists because "it doesn't work" is not something anyone can
-      // fix. This turns it into "step 3 failed, here is the message",
-      // which is.
+    if (route === "/ingest" && req.method === "POST") {
+      // Feed one file through the SAME path a WhatsApp document takes —
+      // read, classify, match, stage or file, ledger — without WhatsApp.
+      // Used for manual uploads into the automation and for testing.
       const body = await readBody(req);
-      if (!body.fileBase64) return json(res, 400, { error: "Send `fileBase64` and `fileName`." });
-
+      if (!body.fileBase64 || !body.fileName) return json(res, 400, { error: "Send `fileBase64` and `fileName`." });
       const buffer = Buffer.from(body.fileBase64, "base64");
-      const fileName = body.fileName || "test.pdf";
-      const mimeType =
-        body.mimeType ||
-        (/\.pdf$/i.test(fileName)
-          ? "application/pdf"
-          : /\.(jpe?g)$/i.test(fileName)
-            ? "image/jpeg"
-            : /\.png$/i.test(fileName)
-              ? "image/png"
-              : "application/octet-stream");
-
-      const steps = [];
-      const step = (name, ok, detail, data) => {
-        steps.push({ name, ok, detail, data });
-        return ok;
+      if (!buffer.length) return json(res, 400, { error: "The file is empty." });
+      if (buffer.length > 30 * 1024 * 1024) return json(res, 413, { error: "Files up to 30 MB." });
+      const fileName = String(body.fileName).slice(0, 180);
+      const mimeType = body.mimeType || (/\.pdf$/i.test(fileName) ? "application/pdf" : /\.(jpe?g)$/i.test(fileName) ? "image/jpeg" : /\.png$/i.test(fileName) ? "image/png" : /\.webp$/i.test(fileName) ? "image/webp" : "application/octet-stream");
+      const id = `upload-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+      const ts = body.receivedAt ? Math.floor(new Date(body.receivedAt).getTime() / 1000) : Math.floor(Date.now() / 1000);
+      const msg = {
+        key: { id, remoteJid: String(body.chatJid || "manual-upload@biome"), fromMe: Boolean(body.fromMe), participant: null },
+        messageTimestamp: ts,
+        pushName: String(body.senderName || "Manual upload").slice(0, 80),
+        message: body.caption ? { documentMessage: { caption: String(body.caption).slice(0, 500) } } : {},
       };
-
-      const vendorList = vendors();
-      const clientList = loadClients();
-      const cfg = settings();
-
-      step("File received", true, `${fileName} · ${(buffer.length / 1024).toFixed(0)} KB · ${mimeType}`);
-      step(
-        "Registries loaded",
-        true,
-        `${vendorList.length} vendor(s), ${clientList.length} client(s)`,
-        vendorList.length === 0
-          ? { warning: "No vendors registered — vendor codes can't be matched. Add them under Vendors." }
-          : undefined
-      );
-
-      // ---- Read it ----
-      let ai;
+      const kind = /pdf/.test(mimeType) ? "document" : /image/.test(mimeType) ? "image" : "document";
       try {
-        ai = await classifyDocument(buffer, mimeType, {
-          geminiKey: aiKeys().gemini,
-          anthropicKey: aiKeys().anthropic,
-          vendors: vendorList.map((v) => ({ code: v.code, name: v.name })),
-          clients: clientList.map((c) => ({ name: c.name, shortName: c.shortName, aliases: c.aliases })),
-          companyCodes: cfg.companyCodes,
-          fileName,
-        });
+        state.processing += 1;
+        const rec = await handleMedia(msg, { kind, fileName, mimeType, buffer, caption: body.caption || "" });
+        return json(res, 200, { ok: true, record: rec || store.all().find((r) => r.messageId === id) || null });
       } catch (err) {
-        step("Reading the document", false, err.message);
-        return json(res, 200, { steps, verdict: "failed", failedAt: "reading" });
+        return json(res, 500, { error: err.message });
+      } finally {
+        state.processing -= 1;
       }
-
-      if (!ai.ok) {
-        step("Reading the document", false, ai.message || ai.reason);
-        return json(res, 200, { steps, verdict: "failed", failedAt: "reading" });
-      }
-
-      const ex = ai.data;
-      const textLen = (ex.transcription || "").replace(/\s/g, "").length;
-      step(
-        "Text extracted",
-        textLen > 40,
-        textLen > 40
-          ? `${textLen} characters read via ${ex.readMethod || ai.provider}`
-          : `Only ${textLen} characters found — the page may be a scan this reader can't handle.`,
-        { sample: (ex.transcription || "").slice(0, 600) }
-      );
-
-      step(
-        "Document identified",
-        ex.documentType !== "other",
-        ex.documentType !== "other"
-          ? `${DOC_TYPE_LABEL[ex.documentType] || ex.documentType} · ${ex.confidence}% confident`
-          : "Could not tell what this document is.",
-        {
-          type: ex.documentType,
-          confidence: ex.confidence,
-          containedTypes: ex.containedDocumentTypes || [],
-          engine: ai.provider,
-          fileNameHints: ex.fileNameHints || [],
-          learnedReasons: ex.learnedReasons || [],
-        }
-      );
-
-      step("Fields extracted", true, "", {
-        reference: ex.referenceNo,
-        ourDocNo: ex.biomeDocNo,
-        vendorDocNo: ex.vendorDocNo,
-        vendor: ex.vendorName,
-        client: ex.clientName,
-        date: ex.documentDate,
-        vehicle: ex.vehicleNo,
-        grNumber: ex.grNumber,
-        quantityKg: ex.quantityKg,
-        netWeight: ex.netWeight,
-        ewayBill: ex.ewayBillNo,
-        amount: ex.totalAmount,
-      });
-
-      // ---- Reference ----
-      const opts = { companyCodes: cfg.companyCodes, vendorCodes: vendorList.map((v) => v.code) };
-      const reference =
-        (ex.referenceNo ? parseReference(ex.referenceNo, opts) : null) ||
-        (ex.transcription ? parseReference(ex.transcription, opts) : null);
-
-      step(
-        "Coordination reference",
-        Boolean(reference),
-        reference
-          ? `${reference.canonical} → our doc ${reference.biomeDocNo}, vendor ${reference.vendorCode} doc ${reference.vendorDocNo}`
-          : "None found. Expected only on OUR tax invoice or delivery challan — vendor papers never carry one.",
-        reference || undefined
-      );
-
-      // ---- Client ----
-      const client = matchClient(ex.clientName, clientList);
-      step(
-        "Client matched",
-        Boolean(client),
-        client
-          ? `${client.name}`
-          : ex.clientName
-            ? `Read "${ex.clientName}" but no client in the list matches. Add an alias under Clients.`
-            : "No consignee found on the page.",
-      );
-
-      // ---- Supply type ----
-      const supply = verify.detectSupplyType([ex], reference);
-      step("Supply type", supply.type !== "unknown", `${supply.type} — ${supply.reason}`);
-
-      // ---- Where it would go ----
-      const isOurs = ["biome_tax_invoice", "biome_delivery_challan", "biome_eway_bill"].includes(ex.documentType);
-      const plan = planFiling({
-        reference,
-        supplyType: supply.type,
-        extracted: ex,
-        originalName: fileName,
-        mimeType,
-        receivedAt: new Date(),
-        senderName: "Test",
-        anchorDate: ex.documentDate,
-      });
-
-      const target = path.relative(PATHS.inbox, path.join(plan.dir, `${plan.baseName}${plan.ext}`));
-      if (!isOurs && supply.type === "trading") {
-        step(
-          "What happens next",
-          true,
-          `This is a vendor document, so it would be HELD in staging until your invoice arrives. It would then be filed as:\n${target}`,
-          { wouldStage: true, targetPath: target }
-        );
-      } else {
-        step("Where it would be saved", plan.bucket === "filed", target, {
-          bucket: plan.bucket,
-          targetPath: target,
-        });
-      }
-
-      const failed = steps.filter((s) => !s.ok);
-      return json(res, 200, {
-        steps,
-        verdict: failed.length === 0 ? "ok" : "partial",
-        problems: failed.map((f) => `${f.name}: ${f.detail}`),
-        extracted: ex,
-      });
-    }
-
-    if (route === "/chats" && req.method === "GET") {
-      const cfg = settings();
-      const list = [...knownChats.values()]
-        .map((c) => ({
-          ...c,
-          selected: cfg.allowedChats.includes(c.jid),
-          // A group with documents in it is almost certainly the one
-          // they want, so surface that rather than making them guess.
-          suggested: c.isGroup && c.documentCount > 0,
-        }))
-        .sort((a, b) => {
-          if (a.selected !== b.selected) return a.selected ? -1 : 1;
-          if (a.documentCount !== b.documentCount) return b.documentCount - a.documentCount;
-          return String(b.lastSeen || "").localeCompare(String(a.lastSeen || ""));
-        });
-      return json(res, 200, {
-        chats: list,
-        watchingAll: cfg.allowedChats.length === 0,
-        selectedCount: cfg.allowedChats.length,
-      });
-    }
-
-    if (route === "/chats" && req.method === "POST") {
-      const body = await readBody(req);
-      const jids = Array.isArray(body.allowedChats) ? body.allowedChats.filter(Boolean) : [];
-      const current = readJsonSafe(PATHS.settingsFile, {});
-      ensureDir(PATHS.configDir);
-      fs.writeFileSync(
-        PATHS.settingsFile,
-        JSON.stringify({ ...current, allowedChats: jids, updatedAt: new Date().toISOString() }, null, 2),
-        "utf8"
-      );
-      log(
-        jids.length
-          ? `now watching ${jids.length} chat(s) only`
-          : "now watching every chat"
-      );
-      return json(res, 200, { ok: true, allowedChats: jids, watchingAll: jids.length === 0 });
-    }
-
-    if (route === "/test" && req.method === "POST") {
-      // Run the whole pipeline on one file and report EVERY step —
-      // without WhatsApp, without saving anything.
-      //
-      // This exists because "it doesn't work" is not something anyone can
-      // fix. This turns it into "step 3 failed, here is the message",
-      // which is.
-      const body = await readBody(req);
-      if (!body.fileBase64) return json(res, 400, { error: "Send `fileBase64` and `fileName`." });
-
-      const buffer = Buffer.from(body.fileBase64, "base64");
-      const fileName = body.fileName || "test.pdf";
-      const mimeType =
-        body.mimeType ||
-        (/\.pdf$/i.test(fileName)
-          ? "application/pdf"
-          : /\.(jpe?g)$/i.test(fileName)
-            ? "image/jpeg"
-            : /\.png$/i.test(fileName)
-              ? "image/png"
-              : "application/octet-stream");
-
-      const steps = [];
-      const step = (name, ok, detail, data) => {
-        steps.push({ name, ok, detail, data });
-        return ok;
-      };
-
-      const vendorList = vendors();
-      const clientList = loadClients();
-      const cfg = settings();
-
-      step("File received", true, `${fileName} · ${(buffer.length / 1024).toFixed(0)} KB · ${mimeType}`);
-      step(
-        "Registries loaded",
-        true,
-        `${vendorList.length} vendor(s), ${clientList.length} client(s)`,
-        vendorList.length === 0
-          ? { warning: "No vendors registered — vendor codes can't be matched. Add them under Vendors." }
-          : undefined
-      );
-
-      // ---- Read it ----
-      let ai;
-      try {
-        ai = await classifyDocument(buffer, mimeType, {
-          geminiKey: aiKeys().gemini,
-          anthropicKey: aiKeys().anthropic,
-          vendors: vendorList.map((v) => ({ code: v.code, name: v.name })),
-          clients: clientList.map((c) => ({ name: c.name, shortName: c.shortName, aliases: c.aliases })),
-          companyCodes: cfg.companyCodes,
-          fileName,
-        });
-      } catch (err) {
-        step("Reading the document", false, err.message);
-        return json(res, 200, { steps, verdict: "failed", failedAt: "reading" });
-      }
-
-      if (!ai.ok) {
-        step("Reading the document", false, ai.message || ai.reason);
-        return json(res, 200, { steps, verdict: "failed", failedAt: "reading" });
-      }
-
-      const ex = ai.data;
-      const textLen = (ex.transcription || "").replace(/\s/g, "").length;
-      step(
-        "Text extracted",
-        textLen > 40,
-        textLen > 40
-          ? `${textLen} characters read via ${ex.readMethod || ai.provider}`
-          : `Only ${textLen} characters found — the page may be a scan this reader can't handle.`,
-        { sample: (ex.transcription || "").slice(0, 600) }
-      );
-
-      step(
-        "Document identified",
-        ex.documentType !== "other",
-        ex.documentType !== "other"
-          ? `${DOC_TYPE_LABEL[ex.documentType] || ex.documentType} · ${ex.confidence}% confident`
-          : "Could not tell what this document is.",
-        {
-          type: ex.documentType,
-          confidence: ex.confidence,
-          containedTypes: ex.containedDocumentTypes || [],
-          engine: ai.provider,
-          fileNameHints: ex.fileNameHints || [],
-          learnedReasons: ex.learnedReasons || [],
-        }
-      );
-
-      step("Fields extracted", true, "", {
-        reference: ex.referenceNo,
-        ourDocNo: ex.biomeDocNo,
-        vendorDocNo: ex.vendorDocNo,
-        vendor: ex.vendorName,
-        client: ex.clientName,
-        date: ex.documentDate,
-        vehicle: ex.vehicleNo,
-        grNumber: ex.grNumber,
-        quantityKg: ex.quantityKg,
-        netWeight: ex.netWeight,
-        ewayBill: ex.ewayBillNo,
-        amount: ex.totalAmount,
-      });
-
-      // ---- Reference ----
-      const opts = { companyCodes: cfg.companyCodes, vendorCodes: vendorList.map((v) => v.code) };
-      const reference =
-        (ex.referenceNo ? parseReference(ex.referenceNo, opts) : null) ||
-        (ex.transcription ? parseReference(ex.transcription, opts) : null);
-
-      step(
-        "Coordination reference",
-        Boolean(reference),
-        reference
-          ? `${reference.canonical} → our doc ${reference.biomeDocNo}, vendor ${reference.vendorCode} doc ${reference.vendorDocNo}`
-          : "None found. Expected only on OUR tax invoice or delivery challan — vendor papers never carry one.",
-        reference || undefined
-      );
-
-      // ---- Client ----
-      const client = matchClient(ex.clientName, clientList);
-      step(
-        "Client matched",
-        Boolean(client),
-        client
-          ? `${client.name}`
-          : ex.clientName
-            ? `Read "${ex.clientName}" but no client in the list matches. Add an alias under Clients.`
-            : "No consignee found on the page.",
-      );
-
-      // ---- Supply type ----
-      const supply = verify.detectSupplyType([ex], reference);
-      step("Supply type", supply.type !== "unknown", `${supply.type} — ${supply.reason}`);
-
-      // ---- Where it would go ----
-      const isOurs = ["biome_tax_invoice", "biome_delivery_challan", "biome_eway_bill"].includes(ex.documentType);
-      const plan = planFiling({
-        reference,
-        supplyType: supply.type,
-        extracted: ex,
-        originalName: fileName,
-        mimeType,
-        receivedAt: new Date(),
-        senderName: "Test",
-        anchorDate: ex.documentDate,
-      });
-
-      const target = path.relative(PATHS.inbox, path.join(plan.dir, `${plan.baseName}${plan.ext}`));
-      if (!isOurs && supply.type === "trading") {
-        step(
-          "What happens next",
-          true,
-          `This is a vendor document, so it would be HELD in staging until your invoice arrives. It would then be filed as:\n${target}`,
-          { wouldStage: true, targetPath: target }
-        );
-      } else {
-        step("Where it would be saved", plan.bucket === "filed", target, {
-          bucket: plan.bucket,
-          targetPath: target,
-        });
-      }
-
-      const failed = steps.filter((s) => !s.ok);
-      return json(res, 200, {
-        steps,
-        verdict: failed.length === 0 ? "ok" : "partial",
-        problems: failed.map((f) => `${f.name}: ${f.detail}`),
-        extracted: ex,
-      });
-    }
-
-    if (route === "/chats" && req.method === "GET") {
-      await refreshGroupNames();
-      const cfg = settings();
-      const chats = [...knownChats.values()]
-        .map((c) => ({
-          ...c,
-          name: c.name || (c.isGroup ? "(unnamed group)" : c.jid.split("@")[0]),
-          watched: cfg.allowedChats.length === 0 || cfg.allowedChats.includes(c.jid),
-          // The UI reads `selected`; kept alongside `watched` so both
-          // names work and neither side can silently drift again.
-          selected: cfg.allowedChats.includes(c.jid),
-          receivingSelected: cfg.receivingChats.includes(c.jid),
-          labSelected: cfg.labChats.includes(c.jid),
-          learnFrom: (cfg.learnChats || []).includes(c.jid),
-        }))
-        .sort((a, b) => (b.lastSeen || "").localeCompare(a.lastSeen || ""));
-
-      return json(res, 200, {
-        chats,
-        // Empty allowedChats means "watch everything" — stated plainly so
-        // nobody has to infer it from an empty list.
-        watchingAll: cfg.allowedChats.length === 0,
-        allowedChats: cfg.allowedChats,
-        receivingChats: cfg.receivingChats,
-        labChats: cfg.labChats,
-        learnChats: cfg.learnChats || [],
-      });
-    }
-
-    if (route === "/chats" && req.method === "POST") {
-      const body = await readBody(req);
-      const current = readJsonSafe(PATHS.settingsFile, {});
-      const next = { ...current };
-
-      if (Array.isArray(body.allowedChats)) next.allowedChats = body.allowedChats.filter(Boolean);
-      if (Array.isArray(body.receivingChats)) next.receivingChats = body.receivingChats.filter(Boolean);
-      if (Array.isArray(body.labChats)) next.labChats = body.labChats.filter(Boolean);
-      if (Array.isArray(body.learnChats)) next.learnChats = body.learnChats.filter(Boolean);
-
-      ensureDir(PATHS.configDir);
-      fs.writeFileSync(
-        PATHS.settingsFile,
-        JSON.stringify({ ...next, updatedAt: new Date().toISOString() }, null, 2),
-        "utf8"
-      );
-      log(
-        `watching ${next.allowedChats?.length ? next.allowedChats.length + " chat(s)" : "all chats"}, ` +
-          `learning from ${next.learnChats?.length || 0}`
-      );
-      return json(res, 200, { ok: true, allowedChats: next.allowedChats || [], learnChats: next.learnChats || [] });
     }
 
     if (route === "/patterns" && req.method === "GET") {
@@ -3076,7 +2697,7 @@ async function selfTest() {
   return { total: checks.length, failed: failed.map(([n]) => n) };
 }
 
-server.listen(activePort, HOST, () => {
+depsReady.then(() => server.listen(activePort, HOST, () => {
   writeHandshake();
   // A previous failed start may have left a crash note — remove it now
   // that we're clearly up.
@@ -3102,7 +2723,7 @@ server.listen(activePort, HOST, () => {
     log("existing session found — reconnecting automatically");
     connect().catch((err) => setStatus("error", { lastError: err.message }));
   }
-});
+}));
 
 for (const sig of ["SIGINT", "SIGTERM"]) {
   process.on(sig, () => {
