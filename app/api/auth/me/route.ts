@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSession, findById, publicUser } from "@/lib/authServer";
 import { permissionsFor } from "@/lib/permissions";
 import { effectivePermissions } from "@/lib/access";
+import { SERVER_PC_HEADER, isServerPcRequest } from "@/lib/authToken";
+import { serverReady, setServerOwner } from "@/lib/serverOwner";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,6 +24,12 @@ export async function GET(req: NextRequest) {
   const user = findById(session.uid);
   if (!user || !user.active) {
     return NextResponse.json({ user: null, plant: null, permissions: [] });
+  }
+
+  // The developer already signed in on the server PC (a sign-in from
+  // before this rule existed, kept across restarts) makes the server ready.
+  if (user.role === "developer" && !serverReady() && (await isServerPcRequest(req.headers.get(SERVER_PC_HEADER)))) {
+    setServerOwner(user.id, user.username);
   }
 
   return NextResponse.json({

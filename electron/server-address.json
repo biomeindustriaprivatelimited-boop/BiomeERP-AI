@@ -1,0 +1,7 @@
+{
+  "_comment": "Office static IP built into every installer. Client PCs try these after looking on the office network. Port 4173 is opened on the router automatically (UPnP) when the router allows it; 30359 is the port given by the office.",
+  "addresses": [
+    "http://122.180.246.211:4173",
+    "http://122.180.246.211:30359"
+  ]
+}

@@ -10,6 +10,7 @@ import {
 } from "@/lib/authToken";
 import { effectivePermissions } from "@/lib/access";
 import { recordAudit } from "@/lib/audit";
+import { serverReady, setServerOwner, SERVER_NOT_READY_MESSAGE } from "@/lib/serverOwner";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -147,6 +148,14 @@ export async function POST(req: NextRequest) {
   // and the developer on a client PC, gets the normal working-day session.
   const onServerPc = await isServerPcRequest(req.headers.get(SERVER_PC_HEADER));
   const persistent = user.role === "developer" && onServerPc;
+
+  // Clients may sign in only while the developer is signed in on the
+  // server PC. The server PC itself can always sign in (that is where the
+  // developer makes the server ready).
+  if (!onServerPc && !serverReady()) {
+    return NextResponse.json({ error: SERVER_NOT_READY_MESSAGE, code: "SERVER_NOT_READY" }, { status: 503 });
+  }
+  if (persistent) setServerOwner(user.id, user.username);
   const ttl = persistent ? SERVER_PC_DEVELOPER_TTL_SECONDS : SESSION_TTL_SECONDS;
 
   const token = await signSession({

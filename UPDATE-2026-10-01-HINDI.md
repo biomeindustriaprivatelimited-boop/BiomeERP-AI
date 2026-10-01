@@ -54,3 +54,21 @@ Log file: `%APPDATA%\Biome\logs\whatsapp-agent.log`
   phone par chalega, aur tab tak same rahega jab tak developer/admin khud na badle.
 - Client PC par koi default ID nahi hoti — wahan sirf server ke banaye ID se login hota hai.
 - Purane server (jisme pehle se users hain) par koi naya default account nahi banta.
+
+## 4. Zero-setup connection (WhatsApp jaisa — kuch type nahi karna)
+- **Server PC (sirf ek baar):** app install karo → pehli screen par "This PC is the main office
+  server" (ya jo PC pehle se server hai wahan kuch nahi) → `developer` se login. Bas.
+  Jis PC par developer signed in hai **wahi server** hai.
+- **Baaki har PC / phone:** app install karo → user ID + password se login. Koi address,
+  koi setting nahi:
+  - office Wi-Fi/LAN par app server ko apne aap dhundh leta hai (network discovery);
+  - bahar kahin bhi app me built-in office static IP (122.180.246.211) se judta hai.
+- **Router:** server PC router se khud port 4173 kholne ki koshish karta hai (UPnP).
+  Settings → Server & Sync me "Automatic setup" me dikhta hai ki hua ya nahi. Agar router ne
+  mana kiya, to ek baar router me port forward: external **4173** → server PC, port **4173**
+  (ya aapka port **30359** → server PC port **4173**) — app dono try karta hai.
+- **Developer server PC par signed out / server PC band:** client PC aur phone par login nahi
+  hoga — "Server PC is not ready" ya "Server connection lost" dikhega, aur ready hote hi
+  apne aap hat jaayega.
+- Galti se server ban chuka koi aur PC, asli server (developer signed in) milte hi apne aap
+  client ban jaata hai.

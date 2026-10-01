@@ -21,6 +21,8 @@ contextBridge.exposeInMainWorld("biomeDesktop", {
   // Static IP (Settings → Server & Sync, developer only).
   detectPublicIp: () => ipcRenderer.invoke("biome:detectPublicIp"),
   setPublicAddress: (address) => ipcRenderer.invoke("biome:setPublicAddress", address),
+  // Client PC: look for the server again (office network / static IP).
+  reconnect: () => ipcRenderer.invoke("biome:reconnect"),
 });
 
 contextBridge.exposeInMainWorld("biomeSetup", {

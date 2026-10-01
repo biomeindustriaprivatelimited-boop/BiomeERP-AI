@@ -18,7 +18,8 @@ import path from "path";
 import { paths, readJson, writeJsonAtomic, ensureDir } from "@/lib/dataRoot";
 import { Role, Permission, hasPermission } from "@/lib/permissions";
 import { AccessOverride, effectivePermissions, featureBlocks } from "@/lib/access";
-import { SESSION_COOKIE, SessionPayload, verifySession } from "@/lib/authToken";
+import { SESSION_COOKIE, SessionPayload, verifySession, SERVER_PC_HEADER, isServerPcRequest } from "@/lib/authToken";
+import { serverReady, SERVER_NOT_READY_MESSAGE } from "@/lib/serverOwner";
 import { isBlocked, DEVICE_COOKIE } from "@/lib/devices";
 
 export interface User {
@@ -190,6 +191,13 @@ export async function requirePermission(
   if (!session) {
     return {
       response: NextResponse.json({ error: "Please sign in." }, { status: 401 }),
+    };
+  }
+
+  // Clients work only while the developer is signed in on the server PC.
+  if (!serverReady() && !(await isServerPcRequest(req.headers.get(SERVER_PC_HEADER)))) {
+    return {
+      response: NextResponse.json({ error: SERVER_NOT_READY_MESSAGE, code: "SERVER_NOT_READY" }, { status: 503 }),
     };
   }
 

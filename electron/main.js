@@ -5,6 +5,7 @@ const http = require("http");
 const fs = require("fs");
 const os = require("os");
 const crypto = require("crypto");
+const net = require("./network");
 
 /**
  * Keep the window painting. Windows' "native occlusion" check decides a
@@ -113,14 +114,15 @@ function hasLocalData() {
  *   - a config file exists            → use it;
  *   - no file, but this PC has data   → it is the existing server (old
  *                                       installs keep working unchanged);
- *   - no file and no data             → "unset": the setup screen asks
- *                                       for the server's address first.
+ *   - no file and no data             → a CLIENT that finds the server
+ *                                       by itself (electron/network.js).
  */
 function readSyncConfig() {
   try {
     const raw = JSON.parse(fs.readFileSync(syncConfigFile(), "utf8"));
-    if (raw && raw.mode === "client" && typeof raw.serverUrl === "string" && /^https?:\/\//.test(raw.serverUrl)) {
-      return { mode: "client", serverUrl: raw.serverUrl.replace(/\/+$/, "") };
+    if (raw && raw.mode === "client") {
+      const url = typeof raw.serverUrl === "string" && /^https?:\/\//.test(raw.serverUrl) ? raw.serverUrl.replace(/\/+$/, "") : "";
+      return { mode: "client", serverUrl: url };
     }
     if (raw && raw.mode === "server") return { mode: "server", serverUrl: "" };
   } catch (_) {
@@ -130,7 +132,9 @@ function readSyncConfig() {
     try { writeSyncConfig({ mode: "server" }); } catch (_) {}
     return { mode: "server", serverUrl: "" };
   }
-  return { mode: "unset", serverUrl: "" };
+  // A new PC is a CLIENT. It finds the server by itself (office network,
+  // then the office static IP built into the app) — nothing to type.
+  return { mode: "client", serverUrl: "" };
 }
 
 function writeSyncConfig(cfg) {
@@ -202,6 +206,30 @@ function authSecret() {
 }
 
 /**
+ * This installation's server id — lets a PC recognise its OWN server when
+ * it reaches it through the office static IP, so it never "finds" itself.
+ */
+function serverId() {
+  const file = path.join(app.getPath("userData"), "server-id");
+  try {
+    const v = fs.readFileSync(file, "utf8").trim();
+    if (v) return v;
+  } catch (_) {}
+  const id = crypto.randomBytes(12).toString("hex");
+  try { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, id); } catch (_) {}
+  return id;
+}
+
+/** True while the developer is signed in on this (server) PC — see lib/serverOwner.ts. */
+function serverOwned() {
+  try {
+    return fs.existsSync(path.join(localDataRoot(), "config", "server-owner.json"));
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
  * The header that tells this PC's own server "this request comes from the
  * window on the server PC itself" (see lib/authToken.ts → serverPcToken).
  * Same HMAC, same secret, so only this installation can produce it.
@@ -218,25 +246,27 @@ function serverPcToken() {
  */
 function ensureFirewallRule() {
   if (process.platform !== "win32" || !app.isPackaged) return;
-  const flag = path.join(app.getPath("userData"), "firewall-rule-added");
+  const flag = path.join(app.getPath("userData"), "firewall-rules-v2");
   if (fs.existsSync(flag)) return;
   try {
-    const check = spawn("netsh", ["advfirewall", "firewall", "show", "rule", "name=BiomeServer"], { windowsHide: true });
+    const check = spawn("netsh", ["advfirewall", "firewall", "show", "rule", "name=BiomeDiscovery"], { windowsHide: true });
     let out = "";
     check.stdout.on("data", (d) => (out += d));
     check.on("error", () => {});
     check.on("exit", (code) => {
-      if (code === 0 && /BiomeServer/i.test(out)) {
+      if (code === 0 && /BiomeDiscovery/i.test(out)) {
         try { fs.writeFileSync(flag, new Date().toISOString()); } catch (_) {}
         return;
       }
-      const args =
-        "'advfirewall','firewall','add','rule','name=BiomeServer','dir=in','action=allow','protocol=TCP','localport=" +
-        PORT +
-        "','profile=any'";
+      // One Windows permission prompt for both rules: TCP 4173 (the app)
+      // and UDP 4175 (so office PCs and phones find this server by themselves).
+      const cmd =
+        `/c netsh advfirewall firewall delete rule name=BiomeServer & ` +
+        `netsh advfirewall firewall add rule name=BiomeServer dir=in action=allow protocol=TCP localport=${PORT} profile=any & ` +
+        `netsh advfirewall firewall add rule name=BiomeDiscovery dir=in action=allow protocol=UDP localport=${net.DISCOVERY_PORT} profile=any`;
       const ps = spawn(
         "powershell.exe",
-        ["-NoProfile", "-WindowStyle", "Hidden", "-Command", `Start-Process netsh -ArgumentList ${args} -Verb RunAs -WindowStyle Hidden -Wait`],
+        ["-NoProfile", "-WindowStyle", "Hidden", "-Command", `Start-Process cmd -ArgumentList '${cmd}' -Verb RunAs -WindowStyle Hidden -Wait`],
         { windowsHide: true }
       );
       ps.on("error", () => {});
@@ -294,6 +324,7 @@ function startNextServer() {
       NODE_ENV: "production",
       ELECTRON_RUN_AS_NODE: "1",
       BIOME_AUTH_SECRET: authSecret(),
+      BIOME_SERVER_ID: serverId(),
       PORT: String(PORT),
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -411,6 +442,98 @@ function waitForServer(url, onReady, attempt = 0) {
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* Client: find the server by itself                                   */
+/* ------------------------------------------------------------------ */
+
+/** Writes a line on whichever window is showing the waiting screen. */
+function showWaiting(text) {
+  const js = `document.body.dataset.offline = "1"; document.body.dataset.mode = ${JSON.stringify(SYNC.mode)}; var el = document.getElementById("biome-loading-note"); if (el) el.textContent = ${JSON.stringify(text)};`;
+  for (const w of [loadingWindow, mainWindow]) {
+    try {
+      if (w && !w.isDestroyed() && w.webContents.getURL().startsWith("file://")) w.webContents.executeJavaScript(js).catch(() => {});
+    } catch (_) {}
+  }
+}
+
+let clientSearching = false;
+/**
+ * Looks for the server — office network first, then the last address that
+ * worked, then the office static IP built into the app — and keeps looking
+ * every few seconds until it answers. Nobody types an address.
+ */
+async function connectClient(onFound) {
+  if (clientSearching) return;
+  clientSearching = true;
+  let attempt = 0;
+  while (!quitting) {
+    const r = await net.findServer({ saved: SYNC.serverUrl }).catch(() => null);
+    if (r) {
+      if (r.url !== SYNC.serverUrl) {
+        SYNC.serverUrl = r.url;
+        try { writeSyncConfig({ mode: "client", serverUrl: r.url, auto: true }); } catch (_) {}
+      }
+      clientSearching = false;
+      onFound();
+      return;
+    }
+    attempt += 1;
+    showWaiting(
+      attempt === 1
+        ? "Connecting to the Biome server…"
+        : "Server connection lost — the Biome server is not answering. Check that the server PC is on and the Biome app is open there. Reconnecting by itself…"
+    );
+    await new Promise((res) => setTimeout(res, attempt < 4 ? 2000 : 5000));
+  }
+  clientSearching = false;
+}
+
+/** Shows the waiting screen in the main window and reconnects (client only). */
+function reconnectClient() {
+  if (SYNC.mode !== "client" || !mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.loadFile(path.join(__dirname, "loading.html")).then(() => {
+    showWaiting("Server connection lost — reconnecting…");
+  }).catch(() => {});
+  connectClient(() => {
+    recoveringMain = false;
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.loadURL(appOrigin());
+  });
+}
+
+ipcMain.handle("biome:reconnect", () => {
+  reconnectClient();
+  return SYNC.mode === "client";
+});
+
+/* ------------------------------------------------------------------ */
+/* Server: be findable, open the router, step aside if not the server  */
+/* ------------------------------------------------------------------ */
+
+let ROUTER = { checkedAt: null, ok: false, error: null, externalIp: null, internal: null };
+
+async function openRouter() {
+  const r = await net.openRouterPort(PORT).catch((e) => ({ ok: false, error: e.message }));
+  ROUTER = { checkedAt: new Date().toISOString(), ...r };
+  console.error(r.ok ? `Router: port ${PORT} forwarded to ${r.internal} (public ${r.externalIp || "?"})` : `Router: ${r.error}`);
+}
+
+/**
+ * A PC running as a server WITHOUT the developer signed in, while another
+ * Biome server WITH the developer signed in answers on the network or the
+ * office static IP, is a PC that became a server by mistake. It turns
+ * itself into a client of the real one (its own data stays on disk, unused).
+ */
+async function stepAsideIfNotTheServer() {
+  if (quitting || SYNC.mode !== "server" || serverOwned()) return;
+  const real = await net.findServer({ excludeId: serverId(), ownedOnly: true }).catch(() => null);
+  if (!real || serverOwned()) return;
+  console.error(`Another Biome server with the developer signed in is at ${real.url} — this PC becomes a client of it.`);
+  try { writeSyncConfig({ mode: "client", serverUrl: real.url, auto: true }); } catch (_) { return; }
+  quitting = true;
+  app.relaunch();
+  app.exit(0);
+}
+
 function createLoadingWindow() {
   loadingWindow = new BrowserWindow({
     width: 380,
@@ -451,7 +574,7 @@ function createSetupWindow() {
   setupWindow.on("closed", () => {
     setupWindow = null;
     // Closing the setup on a PC that has no role yet means "not now".
-    if (SYNC.mode === "unset" && !quitting) app.quit();
+    /* the main window keeps running behind it */
   });
 }
 
@@ -599,6 +722,7 @@ function createMainWindow() {
     if (recoveringMain) return;
     recoveringMain = true;
     console.error(`Page failed to load (${code}) — waiting for the server.`);
+    if (SYNC.mode === "client") return reconnectClient();
     mainWindow.loadFile(path.join(__dirname, "loading.html")).then(() => {
       mainWindow.webContents
         .executeJavaScript(
@@ -679,6 +803,9 @@ ipcMain.handle("biome:getSyncConfig", () => {
     lan,
     tailscale: lan.filter(isTailscale),
     publicAddress: readPublicAddress(),
+    builtInAddresses: net.bakedAddresses(),
+    router: ROUTER,
+    owned: serverOwned(),
     configFile: syncConfigFile(),
   };
 });
@@ -762,11 +889,6 @@ function wipeClientCache() {
 app.whenReady().then(() => {
   // A brand-new PC with no Biome data: ask where the server is before
   // anything starts. It must never quietly become a second, empty server.
-  if (SYNC.mode === "unset") {
-    createSetupWindow();
-    return;
-  }
-
   wipeClientCache();
   createLoadingWindow();
   if (SYNC.mode === "server") {
@@ -783,8 +905,17 @@ app.whenReady().then(() => {
     ensureFirewallRule();
     startNextServer();
     startWhatsappAgent();
+    net.startDiscoveryResponder({ port: PORT, id: serverId() });
+    // Ask the router to open the port (again every 30 minutes — some
+    // routers forget mappings after a reboot).
+    openRouter();
+    setInterval(openRouter, 30 * 60 * 1000);
+    setTimeout(stepAsideIfNotTheServer, 20000);
+    setInterval(stepAsideIfNotTheServer, 5 * 60 * 1000);
+    waitForServer(appOrigin(), createMainWindow);
+  } else {
+    connectClient(createMainWindow);
   }
-  waitForServer(appOrigin(), createMainWindow);
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
@@ -792,7 +923,6 @@ app.whenReady().then(() => {
 });
 
 app.on("window-all-closed", () => {
-  if (SYNC.mode === "unset") return app.quit();
   stopChildren();
   if (process.platform !== "darwin") app.quit();
 });

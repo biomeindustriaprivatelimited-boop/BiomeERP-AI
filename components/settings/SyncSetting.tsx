@@ -24,7 +24,7 @@ import { useSession } from "@/lib/session";
 declare global {
   interface Window {
     biomeDesktop?: {
-      getSyncConfig: () => Promise<{ mode: string; serverUrl: string; port: number; lan: string[]; tailscale?: string[]; publicAddress?: string; configFile: string }>;
+      getSyncConfig: () => Promise<{ mode: string; serverUrl: string; port: number; lan: string[]; tailscale?: string[]; publicAddress?: string; builtInAddresses?: string[]; router?: { checkedAt: string | null; ok: boolean; error?: string | null; externalIp?: string | null; internal?: string | null }; owned?: boolean; configFile: string }>;
       detectPublicIp?: () => Promise<{ ok: boolean; ip?: string; error?: string }>;
       setPublicAddress?: (address: string) => Promise<{ ok: boolean; address?: string; error?: string }>;
       setSyncConfig: (cfg: { mode: string; serverUrl?: string }) => Promise<{ ok: boolean; error?: string; restarting?: boolean }>;
@@ -34,7 +34,7 @@ declare global {
 
 export default function SyncSetting() {
   const { user } = useSession();
-  const [cfg, setCfg] = useState<{ mode: string; serverUrl: string; port: number; lan: string[]; tailscale?: string[]; publicAddress?: string } | null>(null);
+  const [cfg, setCfg] = useState<{ mode: string; serverUrl: string; port: number; lan: string[]; tailscale?: string[]; publicAddress?: string; builtInAddresses?: string[]; router?: { checkedAt: string | null; ok: boolean; error?: string | null; externalIp?: string | null; internal?: string | null }; owned?: boolean } | null>(null);
   const [publicIp, setPublicIp] = useState("");
   const [ipBusy, setIpBusy] = useState(false);
   const [ipMsg, setIpMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
@@ -158,6 +158,31 @@ export default function SyncSetting() {
                 Find it on the server PC — this same card there lists its network addresses.
               </p>
             </label>
+          )}
+
+          {mode === "server" && cfg && cfg.mode === "server" && (
+            <div className="space-y-1.5 rounded-xl border border-biome-line bg-biome-bg px-4 py-3 text-[11px] leading-relaxed">
+              <p className="text-[10px] font-bold uppercase tracking-[.13em] text-biome-muted">Automatic setup</p>
+              <p className={cfg.owned ? "text-emerald-600" : "text-amber-600"}>
+                {cfg.owned
+                  ? "✓ Developer is signed in on this PC — it is the server, and client PCs and phones can sign in."
+                  : "Developer is not signed in on this PC — clients cannot sign in until the developer signs in here."}
+              </p>
+              <p className="text-emerald-600">✓ Office PCs and phones find this server by themselves (network discovery).</p>
+              <p className={cfg.router?.ok ? "text-emerald-600" : "text-amber-600"}>
+                {cfg.router?.checkedAt == null
+                  ? "Router: checking…"
+                  : cfg.router.ok
+                    ? `✓ Router opened port ${cfg.port} to this PC automatically${cfg.router.externalIp ? ` (internet address ${cfg.router.externalIp})` : ""}.`
+                    : `Router could not be opened automatically: ${cfg.router.error || "unknown reason"} Add the port forward below once.`}
+              </p>
+              {cfg.builtInAddresses && cfg.builtInAddresses.length > 0 && (
+                <p className="text-biome-muted">
+                  Built into every installer (PCs outside the office use these):{" "}
+                  <span className="font-mono text-biome-text">{cfg.builtInAddresses.join("  ·  ")}</span>
+                </p>
+              )}
+            </div>
           )}
 
           {mode === "server" && cfg && (() => {

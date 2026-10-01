@@ -1,4 +1,6 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { serverReady } from "@/lib/serverOwner";
+import { SERVER_PC_HEADER, isServerPcRequest } from "@/lib/authToken";
 
 /**
  * The server's heartbeat.
@@ -18,9 +20,15 @@ export const dynamic = "force-dynamic";
 
 const startedAt = new Date().toISOString();
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  // `id` lets a PC recognise its own server (and not "find" itself through
+  // the office static IP); `owned` says whether the developer is signed in
+  // on the server PC — without that, clients may not sign in. The server
+  // PC itself is never blocked by `owned` (it is where the developer signs in).
+  const owned = serverReady();
+  const self = await isServerPcRequest(req.headers.get(SERVER_PC_HEADER));
   return NextResponse.json(
-    { ok: true, time: new Date().toISOString(), startedAt },
+    { ok: true, time: new Date().toISOString(), startedAt, id: process.env.BIOME_SERVER_ID || null, owned, ready: owned || self },
     { headers: { "Cache-Control": "no-store" } }
   );
 }

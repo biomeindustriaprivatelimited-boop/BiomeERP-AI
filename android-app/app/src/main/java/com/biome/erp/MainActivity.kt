@@ -10,6 +10,8 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
 import android.text.InputType
 import android.view.ViewGroup
@@ -31,6 +33,11 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import java.io.File
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.HttpURLConnection
+import java.net.InetAddress
+import java.net.URL
 
 /**
  * Biome ERP for Android.
@@ -113,6 +120,8 @@ class MainActivity : AppCompatActivity() {
                 if (request?.isForMainFrame == true) {
                     swipe.isRefreshing = false
                     showOfflinePage()
+                    // The phone may have moved between office Wi-Fi and mobile data.
+                    main.postDelayed({ autoConnect() }, 2000)
                 }
             }
         }
@@ -138,7 +147,92 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        if (serverUrl() == null) askForServer() else loadHome()
+        // No address to type: the app finds the server by itself.
+        autoConnect()
+    }
+
+    // ---- Finding the server ----------------------------------------
+    //
+    // Office Wi-Fi: the server answers a broadcast on UDP 4175.
+    // Anywhere else: the office static IP built into the app.
+    // The last address that worked is tried as well.
+
+    private val builtIn = listOf("http://122.180.246.211:4173", "http://122.180.246.211:30359")
+    private val main = Handler(Looper.getMainLooper())
+    @Volatile private var searching = false
+
+    private fun autoConnect() {
+        if (searching) return
+        searching = true
+        Thread {
+            val found = findServer()
+            main.post {
+                searching = false
+                if (found != null) {
+                    prefs.edit().putString("server", found).apply()
+                    web.webViewClient = mainClient
+                    loadHome()
+                } else {
+                    showOfflinePage()
+                    main.postDelayed({ autoConnect() }, 5000)
+                }
+            }
+        }.start()
+    }
+
+    private fun findServer(): String? {
+        val candidates = LinkedHashSet<String>()
+        candidates.addAll(discoverLan())
+        serverUrl()?.let { candidates.add(it) }
+        candidates.addAll(builtIn)
+        var fallback: String? = null
+        for (c in candidates) {
+            when (probe(c)) {
+                2 -> return c          // developer signed in on the server PC
+                1 -> if (fallback == null) fallback = c
+            }
+        }
+        return fallback
+    }
+
+    /** 0 = no Biome server, 1 = Biome server (not ready), 2 = ready. */
+    private fun probe(base: String): Int {
+        return try {
+            val conn = URL("${base.trimEnd('/')}/api/health").openConnection() as HttpURLConnection
+            conn.connectTimeout = 3500
+            conn.readTimeout = 3500
+            val body = conn.inputStream.bufferedReader().use { it.readText() }
+            conn.disconnect()
+            when {
+                !body.contains("\"startedAt\"") -> 0
+                body.contains("\"owned\":false") -> 1
+                else -> 2
+            }
+        } catch (_: Exception) { 0 }
+    }
+
+    private fun discoverLan(): List<String> {
+        val out = mutableListOf<String>()
+        try {
+            DatagramSocket().use { sock ->
+                sock.broadcast = true
+                sock.soTimeout = 1500
+                val ask = "BIOME_DISCOVER_V1".toByteArray()
+                sock.send(DatagramPacket(ask, ask.size, InetAddress.getByName("255.255.255.255"), 4175))
+                val buf = ByteArray(1024)
+                val until = System.currentTimeMillis() + 1500
+                while (System.currentTimeMillis() < until) {
+                    val p = DatagramPacket(buf, buf.size)
+                    try { sock.receive(p) } catch (_: Exception) { break }
+                    val txt = String(p.data, 0, p.length)
+                    if (txt.contains("\"biome\":true")) {
+                        val port = Regex("\"port\":(\\d+)").find(txt)?.groupValues?.get(1) ?: "4173"
+                        out.add("http://${p.address.hostAddress}:$port")
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        return out
     }
 
     private fun serverUrl(): String? = prefs.getString("server", null)
@@ -181,9 +275,9 @@ class MainActivity : AppCompatActivity() {
             <html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head>
             <body style="margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
               background:#0b1d04;color:#e2f6d5;font-family:sans-serif;text-align:center;padding:24px">
-            <div><h2 style="margin:0 0 8px">Can't reach the Biome server</h2>
-            <p style="opacity:.75;font-size:14px;line-height:1.5">The phone must be on the same Wi-Fi as the office PC,
-            and the Biome app must be running on that PC.</p>
+            <div><h2 style="margin:0 0 8px">Server connection lost</h2>
+            <p style="opacity:.75;font-size:14px;line-height:1.5">The Biome server is not answering. Check that the server PC
+            is on and the Biome app is open there. Reconnecting by itself…</p>
             <p style="font-size:13px;opacity:.6">Server: ${serverUrl() ?: "not set"}</p>
             <p><a href="biome://retry" style="color:#9fe870">Try again</a> &nbsp;·&nbsp;
                <a href="biome://server" style="color:#9fe870">Change server</a></p></div></body></html>
@@ -191,7 +285,7 @@ class MainActivity : AppCompatActivity() {
         web.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                 when (request?.url?.toString()) {
-                    "biome://retry" -> { web.webViewClient = mainClient; loadHome(); return true }
+                    "biome://retry" -> { autoConnect(); return true }
                     "biome://server" -> { web.webViewClient = mainClient; askForServer(); return true }
                 }
                 return false

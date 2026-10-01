@@ -29,6 +29,8 @@ export default function ServerGuard({ children }: { children: React.ReactNode })
   const [down, setDown] = useState(false);
   const [checking, setChecking] = useState(false);
   const [downSince, setDownSince] = useState<string | null>(null);
+  /** The server answers, but the developer is not signed in on the server PC. */
+  const [notReady, setNotReady] = useState(false);
   const misses = useRef(0);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -47,6 +49,8 @@ export default function ServerGuard({ children }: { children: React.ReactNode })
         // failure, a timeout, or a 5xx counts as down; anything else
         // must never block the login screen.
         if (res.status >= 500) throw new Error(String(res.status));
+        const j = await res.json().catch(() => null);
+        setNotReady(Boolean(j && j.ready === false));
         misses.current = 0;
         setDown((was) => {
           if (was) setDownSince(null);
@@ -54,6 +58,11 @@ export default function ServerGuard({ children }: { children: React.ReactNode })
         });
       } catch {
         misses.current += 1;
+        // Desktop client: after a while, look for the server afresh — the
+        // laptop may have moved from the office network to the internet.
+        if (misses.current === 4) {
+          try { (window as any).biomeDesktop?.reconnect?.(); } catch { /* browser */ }
+        }
         if (misses.current >= MISSES_BEFORE_BLOCK) {
           setDown((was) => {
             if (!was) setDownSince(new Date().toLocaleTimeString());
@@ -93,6 +102,25 @@ export default function ServerGuard({ children }: { children: React.ReactNode })
   return (
     <>
       {children}
+      {!down && notReady && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-biome-bg/95 p-6 backdrop-blur-md">
+          <div className="bmx-card w-full max-w-md rounded-3xl border border-amber-500/25 bg-biome-bgSoft p-8 text-center shadow-2xl">
+            <span className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-amber-500/12">
+              <ServerOff size={28} className="text-amber-500" />
+            </span>
+            <h2 className="mt-5 font-display text-[18px] font-bold tracking-tight text-biome-text">
+              The server PC is not ready
+            </h2>
+            <p className="mt-2 text-[12px] leading-relaxed text-biome-muted">
+              The server is on, but the developer is not signed in on the server PC. Nothing can be viewed or saved
+              until the developer signs in there. This screen lifts by itself.
+            </p>
+            <p className="mt-3 flex items-center justify-center gap-1.5 text-[10.5px] text-biome-muted">
+              <Wifi size={12} className="animate-pulse text-amber-500" /> Checking automatically…
+            </p>
+          </div>
+        </div>
+      )}
       {down && (
         <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-biome-bg/95 p-6 backdrop-blur-md">
           <div className="bmx-card w-full max-w-md rounded-3xl border border-rose-500/25 bg-biome-bgSoft p-8 text-center shadow-2xl">
