@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Connect Biome</title>
+    <style>
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: #0b1210;
+        color: #e8f6ef;
+        font-family: -apple-system, "Segoe UI", Arial, sans-serif;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 26px;
+      }
+      .card { width: 100%; max-width: 440px; }
+      .head { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+      .head img { width: 44px; height: 44px; border-radius: 10px; }
+      h1 { font-size: 18px; margin: 0; letter-spacing: -0.01em; }
+      .sub { font-size: 12px; opacity: 0.65; margin: 2px 0 0; }
+      label { display: block; font-size: 10px; font-weight: 700; letter-spacing: 0.13em; text-transform: uppercase; opacity: 0.7; margin: 16px 0 6px; }
+      input {
+        width: 100%;
+        padding: 11px 13px;
+        border-radius: 12px;
+        border: 1px solid rgba(159, 232, 112, 0.25);
+        background: #0f1a16;
+        color: #e8f6ef;
+        font-family: Consolas, "Courier New", monospace;
+        font-size: 13px;
+        outline: none;
+      }
+      input:focus { border-color: #9fe870; }
+      .hint { font-size: 11px; opacity: 0.6; line-height: 1.5; margin: 6px 0 0; }
+      .row { display: flex; gap: 8px; margin-top: 14px; }
+      button {
+        border: 0;
+        border-radius: 9999px;
+        padding: 10px 18px;
+        font-weight: 700;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .primary { background: #9fe870; color: #163300; flex: 1; }
+      .ghost { background: transparent; color: #e8f6ef; border: 1px solid rgba(232, 246, 239, 0.2); }
+      button:disabled { opacity: 0.5; cursor: default; }
+      .msg { font-size: 12px; line-height: 1.5; margin-top: 12px; padding: 10px 12px; border-radius: 12px; display: none; }
+      .msg.ok { display: block; background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.35); color: #6ee7b7; }
+      .msg.err { display: block; background: rgba(244, 63, 94, 0.08); border: 1px solid rgba(244, 63, 94, 0.35); color: #fda4af; }
+      .box { margin-top: 18px; padding: 12px 14px; border-radius: 14px; background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.07); font-size: 11.5px; line-height: 1.55; opacity: 0.85; }
+      .box b { color: #9fe870; }
+      details { margin-top: 18px; font-size: 11.5px; opacity: 0.8; }
+      summary { cursor: pointer; }
+      .danger { margin-top: 10px; background: transparent; color: #fbbf24; border: 1px solid rgba(251, 191, 36, 0.4); }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="head">
+        <img src="icon.png" alt="" />
+        <div>
+          <h1>Connect to the Biome server</h1>
+          <p class="sub">This PC is a client — all data stays on the server PC.</p>
+        </div>
+      </div>
+
+      <label for="addr">Server address</label>
+      <input id="addr" placeholder="192.168.1.10  or  100.101.102.103" autofocus />
+      <p class="hint">
+        On the server PC open <b>Settings → Server &amp; Sync</b> — it shows this address.
+        Same office network: use the <b>192.168…</b> address. Another location: use the
+        <b>Tailscale (100.x…)</b> address.
+      </p>
+
+      <div class="row">
+        <button class="ghost" id="test" type="button">Test</button>
+        <button class="primary" id="connect" type="button">Connect &amp; restart</button>
+      </div>
+      <div class="msg" id="msg"></div>
+
+      <div class="box">
+        After connecting, sign in with the user ID and password the developer/admin created on the server.
+        If the server PC is off, this PC shows <b>“Server connection lost”</b> and reconnects by itself.
+      </div>
+
+      <details id="serverOpt">
+        <summary>This PC is the main office server</summary>
+        <p class="hint">
+          Only for the ONE PC that holds all company data. The developer signs in here and stays
+          signed in. Do not choose this on any other PC — it would start a separate, empty server.
+        </p>
+        <button class="danger" id="server" type="button">Make this PC the server</button>
+      </details>
+    </div>
+
+    <script>
+      var $ = function (id) { return document.getElementById(id); };
+      var api = window.biomeSetup;
+
+      function show(kind, text) {
+        var m = $("msg");
+        m.className = "msg " + kind;
+        m.textContent = text;
+      }
+      function busy(on) {
+        ["test", "connect", "server"].forEach(function (id) { $(id).disabled = on; });
+      }
+
+      var current = null;
+      if (api) {
+        api.info().then(function (i) {
+          current = i;
+          if (i && i.mode === "server") {
+            document.querySelector(".sub").textContent = "This PC is currently running as the server.";
+            document.getElementById("serverOpt").style.display = "none";
+          }
+          if (i && i.serverUrl) $("addr").value = i.serverUrl;
+          if (i && i.mode === "client") {
+            document.querySelector(".sub").textContent = "Currently connected to " + i.serverUrl + ". Change it below.";
+          }
+        }).catch(function () {});
+      }
+
+      $("test").addEventListener("click", function () {
+        busy(true); show("ok", "Checking…");
+        api.test($("addr").value).then(function (r) {
+          busy(false);
+          if (r.ok) show("ok", "Biome server found at " + r.url + ". Click “Connect & restart”.");
+          else show("err", r.error || "Could not reach the server.");
+        }).catch(function (e) { busy(false); show("err", String(e)); });
+      });
+
+      $("connect").addEventListener("click", function () {
+        if (current && current.mode === "server" && current.hasLocalData &&
+            !confirm("This PC holds Biome data and runs as the server.\n\nConnect it to another server instead? Its own data stays on disk but will no longer be used or shared.")) return;
+        busy(true); show("ok", "Connecting…");
+        api.connect($("addr").value).then(function (r) {
+          if (r.ok) show("ok", "Connected to " + r.url + " — restarting…");
+          else { busy(false); show("err", r.error || "Could not connect."); }
+        }).catch(function (e) { busy(false); show("err", String(e)); });
+      });
+
+      $("addr").addEventListener("keydown", function (e) {
+        if (e.key === "Enter") $("connect").click();
+      });
+
+      $("server").addEventListener("click", function () {
+        if (!confirm("Make THIS PC the Biome server?\n\nDo this only on the main office PC that will hold all company data.")) return;
+        busy(true);
+        api.makeServer().then(function (r) {
+          if (r.ok) show("ok", "This PC is now the server — restarting…");
+          else { busy(false); show("err", r.error || "Could not save."); }
+        }).catch(function (e) { busy(false); show("err", String(e)); });
+      });
+    </script>
+  </body>
+</html>

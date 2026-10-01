@@ -41,7 +41,7 @@ import java.io.File
  * and every entry appears on every PC as soon as it is saved.
  *
  * First launch asks for the server address (the one the desktop app shows
- * under "Open on phone", e.g. http://192.168.1.50:3000). If the server
+ * under "Open on phone", e.g. http://192.168.1.50:4173). If the server
  * cannot be reached, the error screen offers "Change server".
  */
 class MainActivity : AppCompatActivity() {
@@ -152,18 +152,24 @@ class MainActivity : AppCompatActivity() {
     private fun askForServer() {
         val input = EditText(this).apply {
             inputType = InputType.TYPE_TEXT_VARIATION_URI
-            hint = "http://192.168.1.50:3000"
+            hint = "http://192.168.1.50:4173"
             setText(serverUrl() ?: "http://")
             setSelection(text.length)
         }
         AlertDialog.Builder(this)
             .setTitle("Biome server address")
-            .setMessage("Open the Biome app on the office PC, click \"Open on phone\", and type the address shown there.")
+            .setMessage("Open the Biome app on the server PC → Settings → Server & Sync, and type the address shown there. Office Wi-Fi: the 192.168… address. Another location: the Tailscale 100.x… address (install Tailscale on this phone too).")
             .setView(input)
             .setCancelable(serverUrl() != null)
             .setPositiveButton("Connect") { _, _ ->
                 var url = input.text.toString().trim()
                 if (!url.startsWith("http://") && !url.startsWith("https://")) url = "http://$url"
+                // The Biome server listens on 4173; an address typed without a
+                // port ("192.168.1.50" or a Tailscale "100.x" address) gets it.
+                try {
+                    val u = Uri.parse(url)
+                    if (u.port == -1 && u.scheme == "http" && !u.host.isNullOrEmpty()) url = "http://${u.host}:4173"
+                } catch (_: Exception) {}
                 prefs.edit().putString("server", url.trimEnd('/')).apply()
                 loadHome()
             }

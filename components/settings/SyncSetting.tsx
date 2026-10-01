@@ -24,7 +24,7 @@ import { useSession } from "@/lib/session";
 declare global {
   interface Window {
     biomeDesktop?: {
-      getSyncConfig: () => Promise<{ mode: string; serverUrl: string; port: number; lan: string[]; configFile: string }>;
+      getSyncConfig: () => Promise<{ mode: string; serverUrl: string; port: number; lan: string[]; tailscale?: string[]; configFile: string }>;
       setSyncConfig: (cfg: { mode: string; serverUrl?: string }) => Promise<{ ok: boolean; error?: string; restarting?: boolean }>;
     };
   }
@@ -32,7 +32,7 @@ declare global {
 
 export default function SyncSetting() {
   const { user } = useSession();
-  const [cfg, setCfg] = useState<{ mode: string; serverUrl: string; port: number; lan: string[] } | null>(null);
+  const [cfg, setCfg] = useState<{ mode: string; serverUrl: string; port: number; lan: string[]; tailscale?: string[] } | null>(null);
   const [inDesktop, setInDesktop] = useState(false);
   const [mode, setMode] = useState<"server" | "client">("server");
   const [serverUrl, setServerUrl] = useState("");
@@ -131,20 +131,49 @@ export default function SyncSetting() {
             </label>
           )}
 
-          {mode === "server" && cfg && cfg.lan.length > 0 && (
-            <div className="rounded-xl border border-biome-line bg-biome-bg px-4 py-3">
-              <p className="text-[10px] font-bold uppercase tracking-[.13em] text-biome-muted">
-                Clients and phones connect to
-              </p>
-              <div className="mt-1.5 flex flex-wrap gap-1.5">
-                {cfg.lan.map((a) => (
-                  <code key={a} className="rounded-lg border border-biome-leaf/30 bg-biome-leaf/[.08] px-2.5 py-1 font-mono text-[11px] text-biome-leaf">
-                    http://{a}:{cfg.port}
-                  </code>
-                ))}
+          {mode === "server" && cfg && (() => {
+            const remote = cfg.tailscale || [];
+            const local = cfg.lan.filter((a) => !remote.includes(a));
+            return (
+              <div className="space-y-2.5 rounded-xl border border-biome-line bg-biome-bg px-4 py-3">
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-[.13em] text-biome-muted">
+                    Same office network — clients and phones connect to
+                  </p>
+                  <div className="mt-1.5 flex flex-wrap gap-1.5">
+                    {local.length ? local.map((a) => (
+                      <code key={a} className="rounded-lg border border-biome-leaf/30 bg-biome-leaf/[.08] px-2.5 py-1 font-mono text-[11px] text-biome-leaf">
+                        http://{a}:{cfg.port}
+                      </code>
+                    )) : <span className="text-[10.5px] text-biome-muted">No network address found.</span>}
+                  </div>
+                </div>
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-[.13em] text-biome-muted">
+                    Another location (internet, via Tailscale)
+                  </p>
+                  {remote.length ? (
+                    <div className="mt-1.5 flex flex-wrap gap-1.5">
+                      {remote.map((a) => (
+                        <code key={a} className="rounded-lg border border-sky-500/30 bg-sky-500/[.08] px-2.5 py-1 font-mono text-[11px] text-sky-500">
+                          http://{a}:{cfg.port}
+                        </code>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="mt-1 text-[10.5px] leading-relaxed text-biome-muted">
+                      Not set up. To let PCs and phones at other locations sign in, install the free
+                      Tailscale app on this server PC and on each of them, signed in with the same
+                      account — this card will then show a 100.x address to use. Data still stays only on this PC.
+                    </p>
+                  )}
+                </div>
+                <p className="text-[10px] leading-relaxed text-biome-muted">
+                  On a new PC, install Biome and type one of these addresses on the first screen.
+                </p>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {msg && (
             <p className={`flex items-center gap-1.5 rounded-xl border px-3 py-2 text-[11px] ${

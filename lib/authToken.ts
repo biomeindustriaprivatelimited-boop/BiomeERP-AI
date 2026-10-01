@@ -103,14 +103,48 @@ async function key(): Promise<CryptoKey> {
   );
 }
 
+/**
+ * The developer's session ON THE SERVER PC: one year. The business rule is
+ * "the PC where the developer is signed in is the server, and the developer
+ * stays signed in there until they sign out by hand". Every other session
+ * (every other account, and the developer on any client PC) keeps the
+ * eight-hour working-day limit.
+ */
+export const SERVER_PC_DEVELOPER_TTL_SECONDS = 365 * 24 * 60 * 60;
+
 export async function signSession(
-  payload: Omit<SessionPayload, "iat" | "exp">
+  payload: Omit<SessionPayload, "iat" | "exp">,
+  ttlSeconds: number = SESSION_TTL_SECONDS
 ): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
-  const full: SessionPayload = { ...payload, iat: now, exp: now + SESSION_TTL_SECONDS };
+  const full: SessionPayload = { ...payload, iat: now, exp: now + ttlSeconds };
   const body = base64UrlEncode(new TextEncoder().encode(JSON.stringify(full)));
   const signature = await crypto.subtle.sign("HMAC", await key(), new TextEncoder().encode(body));
   return `${body}.${base64UrlEncode(new Uint8Array(signature))}`;
+}
+
+/**
+ * Proof that a request comes from the Biome desktop window running ON the
+ * server PC itself. That window (electron/main.js) adds this value as the
+ * `x-biome-server-pc` header to every request it sends to its own local
+ * server. It is derived from the installation's signing secret, which never
+ * leaves the server PC, so a client PC or phone cannot produce it — a
+ * spoofed Host header is not enough.
+ */
+export const SERVER_PC_HEADER = "x-biome-server-pc";
+
+export async function serverPcToken(): Promise<string> {
+  const sig = await crypto.subtle.sign("HMAC", await key(), new TextEncoder().encode("biome-server-pc-v1"));
+  return base64UrlEncode(new Uint8Array(sig));
+}
+
+export async function isServerPcRequest(headerValue: string | null | undefined): Promise<boolean> {
+  if (!headerValue) return false;
+  try {
+    return headerValue === (await serverPcToken());
+  } catch {
+    return false;
+  }
 }
 
 /** Returns the payload, or null for anything malformed, forged or expired. */

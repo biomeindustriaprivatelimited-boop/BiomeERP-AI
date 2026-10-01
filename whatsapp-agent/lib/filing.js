@@ -151,7 +151,9 @@ function planFiling(input) {
   // 1. Genuinely not a business document — a screenshot, a selfie.
   //    This is the only case that gets set aside, and it's the right
   //    one to set aside.
-  if (docType === "other" && !extracted?.vehicleNo && !extracted?.biomeDocNo) {
+  //    A page that prints a coordination reference is never "not a
+  //    document", however unclear its header was.
+  if (docType === "other" && !reference && !extracted?.vehicleNo && !extracted?.biomeDocNo) {
     return {
       bucket: "_Not A Document",
       dir: path.join(PATHS.inbox, "_Not A Document", isoDate(receivedAt), sanitizeSegment(senderName, "Unknown Sender")),

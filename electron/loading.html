@@ -14,15 +14,33 @@
         color: #e8f6ef;
         font-family: -apple-system, "Segoe UI", Arial, sans-serif;
         -webkit-app-region: drag;
+        text-align: center;
+        padding: 0 22px;
+        box-sizing: border-box;
       }
       img { width: 56px; height: 56px; margin-bottom: 14px; border-radius: 12px; }
-      p { font-size: 13px; opacity: 0.7; margin-top: 10px; }
+      p { font-size: 13px; opacity: 0.75; margin-top: 10px; max-width: 460px; line-height: 1.45; }
       .ring {
         width: 22px; height: 22px; border-radius: 50%;
         border: 2px solid rgba(62,213,152,0.25);
         border-top-color: #3ed598;
         animation: spin 0.9s linear infinite;
       }
+      body[data-offline="1"] .ring { border-top-color: #f59e0b; }
+      #change {
+        display: none;
+        -webkit-app-region: no-drag;
+        margin-top: 8px;
+        background: #9fe870;
+        color: #163300;
+        border: 0;
+        border-radius: 9999px;
+        padding: 8px 18px;
+        font-weight: 700;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      body[data-offline="1"][data-mode="client"] #change { display: inline-block; }
       @keyframes spin { to { transform: rotate(360deg); } }
     </style>
   </head>
@@ -30,5 +48,11 @@
     <img src="icon.png" alt="Biome Industria" />
     <div class="ring"></div>
     <p id="biome-loading-note">Starting Biome Industria Platform…</p>
+    <button id="change" type="button">Change server address</button>
+    <script>
+      document.getElementById("change").addEventListener("click", function () {
+        if (window.biomeSetup) window.biomeSetup.open();
+      });
+    </script>
   </body>
 </html>

@@ -63,16 +63,71 @@ function syncConfigFile() {
   return path.join(app.getPath("userData"), "sync-config.json");
 }
 
+/**
+ * Mirror of lib/dataRoot.ts — only used to answer "does this PC already
+ * hold Biome data?" before any server has started.
+ */
+function localDataRoot() {
+  const override = (process.env.BIOME_DATA_ROOT || "").trim();
+  if (override) return path.resolve(override);
+  try {
+    const marker = path.join(os.homedir(), ".biome-data-root");
+    if (fs.existsSync(marker)) {
+      const chosen = fs.readFileSync(marker, "utf8").trim();
+      if (chosen) return path.resolve(chosen);
+    }
+  } catch (_) {}
+  return path.join(os.homedir(), "Documents", "Biome Platform");
+}
+
+/**
+ * True when this PC holds a real Biome user list. A list holding only the
+ * untouched first-run "admin" account (still on its seeded password) does
+ * not count: that is exactly what an earlier version left behind when it
+ * silently turned a second PC into its own empty server.
+ */
+function hasLocalData() {
+  try {
+    const file = path.join(localDataRoot(), "config", "users.json");
+    if (!fs.existsSync(file)) return false;
+    const users = (JSON.parse(fs.readFileSync(file, "utf8")) || {}).users || [];
+    if (!Array.isArray(users) || users.length === 0) return false;
+    const onlySeed = users.length === 1 && users[0].username === "admin" && users[0].mustChangePassword === true;
+    return !onlySeed;
+  } catch (_) {
+    // Unreadable file: assume it is real data rather than risk hiding a server.
+    return true;
+  }
+}
+
+/**
+ * The PC's role.
+ *
+ * A fresh install used to start as a SERVER silently. On a second PC that
+ * meant a brand-new, empty server with its own user list — so the user IDs
+ * made on the real server PC "did not work" there. Now:
+ *
+ *   - a config file exists            → use it;
+ *   - no file, but this PC has data   → it is the existing server (old
+ *                                       installs keep working unchanged);
+ *   - no file and no data             → "unset": the setup screen asks
+ *                                       for the server's address first.
+ */
 function readSyncConfig() {
   try {
     const raw = JSON.parse(fs.readFileSync(syncConfigFile(), "utf8"));
     if (raw && raw.mode === "client" && typeof raw.serverUrl === "string" && /^https?:\/\//.test(raw.serverUrl)) {
       return { mode: "client", serverUrl: raw.serverUrl.replace(/\/+$/, "") };
     }
+    if (raw && raw.mode === "server") return { mode: "server", serverUrl: "" };
   } catch (_) {
-    /* no file yet — first run is a server */
+    /* no file yet */
   }
-  return { mode: "server", serverUrl: "" };
+  if (hasLocalData()) {
+    try { writeSyncConfig({ mode: "server" }); } catch (_) {}
+    return { mode: "server", serverUrl: "" };
+  }
+  return { mode: "unset", serverUrl: "" };
 }
 
 function writeSyncConfig(cfg) {
@@ -85,6 +140,16 @@ const SYNC = readSyncConfig();
 /** Where the window points: the local server, or the remote one. */
 function appOrigin() {
   return SYNC.mode === "client" ? SYNC.serverUrl : `http://localhost:${PORT}`;
+}
+
+/**
+ * Tailscale (the private network that joins PCs in different places)
+ * hands out addresses in 100.64.0.0/10. Shown separately, because that is
+ * the address a PC at ANOTHER location must use.
+ */
+function isTailscale(ip) {
+  const [a, b] = String(ip).split(".").map(Number);
+  return a === 100 && b >= 64 && b <= 127;
 }
 
 /** This PC's LAN addresses — shown to the developer when setting clients up. */
@@ -131,6 +196,54 @@ function authSecret() {
     console.error("Couldn't persist the auth secret:", err);
   }
   return generated;
+}
+
+/**
+ * The header that tells this PC's own server "this request comes from the
+ * window on the server PC itself" (see lib/authToken.ts → serverPcToken).
+ * Same HMAC, same secret, so only this installation can produce it.
+ */
+function serverPcToken() {
+  return crypto.createHmac("sha256", authSecret()).update("biome-server-pc-v1").digest("base64url");
+}
+
+/**
+ * Lets clients in. Windows Firewall blocks incoming connections to a new
+ * program by default, so other PCs and phones could not reach port 4173
+ * even with the right address. Adds one inbound rule, once, on the server
+ * PC (Windows asks for permission the first time).
+ */
+function ensureFirewallRule() {
+  if (process.platform !== "win32" || !app.isPackaged) return;
+  const flag = path.join(app.getPath("userData"), "firewall-rule-added");
+  if (fs.existsSync(flag)) return;
+  try {
+    const check = spawn("netsh", ["advfirewall", "firewall", "show", "rule", "name=BiomeServer"], { windowsHide: true });
+    let out = "";
+    check.stdout.on("data", (d) => (out += d));
+    check.on("error", () => {});
+    check.on("exit", (code) => {
+      if (code === 0 && /BiomeServer/i.test(out)) {
+        try { fs.writeFileSync(flag, new Date().toISOString()); } catch (_) {}
+        return;
+      }
+      const args =
+        "'advfirewall','firewall','add','rule','name=BiomeServer','dir=in','action=allow','protocol=TCP','localport=" +
+        PORT +
+        "','profile=any'";
+      const ps = spawn(
+        "powershell.exe",
+        ["-NoProfile", "-WindowStyle", "Hidden", "-Command", `Start-Process netsh -ArgumentList ${args} -Verb RunAs -WindowStyle Hidden -Wait`],
+        { windowsHide: true }
+      );
+      ps.on("error", () => {});
+      ps.on("exit", (c) => {
+        if (c === 0) { try { fs.writeFileSync(flag, new Date().toISOString()); } catch (_) {} }
+      });
+    });
+  } catch (err) {
+    console.error("Firewall rule:", err);
+  }
 }
 
 /**
@@ -283,7 +396,7 @@ function waitForServer(url, onReady, attempt = 0) {
     if (loadingWindow && !loadingWindow.isDestroyed() && attempt % 4 === 3) {
       loadingWindow.webContents
         .executeJavaScript(
-          `document.body.dataset.offline = "1"; var el = document.getElementById("biome-loading-note"); if (el) el.textContent = ${JSON.stringify(
+          `document.body.dataset.offline = "1"; document.body.dataset.mode = ${JSON.stringify(SYNC.mode)}; var el = document.getElementById("biome-loading-note"); if (el) el.textContent = ${JSON.stringify(
             SYNC.mode === "client"
               ? `Waiting for the server at ${url} — check that the server PC is on and its Biome app is running.`
               : "Starting the local server…"
@@ -297,16 +410,150 @@ function waitForServer(url, onReady, attempt = 0) {
 
 function createLoadingWindow() {
   loadingWindow = new BrowserWindow({
-    width: 360,
-    height: 220,
+    width: 380,
+    height: 250,
     frame: false,
     resizable: false,
     backgroundColor: "#0b1210",
     center: true,
-    webPreferences: { contextIsolation: true },
+    webPreferences: { contextIsolation: true, preload: path.join(__dirname, "preload.js") },
   });
   loadingWindow.loadFile(path.join(__dirname, "loading.html"));
 }
+
+/* ------------------------------------------------------------------ */
+/* First-run / change-server setup                                     */
+/* ------------------------------------------------------------------ */
+
+let setupWindow;
+let recoveringMain = false;
+function createSetupWindow() {
+  if (setupWindow && !setupWindow.isDestroyed()) {
+    setupWindow.focus();
+    return;
+  }
+  setupWindow = new BrowserWindow({
+    width: 520,
+    height: 620,
+    resizable: false,
+    autoHideMenuBar: true,
+    title: "Connect Biome",
+    backgroundColor: "#0b1210",
+    icon: path.join(__dirname, "icon.png"),
+    center: true,
+    webPreferences: { contextIsolation: true, nodeIntegration: false, preload: path.join(__dirname, "preload.js") },
+  });
+  setupWindow.setMenuBarVisibility(false);
+  setupWindow.loadFile(path.join(__dirname, "setup.html"));
+  setupWindow.on("closed", () => {
+    setupWindow = null;
+    // Closing the setup on a PC that has no role yet means "not now".
+    if (SYNC.mode === "unset" && !quitting) app.quit();
+  });
+}
+
+/** Normalises what a person types: "192.168.1.10" → "http://192.168.1.10:4173". */
+function normaliseServerUrl(input) {
+  let url = String(input || "").trim().replace(/\/+$/, "");
+  if (!url) return "";
+  if (!/^https?:\/\//i.test(url)) url = `http://${url}`;
+  try {
+    const u = new URL(url);
+    if (!u.port && u.protocol === "http:") u.port = String(PORT);
+    return u.origin;
+  } catch (_) {
+    return "";
+  }
+}
+
+/** Is a Biome server answering at this address? */
+function probeServer(url) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (r) => { if (!done) { done = true; resolve(r); } };
+    try {
+      const lib = url.startsWith("https:") ? require("https") : http;
+      const req = lib.get(`${url}/api/health`, (res) => {
+        let body = "";
+        res.on("data", (d) => (body += d));
+        res.on("end", () => {
+          try {
+            const j = JSON.parse(body);
+            if (j && j.ok && j.startedAt) return finish({ ok: true });
+          } catch (_) {}
+          finish({ ok: false, error: `Something answered at ${url}, but it is not a Biome server.` });
+        });
+      });
+      req.on("error", (e) => finish({ ok: false, error: `No answer from ${url} (${e.code || e.message}). Check the address, that the server PC is on with Biome running, and that both are on the same network (or Tailscale).` }));
+      req.setTimeout(6000, () => { req.destroy(); finish({ ok: false, error: `No answer from ${url} within 6 seconds.` }); });
+    } catch (e) {
+      finish({ ok: false, error: e.message });
+    }
+  });
+}
+
+/** Setup IPC is only honoured from the app's own local pages, never from a server page. */
+function fromLocalPage(evt) {
+  try {
+    const url = (evt.senderFrame && evt.senderFrame.url) || evt.sender.getURL();
+    return url.startsWith("file://");
+  } catch (_) {
+    return false;
+  }
+}
+
+ipcMain.handle("biome:setup:info", (evt) => {
+  if (!fromLocalPage(evt)) return null;
+  return { mode: SYNC.mode, serverUrl: SYNC.serverUrl, port: PORT, hasLocalData: hasLocalData() };
+});
+
+ipcMain.handle("biome:setup:test", async (evt, input) => {
+  if (!fromLocalPage(evt)) return { ok: false, error: "Not allowed." };
+  const url = normaliseServerUrl(input);
+  if (!url) return { ok: false, error: "Type the server address, like 192.168.1.10 or http://100.101.102.103:4173" };
+  const r = await probeServer(url);
+  return { ...r, url };
+});
+
+ipcMain.handle("biome:setup:connect", async (evt, input) => {
+  if (!fromLocalPage(evt)) return { ok: false, error: "Not allowed." };
+  const url = normaliseServerUrl(input);
+  if (!url) return { ok: false, error: "Type the server address first." };
+  const r = await probeServer(url);
+  if (!r.ok) return { ...r, url };
+  try {
+    writeSyncConfig({ mode: "client", serverUrl: url });
+  } catch (err) {
+    return { ok: false, error: `Could not save the setting: ${err.message}` };
+  }
+  setTimeout(() => { quitting = true; app.relaunch(); app.exit(0); }, 400);
+  return { ok: true, url, restarting: true };
+});
+
+ipcMain.handle("biome:setup:makeServer", (evt) => {
+  if (!fromLocalPage(evt)) return { ok: false, error: "Not allowed." };
+  try {
+    writeSyncConfig({ mode: "server" });
+  } catch (err) {
+    return { ok: false, error: `Could not save the setting: ${err.message}` };
+  }
+  setTimeout(() => { quitting = true; app.relaunch(); app.exit(0); }, 400);
+  return { ok: true, restarting: true };
+});
+
+// Opening the setup window is harmless from any page — nothing changes
+// until the person clicks Connect inside that local window. The login
+// screen uses it so a PC set up wrongly can be pointed at the real server.
+ipcMain.handle("biome:openSetup", () => {
+  createSetupWindow();
+  return true;
+});
+
+ipcMain.handle("biome:setup:open", (evt) => {
+  if (!fromLocalPage(evt)) return false;
+  createSetupWindow();
+  return true;
+});
 
 function createMainWindow() {
   mainWindow = new BrowserWindow({
@@ -336,6 +583,35 @@ function createMainWindow() {
     setTimeout(() => { try { mainWindow.loadURL(appOrigin()); } catch (_) {} }, 1000);
   });
   mainWindow.on("unresponsive", () => console.error("Window unresponsive"));
+
+  // A client whose server vanished before the page could load (server PC
+  // switched off, network gone) gets the waiting screen — with "Change
+  // server address" — instead of Chromium's blank error page, and comes
+  // back by itself the moment the server answers. Once a page IS loaded,
+  // the in-page ServerGuard shows the "server not answering" block.
+  mainWindow.webContents.on("did-fail-load", (_e, code, _desc, url, isMainFrame) => {
+    if (!isMainFrame || code === -3 /* aborted by a newer navigation */) return;
+    if (quitting || !mainWindow || mainWindow.isDestroyed()) return;
+    if (String(url || "").startsWith("file://")) return;
+    if (recoveringMain) return;
+    recoveringMain = true;
+    console.error(`Page failed to load (${code}) — waiting for the server.`);
+    mainWindow.loadFile(path.join(__dirname, "loading.html")).then(() => {
+      mainWindow.webContents
+        .executeJavaScript(
+          `document.body.dataset.offline = "1"; document.body.dataset.mode = ${JSON.stringify(SYNC.mode)}; var el = document.getElementById("biome-loading-note"); if (el) el.textContent = ${JSON.stringify(
+            SYNC.mode === "client"
+              ? `Server connection lost (${SYNC.serverUrl}). Check that the server PC is on and its Biome app is running — this screen reconnects by itself.`
+              : "The local server stopped — restarting it…"
+          )};`
+        )
+        .catch(() => {});
+    }).catch(() => {});
+    waitForServer(appOrigin(), () => {
+      recoveringMain = false;
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.loadURL(appOrigin());
+    });
+  });
 
   mainWindow.once("ready-to-show", () => {
     if (loadingWindow && !loadingWindow.isDestroyed()) loadingWindow.close();
@@ -376,12 +652,16 @@ function createMainWindow() {
 /* IPC — the Server & Sync card in Settings talks to this              */
 /* ------------------------------------------------------------------ */
 
-ipcMain.handle("biome:getSyncConfig", () => ({
-  ...SYNC,
-  port: PORT,
-  lan: lanAddresses(),
-  configFile: syncConfigFile(),
-}));
+ipcMain.handle("biome:getSyncConfig", () => {
+  const lan = lanAddresses();
+  return {
+    ...SYNC,
+    port: PORT,
+    lan,
+    tailscale: lan.filter(isTailscale),
+    configFile: syncConfigFile(),
+  };
+});
 
 ipcMain.handle("biome:getAppInfo", () => ({ version: app.getVersion(), mode: SYNC.mode, serverUrl: SYNC.serverUrl }));
 
@@ -426,9 +706,27 @@ function wipeClientCache() {
 }
 
 app.whenReady().then(() => {
+  // A brand-new PC with no Biome data: ask where the server is before
+  // anything starts. It must never quietly become a second, empty server.
+  if (SYNC.mode === "unset") {
+    createSetupWindow();
+    return;
+  }
+
   wipeClientCache();
   createLoadingWindow();
   if (SYNC.mode === "server") {
+    // Mark every request from THIS window to its own server, so the
+    // developer's sign-in here is recognised as "on the server PC" and kept.
+    const token = serverPcToken();
+    session.defaultSession.webRequest.onBeforeSendHeaders(
+      { urls: [`http://localhost:${PORT}/*`, `http://127.0.0.1:${PORT}/*`] },
+      (details, cb) => {
+        details.requestHeaders["x-biome-server-pc"] = token;
+        cb({ requestHeaders: details.requestHeaders });
+      }
+    );
+    ensureFirewallRule();
     startNextServer();
     startWhatsappAgent();
   }
@@ -440,6 +738,7 @@ app.whenReady().then(() => {
 });
 
 app.on("window-all-closed", () => {
+  if (SYNC.mode === "unset") return app.quit();
   stopChildren();
   if (process.platform !== "darwin") app.quit();
 });

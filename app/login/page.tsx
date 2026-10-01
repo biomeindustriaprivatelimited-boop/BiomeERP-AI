@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import { ArrowRight, Eye, EyeOff, Loader2, LockKeyhole, ShieldCheck, UserRound, Fingerprint, Activity, KeyRound, Factory, AlertCircle } from "lucide-react";
@@ -32,6 +32,19 @@ export default function LoginPage() {
   const [plant, setPlant] = useState<string>("");
 
   const revealLogin = useCallback(() => setLoginReady(true), []);
+
+  /**
+   * Desktop app only: which server this PC signs in to, with a way to
+   * change it. A PC pointed at the wrong server (or one an older version
+   * turned into its own empty server) shows "user ID not found" for every
+   * real account — this link is the way out without reinstalling.
+   */
+  const [desk, setDesk] = useState<{ mode: string; serverUrl: string } | null>(null);
+  useEffect(() => {
+    const d = (window as any).biomeDesktop;
+    if (!d?.getAppInfo || !d?.openSetup) return;
+    d.getAppInfo().then((i: any) => setDesk({ mode: i?.mode || "server", serverUrl: i?.serverUrl || "" })).catch(() => {});
+  }, []);
 
   function fail(message: string) {
     setAttempt(n => n + 1);
@@ -167,6 +180,20 @@ export default function LoginPage() {
               : <ArrowRight size={16} className="relative z-10 transition-transform duration-300 group-hover:translate-x-1.5" />}
           </button>
           </div>
+
+          {desk && (
+            <div className="relative z-10 mt-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/[.07] bg-white/[.02] px-3 py-2 text-[9.5px] text-white/45">
+              <span className="min-w-0 truncate">
+                {desk.mode === "client"
+                  ? <>Server: <span className="font-mono text-white/70">{desk.serverUrl}</span></>
+                  : <>This PC is the <span className="font-semibold text-white/70">server</span></>}
+              </span>
+              <button type="button" onClick={() => (window as any).biomeDesktop?.openSetup?.()}
+                className="rounded-full border border-white/15 px-2.5 py-1 font-semibold text-[#9fe870] hover:border-[#9fe870]/50">
+                {desk.mode === "client" ? "Change server" : "Connect to another server"}
+              </button>
+            </div>
+          )}
 
           <div className="relative z-10 mt-5 flex items-center justify-between border-t border-white/[.07] pt-4 text-[8px] text-white/30">
             <span className="inline-flex items-center gap-1.5"><span className="bmx-status-dot h-1.5 w-1.5 rounded-full bg-emerald-300" /> Platform ready</span>

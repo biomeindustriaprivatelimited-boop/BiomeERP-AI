@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { findByUsername, verifyPassword, publicUser, loadUsers } from "@/lib/authServer";
-import { SESSION_COOKIE, signSession } from "@/lib/authToken";
+import {
+  SESSION_COOKIE,
+  SESSION_TTL_SECONDS,
+  SERVER_PC_DEVELOPER_TTL_SECONDS,
+  SERVER_PC_HEADER,
+  isServerPcRequest,
+  signSession,
+} from "@/lib/authToken";
 import { effectivePermissions } from "@/lib/access";
 import { recordAudit } from "@/lib/audit";
 
@@ -80,6 +87,13 @@ export async function POST(req: NextRequest) {
     sessionPlant = plant;
   }
 
+  // The developer signing in at the server PC itself stays signed in there
+  // (one year, survives restarts) until they press Sign out. Everyone else,
+  // and the developer on a client PC, gets the normal working-day session.
+  const onServerPc = await isServerPcRequest(req.headers.get(SERVER_PC_HEADER));
+  const persistent = user.role === "developer" && onServerPc;
+  const ttl = persistent ? SERVER_PC_DEVELOPER_TTL_SECONDS : SESSION_TTL_SECONDS;
+
   const token = await signSession({
     uid: user.id,
     username: user.username,
@@ -93,11 +107,14 @@ export async function POST(req: NextRequest) {
     // permission from working until the cookie expires.
     perms: effectivePermissions(user.role, user.access),
     av: user.accessVersion || 0,
-  });
+  }, ttl);
 
   recordAudit({
     action: "LOGIN", userId: user.id, userName: user.name, role: user.role,
-    plant: sessionPlant, detail: sessionPlant ? `Signed in for ${sessionPlant}` : undefined,
+    plant: sessionPlant,
+    detail: persistent
+      ? "Signed in on the server PC (stays signed in until signed out)"
+      : sessionPlant ? `Signed in for ${sessionPlant}` : undefined,
   });
 
   const res = NextResponse.json({
@@ -115,10 +132,15 @@ export async function POST(req: NextRequest) {
   // developer session someone else can sit down at). The token itself
   // still expires after eight hours server-side, so a session left open
   // all day dies on its own as well.
+  //
+  // The one exception is the developer on the server PC: the PC where the
+  // developer is signed in IS the server, so that sign-in is kept (a real
+  // expiry, written to disk) until the developer signs out by hand.
   res.cookies.set(SESSION_COOKIE, token, {
     httpOnly: true,
     sameSite: "lax",
     path: "/",
+    ...(persistent ? { maxAge: SERVER_PC_DEVELOPER_TTL_SECONDS } : {}),
   });
 
   return res;

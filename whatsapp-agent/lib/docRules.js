@@ -54,21 +54,78 @@ function side(issuedByUs, biomeType, vendorType) {
  * Did WE issue this page? GSTIN on the letterhead decides; the buyer
  * block ("Billed to: BIOME...") explicitly does NOT make it ours.
  */
-function issuerIsUs(text) {
-  // OCR swaps O and 0 freely inside GSTINs; normalise candidates before
-  // judging them (a real vendor GSTIN arrived as "03ABDFGO879P1Z1").
+/**
+ * Our PAN — the middle ten characters of every Biome GSTIN, whichever
+ * state the registration is in (06… Haryana, 27… Maharashtra).
+ *
+ * Comparing the whole GSTIN to "06AAJCB1927H1ZS" letter-for-letter made
+ * OUR OWN invoice read as a vendor's whenever OCR slipped one character
+ * ("…H1Z5", "O6AAJ…"), the GSTIN line was cropped off the photo, or the
+ * Gangakhed registration was printed — the consignee's GSTIN was then the
+ * "first GSTIN", the invoice was typed vendor_tax_invoice, it was HELD in
+ * staging waiting for "our invoice", and the whole supply set never formed.
+ */
+const OUR_PAN = OUR_GSTIN.slice(2, 12);
+
+/** Fold OCR look-alikes together so a misread character still compares equal. */
+function foldOcr(s) {
+  return String(s || "")
+    .toUpperCase()
+    .replace(/O|Q|D/g, "0")
+    .replace(/[IL|!]/g, "1")
+    .replace(/S/g, "5")
+    .replace(/B/g, "8")
+    .replace(/Z/g, "2")
+    .replace(/G/g, "6");
+}
+
+/** True for any GSTIN-shaped token that carries our PAN (tolerant of OCR slips). */
+function isOurGstin(token) {
+  const t = String(token || "").toUpperCase().replace(/\s/g, "");
+  return t.length === 15 && foldOcr(t.slice(2, 12)) === foldOcr(OUR_PAN);
+}
+
+/**
+ * Where our GSTIN and the first OTHER GSTIN sit on the page (-1 = absent).
+ */
+function gstinPositions(text) {
   const up = String(text || "").toUpperCase();
-  const candidates = up.match(/\b[0-9O]{2}[A-Z]{5}[0-9O]{4}[A-Z][0-9A-Z]Z[0-9A-Z]\b/g) || [];
-  const firstGstin = candidates.length
-    ? candidates[0].replace(/^(..)/, (m) => m.replace(/O/g, "0")).replace(/([A-Z]{5})([0-9O]{4})/, (m, a, b) => a + b.replace(/O/g, "0"))
-    : null;
-  if (firstGstin === OUR_GSTIN) return true;
-  if (firstGstin) return false;
-  // No GSTIN read (photo/scan): Biome on the top third and not as buyer.
-  const t = norm(text);
+  let ourPos = -1;
+  let foreignPos = -1;
+  const re = /\b[0-9A-Z]{15}\b/g;
+  let m;
+  while ((m = re.exec(up))) {
+    const tok = m[0];
+    if (isOurGstin(tok)) {
+      if (ourPos === -1) ourPos = m.index;
+      continue;
+    }
+    // OCR swaps O and 0 freely inside GSTINs; normalise candidates before
+    // judging them (a real vendor GSTIN arrived as "03ABDFGO879P1Z1").
+    const fixed = tok.replace(/^(..)/, (x) => x.replace(/O/g, "0")).replace(/^(.{7})(.{4})/, (x, a, b) => a + b.replace(/O/g, "0"));
+    if (foreignPos === -1 && /^\d{2}[A-Z]{5}\d{4}[A-Z][0-9A-Z]Z[0-9A-Z]$/.test(fixed)) foreignPos = m.index;
+  }
+  return { ourPos, foreignPos };
+}
+
+const AS_BUYER_RE = /(?:billed\s*to|bill\s*to|buyer|shipped\s*to|consignee|recipient)\s*:?[\s\S]{0,200}?biome\s*industria/i;
+
+function issuerIsUs(text) {
+  const { ourPos, foreignPos } = gstinPositions(text);
+  // Our GSTIN printed before anyone else's: our letterhead.
+  if (ourPos !== -1 && (foreignPos === -1 || ourPos < foreignPos)) return true;
+  // Someone else's GSTIN first and ours further down: we are the buyer.
+  if (ourPos !== -1) return false;
+
+  // Our GSTIN not legible (photo/scan, cropped). Fall back to the
+  // letterhead: Biome at the very top of page one, before any other
+  // party's GSTIN, and not in a buyer block.
+  const t = String(text || "");
   const i = t.search(BIOME_RE);
   if (i === -1) return false;
-  const asBuyer = /(?:billed\s*to|bill\s*to|buyer|shipped\s*to|consignee)\s*:?[\s\S]{0,200}?biome\s*industria/i.test(t);
+  if (foreignPos !== -1 && i > foreignPos) return false;
+  // Is the FIRST Biome mention inside a buyer block ("Billed to: Biome…")?
+  const asBuyer = AS_BUYER_RE.test(norm(t.slice(Math.max(0, i - 200), i + 20)));
   // "Letterhead" means the very top of page one, not the top third of a
   // merged multi-page blob — that read a vendor invoice as ours.
   return i < 300 && !asBuyer;
@@ -248,4 +305,4 @@ function decideType({ text, fileName, clients, vendors }) {
   return s || f || null;
 }
 
-module.exports = { decideType, byStructure, byFileName, issuerIsUs };
+module.exports = { decideType, byStructure, byFileName, issuerIsUs, isOurGstin, gstinPositions };

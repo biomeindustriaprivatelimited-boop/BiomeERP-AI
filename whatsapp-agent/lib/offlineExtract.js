@@ -28,6 +28,7 @@
  */
 
 const { findReferences } = require("./reference");
+const docRules = require("./docRules");
 
 // ---------------------------------------------------------------------
 // Patterns — every one of these is a shape, not a guess
@@ -242,11 +243,13 @@ function classifyFromText(text) {
   // If that first GSTIN is ours, the document is ours. If it belongs to
   // someone else, it is theirs. That is a fact on the page, not an
   // inference from layout.
-  const OUR_GSTIN_CODE = "06AAJCB1927H1ZS";
-  const gstinsInOrder = String(text.toUpperCase().match(GSTIN_RE) || []);
-  const firstGstin = (text.toUpperCase().match(/\b\d{2}[A-Z]{5}\d{4}[A-Z][0-9A-Z]Z[0-9A-Z]\b/) || [])[0] || null;
-  const gstinSaysOurs = firstGstin === OUR_GSTIN_CODE;
-  const gstinSaysTheirs = Boolean(firstGstin) && firstGstin !== OUR_GSTIN_CODE;
+  // Our GSTIN is recognised by its PAN, tolerant of OCR slips and of the
+  // other state registration (see docRules.isOurGstin). An exact
+  // "06AAJCB1927H1ZS" comparison turned our own photographed invoices
+  // into vendor invoices, which were then held forever.
+  const { ourPos, foreignPos } = docRules.gstinPositions(text);
+  const gstinSaysOurs = ourPos !== -1 && (foreignPos === -1 || ourPos < foreignPos);
+  const gstinSaysTheirs = ourPos !== -1 && !gstinSaysOurs;
 
   // Where does Biome appear? Near the top = letterhead = ours.
   const firstBiome = Math.min(
@@ -273,7 +276,9 @@ function classifyFromText(text) {
     ? true
     : gstinSaysTheirs
       ? false
-      : biomePresent && topThird && !biomeIsBuyer && !biomeIsBuyerMultiline;
+      : biomePresent && topThird && !biomeIsBuyer && !biomeIsBuyerMultiline &&
+        // our GSTIN unreadable: Biome must still come before any other party's GSTIN
+        (foreignPos === -1 || firstBiome < foreignPos);
 
   let base = null;
   let best = 0;
@@ -556,8 +561,7 @@ function extractOffline(text, ctx = {}) {
   const cls = classifyFromText(raw);
 
   const gstins = [...new Set(upper.match(GSTIN_RE) || [])];
-  const OUR_GSTIN = "06AAJCB1927H1ZS";
-  const otherGstin = gstins.find((g) => g !== OUR_GSTIN) || null;
+  const otherGstin = gstins.find((g) => !docRules.isOurGstin(g)) || null;
 
   // Needed before the vehicle scan, which uses it to reject plate-shaped
   // fragments of our own invoice numbers.
@@ -657,7 +661,7 @@ function extractOffline(text, ctx = {}) {
     vendorDocNo: reference ? reference.vendorDocNo : vendorOwnDocNo,
     vendorOwnDocNo,
     vendorName: vendor?.name || null,
-    vendorGstin: cls.issuedByUs ? otherGstin : gstins.find((g) => g !== OUR_GSTIN) || null,
+    vendorGstin: cls.issuedByUs ? otherGstin : otherGstin,
     clientName: client?.name || null,
     clientGstin: cls.issuedByUs ? otherGstin : null,
     documentDate: pickDocumentDate(raw, dates, biomeDocNoRaw),

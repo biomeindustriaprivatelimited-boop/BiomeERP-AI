@@ -382,6 +382,7 @@ async function connect() {
       persistChats();
       log(`found ${Object.keys(groups || {}).length} group(s)`);
       autoSelectSalesGroups();
+      replayUnscoped();
       // Anything held while the agent was off is re-offered now, and again
       // every 20 minutes — so a vendor paper never waits on a human to
       // press a button once our document for that supply is filed.
@@ -659,6 +660,21 @@ function describeMedia(msg) {
 
 const queue = [];
 let draining = false;
+/** Group documents that arrived before any chat scope existed (first run). */
+const unscopedHeld = [];
+const ignoredChatsLogged = new Set();
+
+function replayUnscoped() {
+  if (!unscopedHeld.length) return;
+  const held = unscopedHeld.splice(0);
+  let queuedNow = 0;
+  for (const msg of held) {
+    const before = queue.length;
+    enqueue(msg);
+    if (queue.length > before) queuedNow += 1;
+  }
+  log(`first-run: ${queuedNow} of ${held.length} document(s) received before the group list loaded were queued now`);
+}
 
 /**
  * Historical scan state. WhatsApp only hands over the history the LINKED
@@ -711,7 +727,26 @@ function enqueue(msg) {
   const jid = msg.key.remoteJid || "";
   if (jid === "status@broadcast") return; // WhatsApp Status posts
   const workflowChat = cfg.allowedChats.includes(jid) || cfg.receivingChats.includes(jid) || cfg.labChats.includes(jid);
-  if (!cfg.watchAllChats && !workflowChat) return;
+  if (!cfg.watchAllChats && !workflowChat) {
+    if (!describeMedia(msg) || !jid.endsWith("@g.us")) return;
+    const nothingChosenYet = !cfg.allowedChats.length && !cfg.receivingChats.length && !cfg.labChats.length;
+    if (nothingChosenYet) {
+      // First run: WhatsApp delivers the messages that arrived while the PC
+      // was off the moment it connects — BEFORE the group list is fetched
+      // and the supply group auto-selected. Dropping them here lost the
+      // whole first batch with no trace. Keep them and replay once a scope
+      // exists (autoSelectSalesGroups → replayUnscoped).
+      if (unscopedHeld.length < 500) unscopedHeld.push(msg);
+      return;
+    }
+    // A document in a chat nobody selected. Say so once per chat, so
+    // "documents are not being saved" has an answer in the log.
+    if (!ignoredChatsLogged.has(jid)) {
+      ignoredChatsLogged.add(jid);
+      log(`ignoring documents from "${knownChats.get(jid)?.name || jid}" — this group is not selected. Select it in WhatsApp → Chats to save its documents.`);
+    }
+    return;
+  }
 
   const media = describeMedia(msg);
   if (!media) return; // plain text, sticker, call, etc.
@@ -1344,10 +1379,24 @@ async function handleMedia(msg, media) {
   log(`[3/6] reference: ${reference ? reference.canonical : "none on this page"}`);
 
   const docType = extracted?.documentType || null;
+  // The coordination reference is printed ONLY on our own invoice /
+  // delivery note. A page that carries one in its own text but whose
+  // type could not be read (header cropped, blurred photo) is ours —
+  // holding it in staging "until our invoice arrives" waited for itself,
+  // and kept the vendor papers of that supply waiting with it.
+  const referenceOnPage = Boolean(
+    reference && !inheritedFrom && extracted &&
+    ((extracted.referenceNo && parseReference(extracted.referenceNo, opts)?.canonical === reference.canonical) ||
+      (extracted.transcription && parseReference(extracted.transcription, opts)?.canonical === reference.canonical))
+  );
   const isOurs =
     docType === "biome_tax_invoice" ||
     docType === "biome_delivery_challan" ||
-    docType === "biome_eway_bill";
+    docType === "biome_eway_bill" ||
+    (referenceOnPage && (!docType || docType === "other"));
+  if (isOurs && !/^biome_/.test(String(docType))) {
+    log(`"${media.fileName}" type unclear but prints ${reference.canonical} — filing it as our document for that supply`);
+  }
 
   // CLIENT RECEIVING: match by vehicle + client within 0..3 days and use
   // FIFO when the same truck has more than one supply in the window. A
@@ -2247,6 +2296,8 @@ const server = http.createServer(async (req, res) => {
         "utf8"
       );
       log(watchAll ? "now watching all chats" : allowed.length ? `now watching ${allowed.length} chat(s)` : "watching no chats until a scope is selected");
+      ignoredChatsLogged.clear();
+      replayUnscoped();
       return json(res, 200, { ok: true, allowedChats: allowed, trackingAll: watchAll, receivingChats, labChats, learnChats });
     }
 
