@@ -43,10 +43,11 @@ export async function GET(req: NextRequest) {
   const s = currentSettings();
   return NextResponse.json({
     settings: {
-      companyCodes: s.companyCodes ?? ["BDC"],
+      companyCodes: s.companyCodes && s.companyCodes.length ? s.companyCodes : ["BDC", "BIPL"],
       allowedChats: s.allowedChats ?? [],
       watchAllChats: s.watchAllChats === true,
-      ignoreOwnMessages: s.ignoreOwnMessages !== false,
+      // Same default as the agent (whatsapp-agent/agent.js → settings()).
+      ignoreOwnMessages: s.ignoreOwnMessages === true,
       autoProcess: s.autoProcess !== false,
       saveRoot: s.saveRoot ?? null,
     },

@@ -40,7 +40,10 @@ export default function AutomationSettings() {
     setSettings(next); setSaving(true);
     try {
       const res = await fetch("/api/whatsapp-settings", {
-        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(next),
+        // Only the switch that changed. Sending the whole object wrote back
+        // the chat list as it was when this page loaded — a group selected
+        // on the WhatsApp page afterwards was silently un-selected.
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "Could not save automation settings.");

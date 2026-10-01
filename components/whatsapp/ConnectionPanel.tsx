@@ -204,6 +204,9 @@ export default function ConnectionPanel({ state, loadError, onConnect, onDisconn
         </div>
       )}
 
+      {/* ---- Diagnostics: where each message stopped ---- */}
+      {state?.diag && <Diagnostics d={state.diag} build={state.build} notADocument={state.stats?.notADocument ?? 0} />}
+
       {/* ---- Where things are saved ---- */}
       {state?.inbox && (
         <div className="mt-4 flex items-start gap-2.5 border-t border-biome-line pt-3">
@@ -217,5 +220,65 @@ export default function ConnectionPanel({ state, loadError, onConnect, onDisconn
         </div>
       )}
     </GlassCard>
+  );
+}
+
+/**
+ * "Watching, but nothing filed" — answered on the page.
+ *
+ * Every message WhatsApp delivers ends in one of these counters, so the
+ * first non-zero box after "Messages received" is where documents stop.
+ * The most likely cause is spelled out in plain words above the numbers.
+ */
+function Diagnostics({ d, build, notADocument }: { d: NonNullable<AgentState["diag"]>; build?: string; notADocument: number }) {
+  const [open, setOpen] = useState(false);
+  let verdict: { tone: "ok" | "warn" | "bad"; text: string };
+  if (!d.selectedChats.length) verdict = { tone: "bad", text: "No chat is selected. Open “Which chats to watch” below and select the supply group." };
+  else if (d.messagesSeen === 0) verdict = { tone: "warn", text: "No message has arrived since the agent started. Send a test document in the selected group. If it still shows 0, press Unlink and link WhatsApp again." };
+  else if (d.undecryptable > 0 && d.queued === 0) verdict = { tone: "bad", text: `${d.undecryptable} message(s) could not be decrypted on this PC. Press Unlink, then link WhatsApp again with the QR — this renews the encryption keys.` };
+  else if (d.fromUnselectedChat > 0 && d.queued === 0) verdict = { tone: "bad", text: "Documents are arriving, but from a chat that is not selected. Select that group in “Which chats to watch”." };
+  else if (d.failed > 0 && d.processed === 0) verdict = { tone: "bad", text: "Documents arrive but could not be downloaded or read — see the log below." };
+  else if (d.processed > 0 && notADocument >= d.processed) verdict = { tone: "warn", text: "Documents were read but put under “Not a document” (no invoice / challan / reference found). Check the log below for what was read." };
+  else if (d.queued > 0) verdict = { tone: "ok", text: `${d.processed} of ${d.queued} document(s) processed${d.lastDocumentAt ? ` — last at ${new Date(d.lastDocumentAt).toLocaleTimeString()}` : ""}.` };
+  else verdict = { tone: "warn", text: "Messages arrive, but none of them is a document or photo yet." };
+
+  const tone = verdict.tone === "ok" ? "border-emerald-500/30 bg-emerald-500/[.06] text-emerald-600" : verdict.tone === "warn" ? "border-amber-500/30 bg-amber-500/[.06] text-amber-600" : "border-rose-500/30 bg-rose-500/[.06] text-rose-500";
+  const boxes: [string, number][] = [
+    ["Messages received", d.messagesSeen],
+    ["Could not decrypt", d.undecryptable],
+    ["Not a document/photo", d.noMedia],
+    ["From unselected chat", d.fromUnselectedChat],
+    ["Queued for reading", d.queued],
+    ["Processed", d.processed],
+    ["Failed", d.failed],
+  ];
+  return (
+    <div className="mt-4 rounded-xl border border-biome-line">
+      <button type="button" onClick={() => setOpen((v) => !v)} className="flex w-full items-start gap-2.5 px-3 py-2.5 text-left">
+        <span className={`mt-0.5 shrink-0 rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider ${tone}`}>Diagnostics</span>
+        <span className="flex-1 text-[11.5px] leading-relaxed text-biome-text">{verdict.text}</span>
+        <span className="text-[10px] text-biome-muted">{open ? "Hide" : "Details"}</span>
+      </button>
+      {open && (
+        <div className="space-y-2.5 border-t border-biome-line px-3 py-3">
+          <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4 lg:grid-cols-7">
+            {boxes.map(([label, n]) => (
+              <div key={label} className="rounded-lg border border-biome-line px-2 py-1.5">
+                <p className="text-[9px] uppercase tracking-wider text-biome-muted">{label}</p>
+                <p className="font-mono text-[14px] text-biome-text">{n}</p>
+              </div>
+            ))}
+          </div>
+          <p className="text-[10.5px] text-biome-muted">
+            Watching: <span className="text-biome-text">{d.selectedChats.length ? d.selectedChats.join(", ") : "nothing"}</span>
+            {" · "}Automatic processing: <span className="text-biome-text">{d.autoProcess ? "on" : "off"}</span>
+            {build ? <> · Agent build <span className="font-mono">{build}</span></> : null}
+          </p>
+          <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-lg bg-black/40 p-2.5 font-mono text-[10px] leading-relaxed text-emerald-100/80">
+            {d.log.length ? d.log.join("\n") : "No log lines yet."}
+          </pre>
+        </div>
+      )}
+    </div>
   );
 }

@@ -222,9 +222,40 @@ let sock = null;
 let reconnectTimer = null;
 let intentionalLogout = false;
 
+/**
+ * The last 80 log lines, kept in memory so the WhatsApp page can show them
+ * (Diagnostics) — nobody should have to dig a log file out of %APPDATA%
+ * to learn why a document was not filed.
+ */
+const recentLog = [];
 function log(...args) {
   console.log(`[Biome WhatsApp Agent ${new Date().toISOString()}]`, ...args);
+  try {
+    const line = args.map((a) => (typeof a === "string" ? a : a instanceof Error ? a.message : JSON.stringify(a))).join(" ");
+    recentLog.push(`${new Date().toLocaleTimeString("en-IN", { hour12: false })}  ${line}`.slice(0, 400));
+    if (recentLog.length > 80) recentLog.shift();
+  } catch {
+    /* logging must never throw */
+  }
 }
+
+/**
+ * What happened to every message since the agent started — the answer to
+ * "Watching, but nothing is filed". Each counter is one place a message
+ * can stop.
+ */
+const diag = {
+  messagesSeen: 0, // every message WhatsApp delivered
+  undecryptable: 0, // arrived empty — could not be decrypted on this device
+  noMedia: 0, // text, sticker, reaction… (not a document or photo)
+  fromUnselectedChat: 0, // a document/photo in a chat that is not selected
+  heldUntilGroupList: 0, // first run, before any chat was chosen
+  alreadyHandled: 0, // the same message delivered twice
+  queued: 0, // sent for reading
+  processed: 0, // read and recorded (filed / review / not-a-document)
+  failed: 0, // download or reading error
+  lastDocumentAt: null,
+};
 
 function setStatus(next, extra = {}) {
   state.status = next;
@@ -446,6 +477,7 @@ async function connect() {
     // re-delivered message from being filed twice.
     const cutoff = Date.now() / 1000 - 7 * 86400;
     for (const msg of payload.messages || []) {
+      diag.messagesSeen += 1;
       if (msg?.key?.id && msg.message) {
         recentMessages.set(msg.key.id, msg);
         if (recentMessages.size > 1000) recentMessages.delete(recentMessages.keys().next().value);
@@ -455,6 +487,7 @@ async function connect() {
       // which looked exactly like "the agent ignores the group".
       if (!msg?.message && msg?.messageStubType) {
         state.undecryptable = (state.undecryptable || 0) + 1;
+        diag.undecryptable += 1;
         const jid = msg.key?.remoteJid || "";
         if (state.undecryptable <= 20 || state.undecryptable % 50 === 0) {
           log(`could not decrypt a message in "${knownChats.get(jid)?.name || jid}" (${(msg.messageStubParameters || []).join(", ") || "stub " + msg.messageStubType}) — WhatsApp will re-send it; if this repeats for every message, Unlink and link WhatsApp again.`);
@@ -759,10 +792,12 @@ function enqueue(msg) {
       // whole first batch with no trace. Keep them and replay once a scope
       // exists (autoSelectSalesGroups → replayUnscoped).
       if (unscopedHeld.length < 500) unscopedHeld.push(msg);
+      diag.heldUntilGroupList += 1;
       return;
     }
     // A document in a chat nobody selected. Say so once per chat, so
     // "documents are not being saved" has an answer in the log.
+    diag.fromUnselectedChat += 1;
     if (!ignoredChatsLogged.has(jid)) {
       ignoredChatsLogged.add(jid);
       log(`ignoring documents from "${knownChats.get(jid)?.name || jid}" — this group is not selected. Select it in WhatsApp → Chats to save its documents.`);
@@ -771,8 +806,10 @@ function enqueue(msg) {
   }
 
   const media = describeMedia(msg);
-  if (!media) return; // plain text, sticker, call, etc.
-  if (store.hasMessage(msg.key.id)) return; // already handled
+  if (!media) { diag.noMedia += 1; return; } // plain text, sticker, call, etc.
+  if (store.hasMessage(msg.key.id)) { diag.alreadyHandled += 1; return; } // already handled
+  diag.queued += 1;
+  diag.lastDocumentAt = new Date().toISOString();
 
   queue.push({ msg, media });
   log(`queued "${media.fileName}" (${media.kind}) from "${knownChats.get(jid)?.name || jid}" — ${queue.length} waiting`);
@@ -790,8 +827,10 @@ async function drain() {
       state.processing += 1;
       try {
         await handleMedia(job.msg, job.media);
+        diag.processed += 1;
       } catch (err) {
-        log("failed to handle a message:", err.message);
+        diag.failed += 1;
+        log(`failed to handle "${job.media?.fileName}":`, err.message);
         recordFailure(job, err);
       } finally {
         state.processing -= 1;
@@ -1857,6 +1896,17 @@ const server = http.createServer(async (req, res) => {
         // this process's environment — checking process.env alone made the
         // page say "add a Gemini key" while a key was set and in use.
         hasAiKey: Boolean(aiKeys().gemini || aiKeys().anthropic),
+        diag: {
+          ...diag,
+          selectedChats: (() => {
+            const c = settings();
+            return c.watchAllChats
+              ? ["(all chats)"]
+              : [...new Set([...c.allowedChats, ...c.receivingChats, ...c.labChats])].map((j) => knownChats.get(j)?.name || j);
+          })(),
+          autoProcess: settings().autoProcess,
+          log: recentLog.slice(-60),
+        },
         dataRoot: PATHS.root,
         inbox: PATHS.inbox,
         backfill,

@@ -260,6 +260,23 @@ export interface AgentState {
   processing: number;
   queueDepth: number;
   hasAiKey: boolean;
+  /** What happened to each message since the agent started (Diagnostics). */
+  diag?: {
+    messagesSeen: number;
+    undecryptable: number;
+    noMedia: number;
+    fromUnselectedChat: number;
+    heldUntilGroupList: number;
+    alreadyHandled: number;
+    queued: number;
+    processed: number;
+    failed: number;
+    lastDocumentAt: string | null;
+    selectedChats: string[];
+    autoProcess: boolean;
+    log: string[];
+  };
+  build?: string;
   dataRoot: string;
   inbox: string;
   stats: {
