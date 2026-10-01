@@ -232,8 +232,9 @@ export default function SyncSetting() {
                   <div className="mt-2 rounded-lg border border-amber-500/25 bg-amber-500/[.05] px-3 py-2 text-[10.5px] leading-relaxed text-biome-muted">
                     <p className="font-semibold text-biome-text">One-time router step (same as for Remote Desktop):</p>
                     <p>
-                      In the office router open <b>Port Forwarding</b> and add: external port <b>{cfg.port}</b> → this PC&rsquo;s
-                      address <b>{local[0] || "192.168.x.x"}</b>, port <b>{cfg.port}</b>, TCP. Keep this PC&rsquo;s office address
+                      In the office router open <b>Port Forwarding</b> and add: external port <b>30360</b> → this PC&rsquo;s
+                      address <b>{local[0] || "192.168.x.x"}</b>, port <b>{cfg.port}</b>, TCP. (Not 30359 — that one is Remote Desktop;
+                      one port can carry only one program.) Keep this PC&rsquo;s office address
                       fixed (DHCP reservation in the router), like you did for Remote Desktop.
                     </p>
                     <p className="mt-1">

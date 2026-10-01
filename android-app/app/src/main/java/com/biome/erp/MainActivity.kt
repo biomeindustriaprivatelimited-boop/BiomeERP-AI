@@ -157,7 +157,7 @@ class MainActivity : AppCompatActivity() {
     // Anywhere else: the office static IP built into the app.
     // The last address that worked is tried as well.
 
-    private val builtIn = listOf("http://122.180.246.211:4173", "http://122.180.246.211:30359")
+    private val builtIn = listOf("http://122.180.246.211:30360", "http://122.180.246.211:4173")
     private val main = Handler(Looper.getMainLooper())
     @Volatile private var searching = false
 

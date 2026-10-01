@@ -1,7 +1,7 @@
 {
-  "_comment": "Office static IP built into every installer. Client PCs try these after looking on the office network. Port 4173 is opened on the router automatically (UPnP) when the router allows it; 30359 is the port given by the office.",
+  "_comment": "Office static IP built into every installer. Client PCs try these after looking on the office network. Router rule needed: external port 30360 -> server PC (192.168.1.5) port 4173, TCP. Port 30359 is Remote Desktop and must not be used here. 4173 is kept for routers that accept the automatic (UPnP) opening.",
   "addresses": [
-    "http://122.180.246.211:4173",
-    "http://122.180.246.211:30359"
+    "http://122.180.246.211:30360",
+    "http://122.180.246.211:4173"
   ]
 }

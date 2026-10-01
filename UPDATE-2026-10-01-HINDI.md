@@ -66,7 +66,7 @@ Log file: `%APPDATA%\Biome\logs\whatsapp-agent.log`
 - **Router:** server PC router se khud port 4173 kholne ki koshish karta hai (UPnP).
   Settings → Server & Sync me "Automatic setup" me dikhta hai ki hua ya nahi. Agar router ne
   mana kiya, to ek baar router me port forward: external **4173** → server PC, port **4173**
-  (ya aapka port **30359** → server PC port **4173**) — app dono try karta hai.
+  — app me ab external port **30360** bake hai: router rule **30360 → 192.168.1.5 : 4173 (TCP)**. 30359 Remote Desktop ka hai, use nahi kar sakte.
 - **Developer server PC par signed out / server PC band:** client PC aur phone par login nahi
   hoga — "Server PC is not ready" ya "Server connection lost" dikhega, aur ready hote hi
   apne aap hat jaayega.
