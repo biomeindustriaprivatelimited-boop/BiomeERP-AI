@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { findByUsername, verifyPassword, publicUser, loadUsers } from "@/lib/authServer";
+import { findByUsername, verifyPassword, publicUser, loadUsers, SEEDED_USERNAME, SEEDED_ADMIN_PASSWORD } from "@/lib/authServer";
 import {
   SESSION_COOKIE,
   SESSION_TTL_SECONDS,
@@ -20,10 +20,20 @@ export const dynamic = "force-dynamic";
  * NOT list usernames: this server is reachable from the plant machines,
  * and a list of valid usernames is half of a password guess.
  */
-export async function GET() {
+export async function GET(req: NextRequest) {
   const users = loadUsers();
-  const firstRun = users.length === 1 && users[0].username === "admin" && users[0].mustChangePassword;
-  return NextResponse.json({ firstRun });
+  const firstRun =
+    users.length === 1 &&
+    (users[0].username === SEEDED_USERNAME || users[0].username === "admin") &&
+    users[0].mustChangePassword;
+  // The first-time sign-in is shown only on the server PC itself — never to
+  // a phone or PC reaching this server over the network or the internet.
+  const onServerPc = await isServerPcRequest(req.headers.get(SERVER_PC_HEADER));
+  return NextResponse.json(
+    firstRun && onServerPc
+      ? { firstRun: true, username: users[0].username, password: SEEDED_ADMIN_PASSWORD }
+      : { firstRun: false }
+  );
 }
 
 /**

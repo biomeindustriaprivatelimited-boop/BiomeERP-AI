@@ -45,3 +45,12 @@ Remote Desktop jaisa hi tareeka:
   `ignoring documents from "<group>" — this group is not selected`.
 
 Log file: `%APPDATA%\Biome\logs\whatsapp-agent.log`
+
+## 3. Pehla login (naya server PC)
+- Naye server PC par pehli baar: **User ID `developer`**, **Password `biome-admin`**.
+  Login screen par ye hint sirf server PC par dikhta hai (internet/doosre PC par nahi).
+- Login ke turant baad apna naya password set karna padega (kam se kam 8 akshar).
+- Developer → Users me sabke user ID / password banayein. Wahi ID-password har client PC,
+  phone par chalega, aur tab tak same rahega jab tak developer/admin khud na badle.
+- Client PC par koi default ID nahi hoti — wahan sirf server ke banaye ID se login hota hai.
+- Purane server (jisme pehle se users hain) par koi naya default account nahi banta.

@@ -92,7 +92,10 @@ function hasLocalData() {
     if (!fs.existsSync(file)) return false;
     const users = (JSON.parse(fs.readFileSync(file, "utf8")) || {}).users || [];
     if (!Array.isArray(users) || users.length === 0) return false;
-    const onlySeed = users.length === 1 && users[0].username === "admin" && users[0].mustChangePassword === true;
+    const onlySeed =
+      users.length === 1 &&
+      (users[0].username === "admin" || users[0].username === "developer") &&
+      users[0].mustChangePassword === true;
     return !onlySeed;
   } catch (_) {
     // Unreadable file: assume it is real data rather than risk hiding a server.

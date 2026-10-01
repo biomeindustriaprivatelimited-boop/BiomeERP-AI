@@ -40,6 +40,14 @@ export default function LoginPage() {
    * real account — this link is the way out without reinstalling.
    */
   const [desk, setDesk] = useState<{ mode: string; serverUrl: string } | null>(null);
+  /** Brand-new server, seen from the server PC itself: show the first sign-in. */
+  const [firstRun, setFirstRun] = useState<{ username: string; password: string } | null>(null);
+  useEffect(() => {
+    fetch("/api/auth/login", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((j) => { if (j?.firstRun && j.username) setFirstRun({ username: j.username, password: j.password }); })
+      .catch(() => {});
+  }, []);
   useEffect(() => {
     const d = (window as any).biomeDesktop;
     if (!d?.getAppInfo || !d?.openSetup) return;
@@ -130,6 +138,16 @@ export default function LoginPage() {
           </div>
 
           <div className={`relative z-10 mt-7 space-y-4 ${loginReady ? "bmx-rise" : "opacity-0"}`} style={{ animationDelay: ".3s" }}>
+            {firstRun && (
+              <div className="rounded-xl border border-[#9fe870]/30 bg-[#9fe870]/[.07] px-3 py-2.5 text-[10.5px] leading-relaxed text-white/75">
+                <p className="font-semibold text-[#9fe870]">First time on this server PC</p>
+                <p>
+                  User ID <button type="button" onClick={() => { setUserId(firstRun.username); setPassword(firstRun.password); }} className="font-mono font-bold text-white underline decoration-dotted">{firstRun.username}</button>
+                  {" "}· Password <span className="font-mono font-bold text-white">{firstRun.password}</span>
+                  {" "}— you will set your own password right after.
+                </p>
+              </div>
+            )}
             <Field label="User ID" icon={<UserRound size={15} />} dark filled={userId.trim().length > 0}>
               <input value={userId} onChange={e => setUserId(e.target.value)} onKeyDown={e => e.key === "Enter" && signIn()} placeholder="Enter your User ID" autoComplete="username" className="biome-login-input biome-login-input-dark bmx-input pr-9" />
             </Field>

@@ -63,7 +63,13 @@ function usersFile(): string {
   return path.join(paths.configDir, "users.json");
 }
 
-/** The password the first admin account is created with. */
+/**
+ * The first account on a brand-new server: the DEVELOPER, so the person
+ * setting up the server PC can sign in, become the server's permanent
+ * developer session, and create everyone else's user IDs. It must change
+ * its password at the first sign-in.
+ */
+export const SEEDED_USERNAME = "developer";
 export const SEEDED_ADMIN_PASSWORD = "biome-admin";
 
 function hashPassword(password: string, salt: string): string {
@@ -86,9 +92,12 @@ export function makeCredentials(password: string): { salt: string; hash: string 
 }
 
 /**
- * Reads the user list, creating a single admin account the first time so
- * the app is never locked out of itself. The seeded account must change
+ * Reads the user list, creating a single developer account the first time
+ * so the app is never locked out of itself. The seeded account must change
  * its password before it can do anything.
+ *
+ * Only on an EMPTY user list — an existing server never gets a new account
+ * with a publicly known password added behind its back.
  */
 export function loadUsers(): User[] {
   const file = readJson<UserFile>(usersFile(), { users: [] });
@@ -99,9 +108,9 @@ export function loadUsers(): User[] {
   const now = new Date().toISOString();
   const seeded: User = {
     id: crypto.randomUUID(),
-    username: "admin",
-    name: "Administrator",
-    role: "admin",
+    username: SEEDED_USERNAME,
+    name: "Developer",
+    role: "developer",
     plants: [],
     active: true,
     mustChangePassword: true,
