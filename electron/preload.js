@@ -18,6 +18,9 @@ contextBridge.exposeInMainWorld("biomeDesktop", {
   getAppInfo: () => ipcRenderer.invoke("biome:getAppInfo"),
   // Opens the local "Connect to the Biome server" window (login screen link).
   openSetup: () => ipcRenderer.invoke("biome:openSetup"),
+  // Static IP (Settings → Server & Sync, developer only).
+  detectPublicIp: () => ipcRenderer.invoke("biome:detectPublicIp"),
+  setPublicAddress: (address) => ipcRenderer.invoke("biome:setPublicAddress", address),
 });
 
 contextBridge.exposeInMainWorld("biomeSetup", {

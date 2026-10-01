@@ -20,15 +20,17 @@ juda hi nahi tha.
 - Server PC par pehli baar Windows ek permission maangega (firewall me port 4173 kholne ke
   liye) — **Yes** dabayein, warna doosre PC/phone jud nahi payenge.
 
-### Doosri location (alag network / internet) ke liye "bridge"
-Same office Wi-Fi/LAN par kuch extra nahi chahiye (192.168… address).
-Alag location ke liye **Tailscale** (free, private network) use karein — data internet par
-khula nahi hota:
-1. Server PC par https://tailscale.com/download se Tailscale install karke apne Google account
-   se sign in karein.
-2. Har client PC aur Android phone par bhi Tailscale install karke **usi account** se sign in.
-3. Server PC par Biome → Settings → Server & Sync me "Another location" ke neeche `100.x…`
-   address dikhega. Wahi address client PC ki setup screen / Android app me daalein.
+### Doosri location — office static IP se (koi extra app nahi)
+Remote Desktop jaisa hi tareeka:
+1. **Router me ek baar:** Port Forwarding → external port **4173** → server PC ka office
+   address (jaise 192.168.1.50), port **4173**, TCP. Server PC ka office address fixed rakhein
+   (router me DHCP reservation) — jaise Remote Desktop ke liye kiya hai.
+2. **Server PC:** Biome → Settings → Server & Sync → "Office static IP" me **Detect** dabayein
+   (ya IP khud likhein) → **Save**. Neeche `http://<static-ip>:4173` dikhega — copy kar lein.
+3. **Client PC:** Biome install karke pehli screen par sirf static IP likhein → Connect.
+   **Android:** app me wahi static IP daalein. Port 4173 apne aap lag jaata hai.
+4. Login ab internet se khula hai, isliye strong password rakhein. 8 baar galat password par
+   wo user ID 15 minute ke liye lock ho jaata hai.
 
 ## 2. WhatsApp documents supply set me save nahi ho rahe the
 - **Hamara apna invoice vendor ka samjha ja raha tha** jab OCR GSTIN ka ek akshar galat padhta

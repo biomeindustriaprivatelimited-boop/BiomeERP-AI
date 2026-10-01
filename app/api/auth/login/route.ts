@@ -26,6 +26,38 @@ export async function GET() {
   return NextResponse.json({ firstRun });
 }
 
+/**
+ * Wrong-password lock.
+ *
+ * With a static IP the sign-in page is reachable from the whole internet,
+ * so a password can be guessed by trying thousands. After 8 wrong tries in
+ * 15 minutes the user ID is locked for 15 minutes — a person who mistyped
+ * waits a little; a guessing script is stopped. Kept in memory: a restart
+ * clears it, which is fine for this purpose.
+ */
+const MAX_FAILS = 8;
+const WINDOW_MS = 15 * 60 * 1000;
+const fails = new Map<string, { count: number; first: number; lockedUntil: number }>();
+
+function lockedFor(name: string): number {
+  const f = fails.get(name);
+  if (!f) return 0;
+  const now = Date.now();
+  if (f.lockedUntil > now) return f.lockedUntil - now;
+  if (now - f.first > WINDOW_MS) fails.delete(name);
+  return 0;
+}
+
+function noteFail(name: string) {
+  const now = Date.now();
+  let f = fails.get(name);
+  if (!f || now - f.first > WINDOW_MS) f = { count: 0, first: now, lockedUntil: 0 };
+  f.count += 1;
+  if (f.count >= MAX_FAILS) f.lockedUntil = now + WINDOW_MS;
+  fails.set(name, f);
+  if (fails.size > 5000) fails.delete(fails.keys().next().value as string);
+}
+
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null);
   if (!body) return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
@@ -36,6 +68,15 @@ export async function POST(req: NextRequest) {
 
   if (!username || !password) {
     return NextResponse.json({ error: "Enter your username and password." }, { status: 400 });
+  }
+
+  const lockKey = username.toLowerCase();
+  const wait = lockedFor(lockKey);
+  if (wait > 0) {
+    return NextResponse.json(
+      { error: `Too many wrong passwords. This user ID is locked for ${Math.ceil(wait / 60000)} more minute(s).` },
+      { status: 429 }
+    );
   }
 
   const user = findByUsername(username);
@@ -53,6 +94,7 @@ export async function POST(req: NextRequest) {
       action: "LOGIN_FAILED", userId: "unknown", userName: username, role: "-",
       outcome: "failed", errorMessage: "No such account",
     });
+    noteFail(lockKey);
     return badCredentials;
   }
   if (!verifyPassword(password, user)) {
@@ -60,8 +102,11 @@ export async function POST(req: NextRequest) {
       action: "LOGIN_FAILED", userId: user.id, userName: user.name, role: user.role,
       outcome: "failed", errorMessage: "Wrong password",
     });
+    noteFail(lockKey);
     return badCredentials;
   }
+
+  fails.delete(lockKey);
 
   if (!user.active) {
     return NextResponse.json({ error: "This account has been disabled." }, { status: 403 });

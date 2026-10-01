@@ -158,14 +158,14 @@ class MainActivity : AppCompatActivity() {
         }
         AlertDialog.Builder(this)
             .setTitle("Biome server address")
-            .setMessage("Open the Biome app on the server PC → Settings → Server & Sync, and type the address shown there. Office Wi-Fi: the 192.168… address. Another location: the Tailscale 100.x… address (install Tailscale on this phone too).")
+            .setMessage("Open the Biome app on the server PC → Settings → Server & Sync, and type the address shown there. Office Wi-Fi: the 192.168… address. Anywhere else: the office static IP.")
             .setView(input)
             .setCancelable(serverUrl() != null)
             .setPositiveButton("Connect") { _, _ ->
                 var url = input.text.toString().trim()
                 if (!url.startsWith("http://") && !url.startsWith("https://")) url = "http://$url"
                 // The Biome server listens on 4173; an address typed without a
-                // port ("192.168.1.50" or a Tailscale "100.x" address) gets it.
+                // port ("192.168.1.50" or the office static IP) gets it.
                 try {
                     val u = Uri.parse(url)
                     if (u.port == -1 && u.scheme == "http" && !u.host.isNullOrEmpty()) url = "http://${u.host}:4173"

@@ -652,6 +652,22 @@ function createMainWindow() {
 /* IPC — the Server & Sync card in Settings talks to this              */
 /* ------------------------------------------------------------------ */
 
+/**
+ * The office's static (public) IP — what PCs and phones OUTSIDE the office
+ * type to reach this server, the same way Remote Desktop reaches it. Kept
+ * in its own small file so changing the server/client mode never loses it.
+ */
+function publicAddressFile() {
+  return path.join(app.getPath("userData"), "public-address.json");
+}
+function readPublicAddress() {
+  try {
+    return String(JSON.parse(fs.readFileSync(publicAddressFile(), "utf8")).address || "");
+  } catch (_) {
+    return "";
+  }
+}
+
 ipcMain.handle("biome:getSyncConfig", () => {
   const lan = lanAddresses();
   return {
@@ -659,8 +675,43 @@ ipcMain.handle("biome:getSyncConfig", () => {
     port: PORT,
     lan,
     tailscale: lan.filter(isTailscale),
+    publicAddress: readPublicAddress(),
     configFile: syncConfigFile(),
   };
+});
+
+/** Asks a public echo service which IP the internet sees this office as. */
+ipcMain.handle("biome:detectPublicIp", () => new Promise((resolve) => {
+  const https = require("https");
+  let done = false;
+  const finish = (r) => { if (!done) { done = true; resolve(r); } };
+  const req = https.get("https://api.ipify.org?format=json", (res) => {
+    let body = "";
+    res.on("data", (d) => (body += d));
+    res.on("end", () => {
+      try {
+        const ip = JSON.parse(body).ip;
+        if (/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) return finish({ ok: true, ip });
+      } catch (_) {}
+      finish({ ok: false, error: "Could not read the public IP." });
+    });
+  });
+  req.on("error", (e) => finish({ ok: false, error: `No internet answer (${e.code || e.message}).` }));
+  req.setTimeout(8000, () => { req.destroy(); finish({ ok: false, error: "No answer within 8 seconds." }); });
+}));
+
+ipcMain.handle("biome:setPublicAddress", (_evt, input) => {
+  const raw = String(input || "").trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "");
+  if (raw && !/^[a-z0-9.-]+(:\d{1,5})?$/i.test(raw)) {
+    return { ok: false, error: "Type only the IP or name, like 203.0.113.25" };
+  }
+  try {
+    fs.mkdirSync(path.dirname(publicAddressFile()), { recursive: true });
+    fs.writeFileSync(publicAddressFile(), JSON.stringify({ address: raw, updatedAt: new Date().toISOString() }, null, 2));
+    return { ok: true, address: raw };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
 });
 
 ipcMain.handle("biome:getAppInfo", () => ({ version: app.getVersion(), mode: SYNC.mode, serverUrl: SYNC.serverUrl }));

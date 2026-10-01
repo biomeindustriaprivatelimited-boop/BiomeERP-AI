@@ -24,7 +24,9 @@ import { useSession } from "@/lib/session";
 declare global {
   interface Window {
     biomeDesktop?: {
-      getSyncConfig: () => Promise<{ mode: string; serverUrl: string; port: number; lan: string[]; tailscale?: string[]; configFile: string }>;
+      getSyncConfig: () => Promise<{ mode: string; serverUrl: string; port: number; lan: string[]; tailscale?: string[]; publicAddress?: string; configFile: string }>;
+      detectPublicIp?: () => Promise<{ ok: boolean; ip?: string; error?: string }>;
+      setPublicAddress?: (address: string) => Promise<{ ok: boolean; address?: string; error?: string }>;
       setSyncConfig: (cfg: { mode: string; serverUrl?: string }) => Promise<{ ok: boolean; error?: string; restarting?: boolean }>;
     };
   }
@@ -32,7 +34,11 @@ declare global {
 
 export default function SyncSetting() {
   const { user } = useSession();
-  const [cfg, setCfg] = useState<{ mode: string; serverUrl: string; port: number; lan: string[]; tailscale?: string[] } | null>(null);
+  const [cfg, setCfg] = useState<{ mode: string; serverUrl: string; port: number; lan: string[]; tailscale?: string[]; publicAddress?: string } | null>(null);
+  const [publicIp, setPublicIp] = useState("");
+  const [ipBusy, setIpBusy] = useState(false);
+  const [ipMsg, setIpMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [copied, setCopied] = useState("");
   const [inDesktop, setInDesktop] = useState(false);
   const [mode, setMode] = useState<"server" | "client">("server");
   const [serverUrl, setServerUrl] = useState("");
@@ -47,11 +53,34 @@ export default function SyncSetting() {
       setCfg(c);
       setMode(c.mode === "client" ? "client" : "server");
       setServerUrl(c.serverUrl || "");
+      setPublicIp(c.publicAddress || "");
     }).catch(() => {});
   }, []);
 
   // The whole card is the developer's. Everyone else never sees it.
   if (user?.role !== "developer") return null;
+
+  async function detectIp() {
+    if (!window.biomeDesktop?.detectPublicIp) return;
+    setIpBusy(true); setIpMsg(null);
+    const r = await window.biomeDesktop.detectPublicIp().catch((e) => ({ ok: false, error: String(e) }) as any);
+    setIpBusy(false);
+    if (r.ok && r.ip) { setPublicIp(r.ip); setIpMsg({ kind: "ok", text: `Internet sees this office as ${r.ip}. Check it matches your static IP, then Save.` }); }
+    else setIpMsg({ kind: "err", text: r.error || "Could not detect." });
+  }
+
+  async function saveIp() {
+    if (!window.biomeDesktop?.setPublicAddress) return;
+    setIpBusy(true); setIpMsg(null);
+    const r = await window.biomeDesktop.setPublicAddress(publicIp).catch((e) => ({ ok: false, error: String(e) }) as any);
+    setIpBusy(false);
+    if (r.ok) { setPublicIp(r.address || ""); setCfg((c) => (c ? { ...c, publicAddress: r.address || "" } : c)); setIpMsg({ kind: "ok", text: r.address ? "Saved." : "Cleared." }); }
+    else setIpMsg({ kind: "err", text: r.error || "Could not save." });
+  }
+
+  function copy(text: string) {
+    navigator.clipboard?.writeText(text).then(() => { setCopied(text); setTimeout(() => setCopied(""), 1500); }).catch(() => {});
+  }
 
   async function apply() {
     if (!window.biomeDesktop) return;
@@ -150,23 +179,43 @@ export default function SyncSetting() {
                 </div>
                 <div>
                   <p className="text-[10px] font-bold uppercase tracking-[.13em] text-biome-muted">
-                    Another location (internet, via Tailscale)
+                    Any other place — office static IP
                   </p>
-                  {remote.length ? (
-                    <div className="mt-1.5 flex flex-wrap gap-1.5">
-                      {remote.map((a) => (
-                        <code key={a} className="rounded-lg border border-sky-500/30 bg-sky-500/[.08] px-2.5 py-1 font-mono text-[11px] text-sky-500">
-                          http://{a}:{cfg.port}
-                        </code>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="mt-1 text-[10.5px] leading-relaxed text-biome-muted">
-                      Not set up. To let PCs and phones at other locations sign in, install the free
-                      Tailscale app on this server PC and on each of them, signed in with the same
-                      account — this card will then show a 100.x address to use. Data still stays only on this PC.
-                    </p>
+                  <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                    <input value={publicIp} onChange={(e) => setPublicIp(e.target.value)} placeholder="Your static IP, e.g. 203.0.113.25"
+                      className="bmx-input min-w-[200px] flex-1 rounded-xl border border-biome-line bg-biome-bgSoft px-3 py-2 font-mono text-[11.5px] text-biome-text outline-none" />
+                    <button onClick={detectIp} disabled={ipBusy}
+                      className="rounded-full border border-biome-line px-3 py-1.5 text-[10.5px] font-semibold text-biome-muted hover:text-biome-text disabled:opacity-50">
+                      Detect
+                    </button>
+                    <button onClick={saveIp} disabled={ipBusy}
+                      className="rounded-full bg-biome-leaf px-3.5 py-1.5 text-[10.5px] font-bold text-white disabled:opacity-50">
+                      Save
+                    </button>
+                  </div>
+                  {ipMsg && (
+                    <p className={`mt-1.5 text-[10.5px] ${ipMsg.kind === "ok" ? "text-emerald-600" : "text-rose-500"}`}>{ipMsg.text}</p>
                   )}
+                  {cfg.publicAddress ? (
+                    <button onClick={() => copy(`http://${cfg.publicAddress}${/:\d+$/.test(cfg.publicAddress || "") ? "" : `:${cfg.port}`}`)}
+                      className="mt-2 rounded-lg border border-sky-500/30 bg-sky-500/[.08] px-2.5 py-1 font-mono text-[12px] text-sky-500"
+                      title="Click to copy">
+                      http://{cfg.publicAddress}{/:\d+$/.test(cfg.publicAddress) ? "" : `:${cfg.port}`}
+                      <span className="ml-2 font-sans text-[9.5px] text-biome-muted">{copied ? "copied" : "copy"}</span>
+                    </button>
+                  ) : null}
+                  <div className="mt-2 rounded-lg border border-amber-500/25 bg-amber-500/[.05] px-3 py-2 text-[10.5px] leading-relaxed text-biome-muted">
+                    <p className="font-semibold text-biome-text">One-time router step (same as for Remote Desktop):</p>
+                    <p>
+                      In the office router open <b>Port Forwarding</b> and add: external port <b>{cfg.port}</b> → this PC&rsquo;s
+                      address <b>{local[0] || "192.168.x.x"}</b>, port <b>{cfg.port}</b>, TCP. Keep this PC&rsquo;s office address
+                      fixed (DHCP reservation in the router), like you did for Remote Desktop.
+                    </p>
+                    <p className="mt-1">
+                      Windows Firewall on this PC is opened for port {cfg.port} automatically. Use strong passwords —
+                      the sign-in page is now reachable from the internet; repeated wrong passwords lock that user ID for 15 minutes.
+                    </p>
+                  </div>
                 </div>
                 <p className="text-[10px] leading-relaxed text-biome-muted">
                   On a new PC, install Biome and type one of these addresses on the first screen.
