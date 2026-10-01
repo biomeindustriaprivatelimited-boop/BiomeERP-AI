@@ -266,6 +266,11 @@ async function connect() {
     // paperwork; switched on only for an explicit historical scan.
     syncFullHistory: backfill.active,
     generateHighQualityLinkPreview: false,
+    // When a group message cannot be decrypted the first time, WhatsApp
+    // re-sends it on request — and Baileys must be able to look up what we
+    // already received to answer that request. Without it, those retries
+    // fail and the document never arrives.
+    getMessage: async (key) => recentMessages.get(key?.id)?.message || undefined,
   });
 
   sock.ev.on("creds.update", saveCreds);
@@ -441,6 +446,21 @@ async function connect() {
     // re-delivered message from being filed twice.
     const cutoff = Date.now() / 1000 - 7 * 86400;
     for (const msg of payload.messages || []) {
+      if (msg?.key?.id && msg.message) {
+        recentMessages.set(msg.key.id, msg);
+        if (recentMessages.size > 1000) recentMessages.delete(recentMessages.keys().next().value);
+      }
+      // A message WhatsApp delivered but this device could not decrypt
+      // arrives as an empty "stub". It used to vanish without a word —
+      // which looked exactly like "the agent ignores the group".
+      if (!msg?.message && msg?.messageStubType) {
+        state.undecryptable = (state.undecryptable || 0) + 1;
+        const jid = msg.key?.remoteJid || "";
+        if (state.undecryptable <= 20 || state.undecryptable % 50 === 0) {
+          log(`could not decrypt a message in "${knownChats.get(jid)?.name || jid}" (${(msg.messageStubParameters || []).join(", ") || "stub " + msg.messageStubType}) — WhatsApp will re-send it; if this repeats for every message, Unlink and link WhatsApp again.`);
+        }
+        continue;
+      }
       if (payload.type !== "notify" && Number(msg.messageTimestamp || 0) < cutoff) continue;
       rememberChat(msg);
       rememberChatText(msg); // capture "documents for JPL" style hints
@@ -660,6 +680,8 @@ function describeMedia(msg) {
 
 const queue = [];
 let draining = false;
+/** Last ~1000 received messages, for WhatsApp's re-send requests (getMessage). */
+const recentMessages = new Map();
 /** Group documents that arrived before any chat scope existed (first run). */
 const unscopedHeld = [];
 const ignoredChatsLogged = new Set();
@@ -753,6 +775,7 @@ function enqueue(msg) {
   if (store.hasMessage(msg.key.id)) return; // already handled
 
   queue.push({ msg, media });
+  log(`queued "${media.fileName}" (${media.kind}) from "${knownChats.get(jid)?.name || jid}" — ${queue.length} waiting`);
   state.queueDepth = queue.length;
   drain();
 }
@@ -1830,7 +1853,10 @@ const server = http.createServer(async (req, res) => {
     if (route === "/status" && req.method === "GET") {
       return json(res, 200, {
         ...state,
-        hasAiKey: Boolean(process.env.GEMINI_API_KEY || process.env.ANTHROPIC_API_KEY),
+        // The key saved in Settings → AI lives in config/ai-keys.json, not in
+        // this process's environment — checking process.env alone made the
+        // page say "add a Gemini key" while a key was set and in use.
+        hasAiKey: Boolean(aiKeys().gemini || aiKeys().anthropic),
         dataRoot: PATHS.root,
         inbox: PATHS.inbox,
         backfill,

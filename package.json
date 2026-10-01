@@ -29,7 +29,7 @@
     "@tsparticles/react": "^4.4.0",
     "@tsparticles/slim": "^4.4.0",
     "@types/three": "^0.186.0",
-    "@whiskeysockets/baileys": "^6.7.18",
+    "@whiskeysockets/baileys": "7.0.0-rc14",
     "exceljs": "^4.4.0",
     "framer-motion": "^11.3.19",
     "imapflow": "^1.7.8",

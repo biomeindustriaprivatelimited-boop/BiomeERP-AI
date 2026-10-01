@@ -1,6 +1,6 @@
 /** Build stamp — shown in the UI so the running version is never a guess. */
 module.exports = {
-  BUILD: "20260809-final",
+  BUILD: "20261001-baileys7",
   FEATURES: [
     "supply-set-attaches-unreferenced-docs",
     "bill-t-from-our-invoice",
