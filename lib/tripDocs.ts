@@ -62,6 +62,8 @@ export function companyCodes(): string[] {
 }
 
 function plantOfTrip(t: Trip): string {
+  const chosen = up((t as any).plant);
+  if (chosen && loadPlants().some((p) => up(p.code) === chosen)) return chosen;
   const loc = up(t.location);
   for (const p of loadPlants()) if (loc.includes(p.code) || (p.label && loc.includes(up(p.label)))) return p.code;
   return "";
@@ -85,7 +87,7 @@ export function tripReference(t: Trip): TripReference {
   const vendorNo = mfg ? ourNo : docTail(t.vendorInvoiceNo || t.vendorChallanNo || "");
   const missing: string[] = [];
   if (!ourNo) missing.push("our invoice / challan no");
-  if (!vendorCode) missing.push(mfg ? "plant (in Location)" : "vendor code");
+  if (!vendorCode) missing.push(mfg ? "plant (From plant)" : "vendor code");
   if (!vendorNo) missing.push(mfg ? "our invoice no" : "vendor invoice / challan no");
   const canonical = `${company}/${ourNo || "?"}/${vendorCode || "?"}/${vendorNo || "?"}`;
   return { canonical, company, ourNo, vendorCode, vendorNo, source: missing.length ? "incomplete" : "composed", missing };

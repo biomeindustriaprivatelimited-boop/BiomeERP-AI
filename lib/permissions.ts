@@ -428,6 +428,8 @@ export const PUBLIC_PREFIXES = [
   "/api/auth/login",
   "/api/auth/me",
   "/api/auth/logout",
+  // Developer password recovery — answers only on the server PC itself.
+  "/api/auth/recover",
   // The server heartbeat. It MUST answer before anyone signs in — the
   // login screen itself sits behind the ServerGuard, and a 401 here was
   // read as "server down", blocking the whole app on its own doorstep.
@@ -439,6 +441,11 @@ export const PUBLIC_PREFIXES = [
   "/api/gdrive/callback",
   "/_next",
   "/assets",
+  // Director photos on the Business Profile page. next/image's optimiser
+  // fetches /team/*.webp from inside the server WITHOUT the user's
+  // cookie, so a sign-in redirect here hands it the login page's HTML
+  // and the photo comes back as a 400 broken image.
+  "/team/",
   "/favicon",
   // The phone app. The browser fetches these BEFORE anyone signs in — a
   // redirect to /login here means the manifest is HTML, the service

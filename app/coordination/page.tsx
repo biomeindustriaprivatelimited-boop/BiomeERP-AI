@@ -13,6 +13,7 @@ import DevEditedChip from "@/components/DevEditedChip";
 import { EmptyState } from "@/components/SetupGuide";
 import MismatchFlag from "@/components/plant/MismatchFlag";
 import { toKg, conversionNote } from "@/lib/units";
+import { usePlants } from "@/lib/usePlants";
 
 /**
  * Supply coordination.
@@ -54,6 +55,7 @@ interface Trip {
   client: string; location: string; poNumber: string; poDate: string; vendorPoId?: string | null; clientPoId?: string | null;
   supplier: string; supplierCode: string; vendorDocType: DocType | "";
   vehicleNumber: string; vehicleEntryDate: string;
+  plant?: string;
   vendorChallanNo: string; vendorChallanDate: string; vendorInvoiceNo: string;
   referenceNo?: string;
   vendorChallanWeight: number; vendorChallanAmount: number;
@@ -87,7 +89,7 @@ const blank = {
   client: "", location: "", poNumber: "", poDate: "", vendorPoId: "", clientPoId: "",
   supplier: "", supplierCode: "", vendorDocType: "" as DocType | "",
   vehicleNumber: "", vehicleEntryDate: new Date().toISOString().slice(0, 10),
-  vendorChallanNo: "", vendorChallanDate: "", vendorInvoiceNo: "", referenceNo: "",
+  vendorChallanNo: "", vendorChallanDate: "", vendorInvoiceNo: "", referenceNo: "", plant: "",
   vendorChallanWeight: "", vendorChallanAmount: "",
   receivingDate: "", receivingQty: "", ccWeight: "",
   debitNoteNo: "", creditNoteNo: "",
@@ -95,6 +97,7 @@ const blank = {
 };
 
 export default function CoordinationPage() {
+  const plantList = usePlants();
   const [business, setBusiness] = useState<Business>("trading");
   const [data, setData] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
@@ -188,7 +191,9 @@ export default function CoordinationPage() {
   function startAdd() {
     setReissue(false);
     setEditing(null);
-    setForm({ ...blank });
+    let lastPlant = "";
+    try { lastPlant = localStorage.getItem("biome.coord.lastPlant") || ""; } catch { /* private mode */ }
+    setForm({ ...blank, plant: plantList.length === 1 ? plantList[0].code : lastPlant });
     setIssueOnSave(false);
     setOpen(true);
   }
@@ -210,6 +215,8 @@ export default function CoordinationPage() {
   }
 
   async function save() {
+    if (business === "manufacturing" && !form.plant) { setError("Choose the plant the truck left from — the plant dispatch match needs it."); return; }
+    try { if (form.plant) localStorage.setItem("biome.coord.lastPlant", form.plant); } catch { /* private mode */ }
     setBusy(true); setError(null);
     try {
       const res = await fetch("/api/coordination", {
@@ -696,6 +703,14 @@ export default function CoordinationPage() {
           <F label="Client PO (quantity tracking)">
             <PoQuantityPicker type="client" party={form.client} value={form.clientPoId || ""} qtyKg={Number(form.vendorChallanWeight) || 0} onChange={(id) => setForm({ ...form, clientPoId: id })} />
           </F>
+          {manufacturing && (
+            <F label="From plant">
+              <select value={form.plant || ""} onChange={(e) => setForm({ ...form, plant: e.target.value })} className={inputCls}>
+                <option value="">Select the plant the truck left from…</option>
+                {plantList.map((p) => <option key={p.code} value={p.code}>{p.label} ({p.code})</option>)}
+              </select>
+            </F>
+          )}
           <F label="Location / site">
             <input list="locations" value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })}
               placeholder="Jhajjar / NPL / NTPC Mouda…" className={inputCls} />
@@ -1765,7 +1780,7 @@ function PlantMatchBadge({ status }: { status?: string }) {
   if (status === "weight_differs") {
     return <span title="Vehicle and date match the plant's dispatch sheet, but the weight is different — check with the plant" className="rounded-full border border-amber-500/35 bg-amber-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[.08em] text-amber-600">⚠ Plant weight differs</span>;
   }
-  return <span title="This vehicle is not in the plant's dispatch sheet for that date (±1 day) — or the location does not name the plant" className="rounded-full border border-rose-500/35 bg-rose-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[.08em] text-rose-500">✗ Not in plant dispatch</span>;
+  return <span title="This vehicle is not in the plant's transport sheet within 2 days of this trip" className="rounded-full border border-rose-500/35 bg-rose-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[.08em] text-rose-500">✗ Not in plant dispatch</span>;
 }
 
 

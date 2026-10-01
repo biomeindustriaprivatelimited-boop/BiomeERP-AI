@@ -72,3 +72,20 @@ Log file: `%APPDATA%\Biome\logs\whatsapp-agent.log`
   apne aap hat jaayega.
 - Galti se server ban chuka koi aur PC, asli server (developer signed in) milte hi apne aap
   client ban jaata hai.
+
+## 5. Developer password bhool gaye? (offline, sirf server PC)
+- Server PC ki login screen par **"Forgot developer password?"** → developer ka user ID + 3 sawaal:
+  1. Company ka GSTIN number? (06AAJCB1927H1ZS)
+  2. Company ka pehla plant? (Mayan)
+  3. Kisi ek director ka poora naam? (Tanesh Singh Dod / Shubham Goel)
+- Sahi jawab → password **biome-admin** ho jaata hai; login ke turant baad naya password set karein.
+- Settings → **Developer password recovery** me apne khud ke 3 sawaal-jawab set kar dein —
+  phir built-in sawaal kaam nahi karenge.
+- Ye option doosre PC / phone / internet par dikhta hi nahi. 5 galat koshish par 15 minute lock.
+
+## 6. Baaki fixes
+- Business Profile me directors ki photo — login wali rok ki wajah se image load nahi hoti thi; fixed.
+- Top-right user name ka menu — screen ke neeche khul raha tha (dikhta nahi tha); ab chip ke neeche khulta hai.
+- Plant transport sheet ↔ coordination match — plant ab "From plant" (naya field), reference
+  (BDC/45/REW/15), ya gaadi number se pehchana jaata hai; date ±2 din (entry ya invoice date);
+  dispatch weight ↔ invoice/challan weight aur R. Weight ↔ receiving qty dono check.

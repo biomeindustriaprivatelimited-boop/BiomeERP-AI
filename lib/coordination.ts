@@ -100,6 +100,13 @@ export interface Trip {
   /** Who it went to, and from where. */
   client: string;
   location: string;
+  /**
+   * Manufacturing only: the plant code the truck left from (REW, GKD…).
+   * `location` is the CLIENT's site (it comes from the PO), so it cannot
+   * say which plant dispatched — reading the plant from it is why the
+   * plant-dispatch match found almost nothing.
+   */
+  plant?: string;
   poNumber: string;
   /** PO Quantity Intelligence — optional links; balances are computed from these. */
   vendorPoId?: string | null;
@@ -205,6 +212,7 @@ function normalise(t: any): Trip {
     biomeChallanNo: legacyDoc || String(t.ourDocNo || ""),
     poDate: String(t.poDate || ""),
     referenceNo: String(t.referenceNo || ""),
+    plant: String(t.plant || "").toUpperCase(),
     vendorDocType: t.vendorDocType === "tax_invoice" || t.vendorDocType === "delivery_challan" ? t.vendorDocType : "",
     debitNoteNo: String(t.debitNoteNo || ""),
     creditNoteNo: String(t.creditNoteNo || ""),

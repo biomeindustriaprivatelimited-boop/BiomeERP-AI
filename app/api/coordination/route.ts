@@ -482,6 +482,7 @@ function readTrip(body: any, reg: BusinessType): Partial<Trip> {
   // supplier's name on a supply they had nothing to do with — and it would
   // land in the per-supplier shortfall table, which is read as blame.
   if (reg === "manufacturing") {
+    out.plant = str(body.plant, 10).toUpperCase().replace(/[^A-Z0-9]/g, "");
     out.supplier = "";
     out.supplierCode = "";
     out.vendorDocType = "";

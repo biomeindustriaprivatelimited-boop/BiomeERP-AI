@@ -28,8 +28,13 @@ import { slugForCode } from "@/lib/plantRegistry";
 
 export type MatchStatus = "matched" | "weight_differs" | "unmatched";
 
-/** Days either side of the date that still count as the same trip. */
-export const DATE_WINDOW_DAYS = 1;
+/**
+ * Days either side that still count as the same trip. Two, because the
+ * plant writes the day the truck left while the coordinator may write the
+ * vehicle-entry date or our invoice date — a late-evening dispatch is
+ * routinely invoiced the next morning.
+ */
+export const DATE_WINDOW_DAYS = 2;
 /** Weight tolerance: the larger of this share or the flat kg allowance. */
 const WEIGHT_PCT = 1.0;
 const WEIGHT_FLAT_KG = 100;
@@ -63,6 +68,8 @@ export interface PlantDispatch {
   party: string;
   to: string;
   weightKg: number;
+  /** Receiving weight at the client (R. Weight), when the plant has it. */
+  rWeightKg: number;
   purpose: string;
 }
 
@@ -81,18 +88,34 @@ export function loadPlantDispatches(plantCodes: string[]): PlantDispatch[] {
       if (!vehicle || !/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
       out.push({
         key: plantRowKey(date, r.vehicleNo), plant: code, date, vehicle, vehicleRaw: String(r.vehicleNo || ""),
-        party: String(r.partyName || ""), to: String(r.to || ""), weightKg: toKg(Number(r.weight) || 0), purpose,
+        party: String(r.partyName || ""), to: String(r.to || ""), weightKg: toKg(Number(r.weight) || 0),
+        rWeightKg: toKg(Number(r.rWeight) || 0), purpose,
       });
     }
   }
   return out;
 }
 
-/** Which plant a manufacturing trip left from, read from its location. */
+/**
+ * Which plant a manufacturing trip left from.
+ *
+ *   1. the "From plant" chosen on the trip;
+ *   2. the plant code inside its reference (BDC/45/REW/15);
+ *   3. older rows: a plant named in the location text.
+ *
+ * Null when none of these says — the match then finds the plant from the
+ * vehicle itself (the plant whose transport sheet has that truck that day).
+ */
 export function tripPlant(t: Trip): string | null {
+  const plants = loadPlants();
+  const codes = new Set(plants.map((p) => p.code.toUpperCase()));
+  const chosen = String((t as any).plant || "").toUpperCase();
+  if (chosen && codes.has(chosen)) return chosen;
+  const parts = String(t.referenceNo || "").toUpperCase().split(/[\/\\|]/).map((x) => x.trim());
+  if (parts.length === 4 && codes.has(parts[2].replace(/[^A-Z0-9]/g, ""))) return parts[2].replace(/[^A-Z0-9]/g, "");
   const loc = String(t.location || "").toUpperCase();
-  for (const p of loadPlants()) {
-    if (loc.includes(p.code.toUpperCase()) || (p.label && loc.includes(p.label.toUpperCase()))) return p.code;
+  for (const p of plants) {
+    if (new RegExp(`\\b${p.code.toUpperCase()}\\b`).test(loc) || (p.label && loc.includes(p.label.toUpperCase()))) return p.code;
   }
   return null;
 }
@@ -109,26 +132,45 @@ export interface MatchPair {
 
 /**
  * One-to-one match: for each plant dispatch, the closest-dated unused trip
- * with the same plant and vehicle inside the window.
+ * with the same vehicle inside the window — same plant when the trip names
+ * one; a trip whose plant is unknown is matched by the vehicle alone and
+ * takes the dispatch's plant.
+ *
+ * Weights: the plant's dispatch weight against our invoice weight (or the
+ * challan weight on the trip), and the plant's R. Weight against the
+ * trip's receiving quantity — both within the tolerance.
  */
 export function matchAll(plantCodes: string[]): MatchPair[] {
   const dispatches = loadPlantDispatches(plantCodes).sort((a, b) => a.date.localeCompare(b.date));
+  const isoDate = (v: unknown) => {
+    const x = String(v || "").slice(0, 10);
+    return /^\d{4}-\d{2}-\d{2}$/.test(x) ? x : "";
+  };
   const trips = loadTrips()
     .filter((t) => t.business === "manufacturing" && t.status !== "cancelled")
-    .map((t) => ({ t, plant: tripPlant(t), date: String(t.vehicleEntryDate || t.ourDocDate || "").slice(0, 10), vehicle: normVehicle(t.vehicleNumber) }))
-    .filter((x) => x.plant && plantCodes.includes(x.plant) && x.vehicle && /^\d{4}-\d{2}-\d{2}$/.test(x.date));
+    .map((t) => {
+      const dates = [isoDate(t.vehicleEntryDate), isoDate(t.ourDocDate), isoDate(t.billing?.invoiceDate)].filter(Boolean);
+      return { t, plant: tripPlant(t), dates, date: dates[0] || "", vehicle: normVehicle(t.vehicleNumber) };
+    })
+    .filter((x) => x.vehicle && x.dates.length && (x.plant === null || plantCodes.includes(x.plant)));
+
+  const gap = (x: (typeof trips)[number], d: string) => Math.min(...x.dates.map((td) => days(td, d)));
 
   const used = new Set<string>();
   const pairs: MatchPair[] = [];
   const tripView = (x: (typeof trips)[number]) => ({
     id: x.t.id, serial: x.t.serial, date: x.date, vehicle: x.t.vehicleNumber, client: x.t.client,
-    location: x.t.location, weightKg: toKg(Number(x.t.vendorChallanWeight) || Number(x.t.billing?.invoiceWeightKg) || 0), ourDocNo: x.t.ourDocNo,
+    location: x.t.location,
+    weightKg: toKg(Number(x.t.billing?.invoiceWeightKg) || Number(x.t.vendorChallanWeight) || 0),
+    ourDocNo: x.t.ourDocNo,
   });
+  const allow = (kg: number) => Math.max(WEIGHT_FLAT_KG, (kg * WEIGHT_PCT) / 100);
 
   for (const d of dispatches) {
     const candidates = trips
-      .filter((x) => !used.has(x.t.id) && x.plant === d.plant && x.vehicle === d.vehicle && days(x.date, d.date) <= DATE_WINDOW_DAYS)
-      .sort((a, b) => days(a.date, d.date) - days(b.date, d.date));
+      .filter((x) => !used.has(x.t.id) && x.vehicle === d.vehicle && (x.plant === null || x.plant === d.plant) && gap(x, d.date) <= DATE_WINDOW_DAYS)
+      // A trip that names this plant beats one that names none; then the closest date.
+      .sort((a, b) => (a.plant ? 0 : 1) - (b.plant ? 0 : 1) || gap(a, d.date) - gap(b, d.date));
     const hit = candidates[0];
     if (!hit) {
       pairs.push({ plantKey: d.key, tripId: null, plant: d.plant, status: "unmatched", dispatch: d, trip: null, weightDiffKg: null });
@@ -140,14 +182,18 @@ export function matchAll(plantCodes: string[]): MatchPair[] {
     let diff: number | null = null;
     if (d.weightKg > 0 && tv.weightKg > 0) {
       diff = Math.round(tv.weightKg - d.weightKg);
-      const allow = Math.max(WEIGHT_FLAT_KG, (d.weightKg * WEIGHT_PCT) / 100);
-      if (Math.abs(diff) > allow) status = "weight_differs";
+      if (Math.abs(diff) > allow(d.weightKg)) status = "weight_differs";
+    }
+    const recv = toKg(Number(hit.t.receivingQty) || 0);
+    if (d.rWeightKg > 0 && recv > 0 && Math.abs(recv - d.rWeightKg) > allow(d.rWeightKg)) {
+      status = "weight_differs";
+      if (diff === null) diff = Math.round(recv - d.rWeightKg);
     }
     pairs.push({ plantKey: d.key, tripId: hit.t.id, plant: d.plant, status, dispatch: d, trip: tv, weightDiffKg: diff });
   }
   for (const x of trips) {
     if (used.has(x.t.id)) continue;
-    pairs.push({ plantKey: null, tripId: x.t.id, plant: x.plant!, status: "unmatched", dispatch: null, trip: tripView(x), weightDiffKg: null });
+    pairs.push({ plantKey: null, tripId: x.t.id, plant: x.plant || "", status: "unmatched", dispatch: null, trip: tripView(x), weightDiffKg: null });
   }
   return pairs;
 }

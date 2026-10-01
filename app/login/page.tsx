@@ -42,6 +42,30 @@ export default function LoginPage() {
   const [desk, setDesk] = useState<{ mode: string; serverUrl: string } | null>(null);
   /** Brand-new server, seen from the server PC itself: show the first sign-in. */
   const [firstRun, setFirstRun] = useState<{ username: string; password: string } | null>(null);
+  /** Server PC only: developer password recovery with three questions. */
+  const [recovery, setRecovery] = useState<{ q1: string; q2: string; q3: string } | null>(null);
+  const [recOpen, setRecOpen] = useState(false);
+  const [rec, setRec] = useState({ username: "developer", a1: "", a2: "", a3: "" });
+  const [recBusy, setRecBusy] = useState(false);
+  const [recMsg, setRecMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  useEffect(() => {
+    fetch("/api/auth/recover", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((j) => { if (j?.available) setRecovery({ q1: j.q1, q2: j.q2, q3: j.q3 }); })
+      .catch(() => {});
+  }, []);
+  async function recoverNow() {
+    setRecBusy(true); setRecMsg(null);
+    try {
+      const res = await fetch("/api/auth/recover", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(rec) });
+      const j = await res.json().catch(() => ({} as any));
+      if (!res.ok) throw new Error(j.error || "Could not reset.");
+      setRecMsg({ ok: true, text: `${j.created ? "Developer account created" : "Password reset"}. User ID: ${j.username} · Password: ${j.password} — you will set a new password right after signing in.` });
+      setUserId(j.username); setPassword(j.password); setError(null);
+    } catch (e) {
+      setRecMsg({ ok: false, text: (e as Error).message });
+    } finally { setRecBusy(false); }
+  }
   useEffect(() => {
     fetch("/api/auth/login", { cache: "no-store" })
       .then((r) => r.json())
@@ -198,6 +222,39 @@ export default function LoginPage() {
               : <ArrowRight size={16} className="relative z-10 transition-transform duration-300 group-hover:translate-x-1.5" />}
           </button>
           </div>
+
+          {recovery && (
+            <div className="relative z-10 mt-4">
+              {!recOpen ? (
+                <button type="button" onClick={() => setRecOpen(true)} className="text-[10.5px] font-semibold text-[#9fe870] underline decoration-dotted">
+                  Forgot developer password?
+                </button>
+              ) : (
+                <div className="space-y-2 rounded-xl border border-white/10 bg-white/[.03] p-3 text-[10.5px] text-white/70">
+                  <p className="font-semibold text-white">Reset the developer password (this server PC only)</p>
+                  <input value={rec.username} onChange={(e) => setRec({ ...rec, username: e.target.value })} placeholder="Developer user ID"
+                    className="biome-login-input biome-login-input-dark bmx-input w-full px-3" />
+                  <p>{recovery.q1}</p>
+                  <input value={rec.a1} onChange={(e) => setRec({ ...rec, a1: e.target.value })} placeholder="Answer 1"
+                    className="biome-login-input biome-login-input-dark bmx-input w-full px-3" />
+                  <p>{recovery.q2}</p>
+                  <input value={rec.a2} onChange={(e) => setRec({ ...rec, a2: e.target.value })} placeholder="Answer 2"
+                    className="biome-login-input biome-login-input-dark bmx-input w-full px-3" />
+                  <p>{recovery.q3}</p>
+                  <input value={rec.a3} onChange={(e) => setRec({ ...rec, a3: e.target.value })} onKeyDown={(e) => e.key === "Enter" && recoverNow()} placeholder="Answer 3"
+                    className="biome-login-input biome-login-input-dark bmx-input w-full px-3" />
+                  {recMsg && <p className={recMsg.ok ? "text-emerald-300" : "text-rose-300"}>{recMsg.text}</p>}
+                  <div className="flex gap-2">
+                    <button type="button" onClick={recoverNow} disabled={recBusy || !rec.a1 || !rec.a2 || !rec.a3}
+                      className="rounded-full bg-[#9fe870] px-3.5 py-1.5 font-bold text-[#163300] disabled:opacity-50">
+                      {recBusy ? "Checking…" : "Reset password"}
+                    </button>
+                    <button type="button" onClick={() => { setRecOpen(false); setRecMsg(null); }} className="rounded-full border border-white/15 px-3 py-1.5">Close</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {desk && (
             <div className="relative z-10 mt-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/[.07] bg-white/[.02] px-3 py-2 text-[9.5px] text-white/45">

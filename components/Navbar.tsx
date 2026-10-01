@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Portal from "@/components/Portal";
 import Link from "next/link";
 import { Sun, Moon, Factory, Bot, ChevronDown, User, LogOut, Menu } from "lucide-react";
@@ -25,6 +25,26 @@ export default function Navbar() {
   const { user, plant, can, signOut } = useSession();
   const [mode, setMode] = useState<ColorMode>("light");
   const [menuOpen, setMenuOpen] = useState(false);
+  // Where the menu opens, measured from the chip. The menu is portaled to
+  // <body> (the header's backdrop-blur would otherwise trap it), so it can
+  // no longer anchor to the chip with `absolute` — it must be placed with
+  // `fixed` coordinates instead.
+  const chipRef = useRef<HTMLButtonElement>(null);
+  const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(null);
+
+  function toggleMenu() {
+    const r = chipRef.current?.getBoundingClientRect();
+    if (r) setMenuPos({ top: r.bottom + 8, right: Math.max(8, window.innerWidth - r.right) });
+    setMenuOpen((o) => !o);
+  }
+
+  // A fixed menu would drift away from the chip on resize — just close it.
+  useEffect(() => {
+    if (!menuOpen) return;
+    const close = () => setMenuOpen(false);
+    window.addEventListener("resize", close);
+    return () => window.removeEventListener("resize", close);
+  }, [menuOpen]);
 
   useEffect(() => {
     setMode(getColorMode());
@@ -93,7 +113,10 @@ export default function Navbar() {
           {/* User */}
           <div className="relative">
             <button
-              onClick={() => setMenuOpen((o) => !o)}
+              ref={chipRef}
+              onClick={toggleMenu}
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
               className="flex items-center gap-2.5 rounded-xl border border-biome-line bg-biome-bg py-1.5 pl-1.5 pr-2.5 transition-colors hover:bg-biome-hover"
             >
               <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-biome-leaf to-biome-leafBright text-biome-text">
@@ -116,8 +139,12 @@ export default function Navbar() {
 
             {menuOpen && (
               <>
-                <Portal><div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
-                <div className="absolute right-0 z-20 mt-2 w-52 rounded-xl border border-biome-line bg-biome-surface p-1.5 shadow-xl">
+                <Portal><div className="fixed inset-0 z-[60]" onClick={() => setMenuOpen(false)} />
+                <div
+                  role="menu"
+                  style={{ top: menuPos?.top ?? 64, right: menuPos?.right ?? 16 }}
+                  className="fixed z-[61] w-52 rounded-xl border border-biome-line bg-biome-surface p-1.5 shadow-xl"
+                >
                   {/* Same filtering as the sidebar: a link the role can't
                       open would only lead to a refusal page. */}
                   {([

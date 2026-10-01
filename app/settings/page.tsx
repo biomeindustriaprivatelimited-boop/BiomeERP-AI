@@ -26,6 +26,7 @@ import MailSettings from "@/components/settings/MailSettings";
 import OverrideSetting from "@/components/settings/OverrideSetting";
 import BackupSetting from "@/components/settings/BackupSetting";
 import SyncSetting from "@/components/settings/SyncSetting";
+import RecoverySetting from "@/components/settings/RecoverySetting";
 import DriveSyncSetting from "@/components/settings/DriveSyncSetting";
 import MemorySetting from "@/components/settings/MemorySetting";
 import PremiumButton from "@/components/ui/PremiumButton";
@@ -237,6 +238,7 @@ export default function SettingsPage() {
 
       {/* Developer only — which PC is the server, which are clients. */}
       <section id="server" className="scroll-mt-24"><SyncSetting /></section>
+      <section id="recovery" className="scroll-mt-24"><RecoverySetting /></section>
 
       <GlassCard className="p-5">
         <div className="mb-3 flex items-center gap-2"><Database size={16} className="text-biome-leafBright" /><h2 className="font-display text-sm font-medium text-biome-text">Production Controls</h2></div>
