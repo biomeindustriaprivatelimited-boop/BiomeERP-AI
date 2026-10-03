@@ -49,12 +49,23 @@ const env = {
   BIOME_AUTH_SECRET: "smoke-secret",
   NODE_ENV: "production",
 };
+process.on("uncaughtException", (e) => { report(false, "smoke test crashed", e.stack ? e.stack.split("\n").slice(0, 3).join(" ") : String(e)); finish(); });
+if (exe && !fs.existsSync(exe)) {
+  const dir = path.dirname(exe);
+  let listing = "";
+  try { listing = fs.readdirSync(dir).join(", "); } catch (e) { listing = e.message; }
+  report(false, `packaged exe not found at ${exe}`, `folder has: ${listing}`.slice(0, 600));
+  process.exit(1);
+}
 let child;
 if (exe) {
   child = spawn(exe, [path.join(appDir, "whatsapp-agent", "agent.js")], { cwd: appDir, env: { ...env, ELECTRON_RUN_AS_NODE: "1" }, stdio: ["ignore", "pipe", "pipe"] });
 } else {
   child = spawn(process.execPath, [path.join(appDir, "whatsapp-agent", "agent.js")], { cwd: appDir, env, stdio: ["ignore", "pipe", "pipe"] });
 }
+child.on("error", (e) => report(false, "could not start the agent process", e.message));
+child.on("exit", (code) => { if (!finished) report(false, "agent process exited early", `code ${code}`); });
+let finished = false;
 const logLines = [];
 for (const s of [child.stdout, child.stderr]) s.on("data", (d) => { const t = d.toString(); logLines.push(t); process.stdout.write("  | " + t.replace(/\n(?=.)/g, "\n  | ")); });
 
@@ -140,6 +151,14 @@ function call(method, route, body) {
 })();
 
 function finish() {
+  if (finished) return;
+  finished = true;
+  // The agent's own last log lines, as annotations: the CI log itself is not
+  // always readable, these are.
+  if (CI) {
+    const tail = logLines.join("").split(/\r?\n/).filter((l) => /WhatsApp|engine|status|error|fail|filed|held|QR|qr|browser|could not/i.test(l)).slice(-10);
+    for (const l of tail) console.log(`::warning title=agent log::${l.replace(/^\[Biome WhatsApp Agent [^\]]+\]\s*/, "").slice(0, 300)}`);
+  }
   try { child.kill(); } catch {}
   const failed = results.filter((r) => !r.ok).length;
   console.log(`\n${results.length - failed}/${results.length} passed`);
