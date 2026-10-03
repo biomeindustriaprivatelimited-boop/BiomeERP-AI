@@ -89,3 +89,24 @@ Log file: `%APPDATA%\Biome\logs\whatsapp-agent.log`
 - Plant transport sheet ↔ coordination match — plant ab "From plant" (naya field), reference
   (BDC/45/REW/15), ya gaadi number se pehchana jaata hai; date ±2 din (entry ya invoice date);
   dispatch weight ↔ invoice/challan weight aur R. Weight ↔ receiving qty dono check.
+
+## 7. WhatsApp — final fix (03-10-2026)
+**Kyun kaam nahi kar raha tha:** WhatsApp ne groups ko naye "LID" system par shift kiya hai. Jo library
+(Baileys) WhatsApp ka protocol khud banati hai, wo linked device par in groups ke messages decrypt hi
+nahi kar paati thi — message aate the par khaali, aur chupchaap gaayab. Upar se hamari ek setting
+(history sync) ne zaroori LID mapping bhi rok rakhi thi.
+
+**Ab:** agent asli **WhatsApp Web** ko PC ke **Microsoft Edge** (har Windows me hota hai) me chupke se
+(bina window) chalata hai — decryption WhatsApp ka apna code karta hai, isliye jo WhatsApp Web me
+dikhta hai wahi agent ko milta hai. Edge/Chrome na mile tabhi purana engine (setting fix ke saath).
+
+Aur:
+- Vendor ka paper hamare invoice ke BAAD aaye to turant usi supply-set folder me jaata hai
+  (pehle 20 minute "held" padha rehta tha — bahar se lagta tha kuch save hi nahi hua).
+- Connect hote hi / group select karte hi selected group ke pichhle 7 din ke documents bhi padhe jaate hain.
+- Har build me GitHub ke Windows PC par asli Biome.exe se test hota hai: documents → supply set →
+  folder, scanned PDF (OCR), aur Edge me WhatsApp Web ka QR.
+
+**Aapko ek baar karna hai:** naya .exe install → WhatsApp page → QR dikhega (naya engine = naya
+linked device) → phone se scan karein. Phone ke "Linked devices" me purana "Biome Platform"
+device ho to use hata dein. Diagnostics me "Engine: WhatsApp Web (msedge.exe)" dikhna chahiye.
