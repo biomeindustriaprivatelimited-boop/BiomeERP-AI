@@ -22,7 +22,7 @@ const http = require("http");
 
 const args = process.argv.slice(2);
 const opt = (n) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : null; };
-const exe = opt("--exe");
+const exe = opt("--exe") ? path.resolve(opt("--exe")) : null;
 const appDir = path.resolve(opt("--app") || path.join(__dirname, "..", ".."));
 const engineWanted = opt("--engine") || "auto";
 const qrWaitMs = Number(opt("--qr-wait") || 150000);
