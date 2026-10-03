@@ -396,7 +396,13 @@ function stopChildren() {
     serverProcess = null;
   }
   if (whatsappAgentProcess) {
-    whatsappAgentProcess.kill();
+    // On Windows a plain kill() leaves the agent's headless Edge (WhatsApp
+    // Web) running; end the whole process tree.
+    if (process.platform === "win32" && whatsappAgentProcess.pid) {
+      try { spawn("taskkill", ["/PID", String(whatsappAgentProcess.pid), "/T", "/F"], { windowsHide: true }); } catch (_) {}
+    } else {
+      whatsappAgentProcess.kill();
+    }
     whatsappAgentProcess = null;
   }
 }

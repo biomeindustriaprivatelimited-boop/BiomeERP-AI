@@ -8,6 +8,12 @@ name: Build Windows installer
 # the Windows installer and attaches it to the run as the
 # "Biome-Windows-Installer" artifact, ready to download and install.
 
+# whatsapp-web.js depends on puppeteer, which would download its own
+# Chromium (~150 MB) into the installer. The agent drives the Edge/Chrome
+# already on the PC instead, so the download is skipped everywhere.
+env:
+  PUPPETEER_SKIP_DOWNLOAD: "true"
+
 on:
   push:
     branches: [main]
@@ -93,6 +99,12 @@ jobs:
       - name: Package the installer
         # --publish never: build only, never upload a release anywhere.
         run: npx electron-builder --win --x64 --publish never
+      # The WhatsApp agent, run from the PACKAGED app with the packaged
+      # Biome.exe (Electron's own Node), on Windows with Edge — exactly as
+      # on the server PC. Results appear as annotations on the run.
+      - name: WhatsApp smoke test (packaged app)
+        continue-on-error: true
+        run: node tools/smoke/wa-smoke.js --exe release/win-unpacked/Biome.exe --app release/win-unpacked/resources/app --qr-wait 180000
       - uses: actions/upload-artifact@v4
         with:
           name: Biome-Windows-Installer

@@ -277,6 +277,9 @@ export interface AgentState {
     log: string[];
   };
   build?: string;
+  /** "web" (WhatsApp Web in Edge/Chrome) or "baileys". */
+  engine?: string;
+  browser?: string;
   dataRoot: string;
   inbox: string;
   stats: {

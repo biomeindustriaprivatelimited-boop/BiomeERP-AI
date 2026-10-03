@@ -205,7 +205,7 @@ export default function ConnectionPanel({ state, loadError, onConnect, onDisconn
       )}
 
       {/* ---- Diagnostics: where each message stopped ---- */}
-      {state?.diag && <Diagnostics d={state.diag} build={state.build} notADocument={state.stats?.notADocument ?? 0} />}
+      {state?.diag && <Diagnostics d={state.diag} build={state.build} engine={state.engine === "web" ? `WhatsApp Web (${(state.browser || "").split(/[\\/]/).pop() || "browser"})` : state.engine === "baileys" ? "Baileys" : undefined} notADocument={state.stats?.notADocument ?? 0} />}
 
       {/* ---- Where things are saved ---- */}
       {state?.inbox && (
@@ -230,7 +230,7 @@ export default function ConnectionPanel({ state, loadError, onConnect, onDisconn
  * first non-zero box after "Messages received" is where documents stop.
  * The most likely cause is spelled out in plain words above the numbers.
  */
-function Diagnostics({ d, build, notADocument }: { d: NonNullable<AgentState["diag"]>; build?: string; notADocument: number }) {
+function Diagnostics({ d, build, engine, notADocument }: { d: NonNullable<AgentState["diag"]>; build?: string; engine?: string; notADocument: number }) {
   const [open, setOpen] = useState(false);
   let verdict: { tone: "ok" | "warn" | "bad"; text: string };
   if (!d.selectedChats.length) verdict = { tone: "bad", text: "No chat is selected. Open “Which chats to watch” below and select the supply group." };
@@ -272,6 +272,7 @@ function Diagnostics({ d, build, notADocument }: { d: NonNullable<AgentState["di
           <p className="text-[10.5px] text-biome-muted">
             Watching: <span className="text-biome-text">{d.selectedChats.length ? d.selectedChats.join(", ") : "nothing"}</span>
             {" · "}Automatic processing: <span className="text-biome-text">{d.autoProcess ? "on" : "off"}</span>
+            {engine ? <> · Engine <span className="text-biome-text">{engine}</span></> : null}
             {build ? <> · Agent build <span className="font-mono">{build}</span></> : null}
           </p>
           <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-lg bg-black/40 p-2.5 font-mono text-[10px] leading-relaxed text-emerald-100/80">

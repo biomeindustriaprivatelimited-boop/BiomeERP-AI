@@ -37,6 +37,7 @@ const learning = require("./lib/learning");
 const sampleStore = require("./lib/samples");
 const { planFiling, saveFile } = require("./lib/filing");
 const { aiKeys } = require("./lib/aiKeys");
+const webEngine = require("./lib/webEngine");
 const store = require("./lib/store");
 const { BUILD } = require("./lib/version");
 const { ensureSeeded, loadClients, matchClient, loadPlants } = require("./lib/clients");
@@ -195,6 +196,13 @@ function settings() {
     // the documents that carry the reference.
     ignoreOwnMessages: s.ignoreOwnMessages === true,
     autoProcess: s.autoProcess !== false,
+    /**
+     * Which WhatsApp engine reads the messages:
+     *   "auto"    — WhatsApp Web in Edge/Chrome when one is installed, else Baileys
+     *   "web"     — always WhatsApp Web (lib/webEngine.js)
+     *   "baileys" — always Baileys
+     */
+    engine: ["web", "baileys"].includes(s.whatsappEngine) ? s.whatsappEngine : "auto",
   };
 }
 
@@ -267,8 +275,181 @@ function setStatus(next, extra = {}) {
 // ---------------------------------------------------------------------
 // WhatsApp connection
 // ---------------------------------------------------------------------
+// ---------------------------------------------------------------------
+// Engine choice + WhatsApp Web engine (lib/webEngine.js)
+// ---------------------------------------------------------------------
+let web = null; // the running WhatsApp Web engine
+let webStarting = false;
+
+function webSessionDir() {
+  return path.join(PATHS.root, "whatsapp", "web-session");
+}
+
+function hasWebSession() {
+  try {
+    return fs.existsSync(path.join(webSessionDir(), "session-biome"));
+  } catch {
+    return false;
+  }
+}
+
+/** "web" or "baileys" for this start. */
+function chooseEngine() {
+  const want = settings().engine;
+  if (want === "baileys") return "baileys";
+  const browser = webEngine.findBrowser();
+  if (browser) return "web";
+  if (want === "web") log("WhatsApp Web engine requested but no Edge/Chrome was found — using Baileys");
+  return "baileys";
+}
+
+/**
+ * A browser left running by a previous agent (the app was closed hard)
+ * keeps the WhatsApp Web profile locked, and the next start fails. Close
+ * any browser still using OUR profile folder — never the person's own.
+ */
+function closeStrayBrowsers() {
+  const dir = webSessionDir();
+  try {
+    if (process.platform === "win32") {
+      const ps =
+        `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine -like '*${dir.replace(/'/g, "''")}*' } | ` +
+        `ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`;
+      require("child_process").spawnSync("powershell.exe", ["-NoProfile", "-Command", ps], { windowsHide: true, timeout: 15000 });
+    } else {
+      require("child_process").spawnSync("pkill", ["-f", dir], { timeout: 5000 });
+    }
+  } catch {
+    /* best effort */
+  }
+  for (const f of ["SingletonLock", "SingletonCookie", "SingletonSocket", "lockfile"]) {
+    try { fs.rmSync(path.join(dir, "session-biome", f), { force: true }); } catch {}
+  }
+}
+
+/** What happens once WhatsApp is connected, whichever engine. */
+function afterConnected() {
+  persistChats();
+  autoSelectSalesGroups();
+  replayUnscoped();
+  setTimeout(() => { try { sweepStaged({}); } catch {} }, 8000);
+  if (!global.__biomeSweepTimer) {
+    global.__biomeSweepTimer = setInterval(() => { try { sweepStaged({}); } catch {} }, 20 * 60 * 1000);
+  }
+}
+
+/** One incoming message, whichever engine delivered it. */
+function onIncoming(msg, { live = true } = {}) {
+  diag.messagesSeen += 1;
+  if (msg?.key?.id && msg.message) {
+    recentMessages.set(msg.key.id, msg);
+    if (recentMessages.size > 1000) recentMessages.delete(recentMessages.keys().next().value);
+  }
+  rememberChat(msg);
+  rememberChatText(msg);
+  enqueue(msg);
+}
+
+async function connectWeb() {
+  const browserPath = webEngine.findBrowser();
+  if (!browserPath) throw new Error("No Microsoft Edge or Google Chrome found on this PC.");
+  webStarting = true;
+  state.engine = "web";
+  state.browser = browserPath;
+  setStatus("connecting", { lastError: null, qrDataUrl: null });
+  log(`WhatsApp engine: WhatsApp Web in ${path.basename(browserPath)} (${browserPath})`);
+  closeStrayBrowsers();
+  try {
+    web = await webEngine.startWebEngine({
+      dataDir: webSessionDir(),
+      browserPath,
+      hooks: {
+        log,
+        onQr: async (qr) => {
+          try {
+            state.qrDataUrl = await QRCode.toDataURL(qr, { margin: 1, width: 320 });
+            state.qrExpiresAt = new Date(Date.now() + 20000).toISOString();
+            setStatus("qr");
+          } catch (err) {
+            setStatus("error", { lastError: `Could not render the QR code: ${err.message}` });
+          }
+        },
+        onReady: (me) => {
+          state.qrDataUrl = null;
+          state.qrExpiresAt = null;
+          state.me = me;
+          setStatus("connected", { lastError: null });
+        },
+        onGroups: (list) => {
+          for (const g of list) {
+            const existing = knownChats.get(g.jid) || { jid: g.jid, isGroup: true, messageCount: 0, documentCount: 0, firstSeen: new Date().toISOString() };
+            existing.name = g.name || existing.name;
+            existing.participantCount = g.participants;
+            knownChats.set(g.jid, existing);
+          }
+          log(`found ${list.length} group(s)`);
+          afterConnected();
+          // Catch up: documents posted while this PC was off do not arrive
+          // as new messages in WhatsApp Web — read the last 7 days of the
+          // selected chats once (anything already filed is skipped).
+          if (!global.__biomeWebCaughtUp && web) {
+            global.__biomeWebCaughtUp = true;
+            const c = settings();
+            const jids = [...new Set([...c.allowedChats, ...c.receivingChats, ...c.labChats])];
+            if (jids.length) {
+              web.fetchHistory(jids, Math.floor(Date.now() / 1000) - 7 * 86400, 0, 200)
+                .then((n) => log(`catch-up: checked ${n} message(s) from the last 7 days in ${jids.length} selected chat(s)`))
+                .catch((err) => log(`catch-up failed: ${err.message}`));
+            }
+          }
+        },
+        onMessage: (msg) => onIncoming(msg),
+        onClosed: ({ loggedOut, reason }) => {
+          const was = web;
+          web = null;
+          if (was) was.stop(false).catch(() => {});
+          if (intentionalLogout) return setStatus("disconnected", { qrDataUrl: null, me: null });
+          if (loggedOut) {
+            try { fs.rmSync(webSessionDir(), { recursive: true, force: true }); } catch {}
+            return setStatus("logged_out", {
+              qrDataUrl: null, me: null,
+              lastError: "This device was unlinked from WhatsApp. Scan the QR code again to reconnect.",
+            });
+          }
+          setStatus("connecting", { lastError: `WhatsApp Web closed (${reason}) — reconnecting.` });
+          clearTimeout(reconnectTimer);
+          reconnectTimer = setTimeout(() => connect().catch((err) => setStatus("error", { lastError: err.message })), 5000);
+        },
+      },
+    });
+  } catch (err) {
+    web = null;
+    throw err;
+  } finally {
+    webStarting = false;
+  }
+}
+
 async function connect() {
-  if (sock) return; // already connected or connecting
+  if (sock || web || webStarting) return; // already connected or connecting
+  intentionalLogout = false;
+  if (chooseEngine() === "web") {
+    try {
+      return await connectWeb();
+    } catch (err) {
+      log(`WhatsApp Web engine could not start: ${err.message}`);
+      if (settings().engine === "web") {
+        return setStatus("error", { lastError: `WhatsApp Web could not start in the browser: ${err.message}` });
+      }
+      log("falling back to the Baileys engine");
+    }
+  }
+  return connectBaileys();
+}
+
+async function connectBaileys() {
+  if (sock) return;
+  state.engine = "baileys";
   intentionalLogout = false;
   setStatus("connecting", { lastError: null, qrDataUrl: null });
 
@@ -296,6 +477,12 @@ async function connect() {
     // Off for normal running so linking doesn't re-file months of old
     // paperwork; switched on only for an explicit historical scan.
     syncFullHistory: backfill.active,
+    // Baileys 7: with syncFullHistory false and no callback, Baileys refuses
+    // EVERY history sync — including the initial one that carries the LID
+    // mappings groups need. Group messages then cannot be routed and are
+    // silently dropped. Skip only the FULL history (type 2) unless a scan
+    // was asked for.
+    shouldSyncHistoryMessage: (m) => backfill.active || Number(m && m.syncType) !== 2,
     generateHighQualityLinkPreview: false,
     // When a group message cannot be decrypted the first time, WhatsApp
     // re-sends it on request — and Baileys must be able to look up what we
@@ -370,6 +557,9 @@ async function connect() {
         backfill.skippedOutOfRange += 1;
         continue;
       }
+      // Without an explicit scan, the start-up sync is only used to catch
+      // up on the last 7 days (what arrived while this PC was off).
+      if (!backfill.active && Number(msg.messageTimestamp || 0) < Date.now() / 1000 - 7 * 86400) continue;
       const before = queue.length;
       enqueue(msg);
       if (queue.length > before) backfill.queued += 1;
@@ -415,17 +605,11 @@ async function connect() {
         existing.participantCount = g.participants?.length ?? 0;
         knownChats.set(g.id, existing);
       }
-      persistChats();
       log(`found ${Object.keys(groups || {}).length} group(s)`);
-      autoSelectSalesGroups();
-      replayUnscoped();
       // Anything held while the agent was off is re-offered now, and again
       // every 20 minutes — so a vendor paper never waits on a human to
       // press a button once our document for that supply is filed.
-      setTimeout(() => { try { sweepStaged({}); } catch {} }, 8000);
-      if (!global.__biomeSweepTimer) {
-        global.__biomeSweepTimer = setInterval(() => { try { sweepStaged({}); } catch {} }, 20 * 60 * 1000);
-      }
+      afterConnected();
     } catch (err) {
       log(`could not list groups: ${err.message}`);
     }
@@ -568,6 +752,19 @@ function rememberChat(msg) {
 
 /** Ask WhatsApp for the real names of every group this account is in. */
 async function refreshGroupNames() {
+  if (web) {
+    try {
+      for (const g of await web.groups()) {
+        const existing = knownChats.get(g.jid) || { jid: g.jid, isGroup: true, documentCount: 0 };
+        existing.name = g.name || existing.name;
+        existing.participants = g.participants;
+        knownChats.set(g.jid, existing);
+      }
+    } catch (err) {
+      log("could not fetch group names:", err.message);
+    }
+    return;
+  }
   if (!sock) return;
   try {
     const groups = await sock.groupFetchAllParticipating();
@@ -631,7 +828,15 @@ async function disconnect({ forget }) {
     // Logout can fail if the socket is already gone — that's fine.
   }
   sock = null;
-  if (forget) clearAuthFolder();
+  if (web) {
+    const w = web;
+    web = null;
+    await w.stop(forget).catch(() => {});
+  }
+  if (forget) {
+    clearAuthFolder();
+    try { fs.rmSync(webSessionDir(), { recursive: true, force: true }); } catch {}
+  }
   setStatus("disconnected", { qrDataUrl: null, qrExpiresAt: null, me: null, lastError: null });
 }
 
@@ -1255,7 +1460,7 @@ async function handleMedia(msg, media) {
   // upload or a test) rather than from WhatsApp — same path from here on.
   let buffer = media.buffer || null;
   if (!buffer) try {
-    buffer = await downloadMediaMessage(
+    buffer = msg.__wweb ? await webEngine.downloadWebMedia(msg) : await downloadMediaMessage(
       msg,
       "buffer",
       {},
@@ -1611,9 +1816,19 @@ async function handleMedia(msg, media) {
 
     log(
       `held ${DOC_TYPE_LABEL[docType] || "document"} "${media.fileName}" ` +
-        `(vehicle ${extracted?.vehicleNo || "?"}) — waiting for our invoice`
+        `(vehicle ${extracted?.vehicleNo || "?"}) — matching it against our documents already filed`
     );
-    return held;
+    // Our invoice for this supply may ALREADY be filed (it usually arrives
+    // first). Waiting for the 20-minute sweep left the vendor paper outside
+    // its supply-set folder — it looked as if nothing was saved. Match now.
+    try {
+      const r = sweepStaged({ limit: 300, logFn: () => {} });
+      if (r.promoted) log(`vendor paper matched to a filed supply at once (${r.promoted} placed)`);
+      else log(`no filed document of ours matches "${media.fileName}" yet — it joins its supply when ours arrives`);
+    } catch (err) {
+      log(`immediate match skipped: ${err.message}`);
+    }
+    return store.byId(held.id) || held;
   }
 
   // ---- Ours. File it, then bring in everything it matches. ----
@@ -1896,6 +2111,7 @@ const server = http.createServer(async (req, res) => {
         // this process's environment — checking process.env alone made the
         // page say "add a Gemini key" while a key was set and in use.
         hasAiKey: Boolean(aiKeys().gemini || aiKeys().anthropic),
+        engine: state.engine || chooseEngine(),
         diag: {
           ...diag,
           selectedChats: (() => {
@@ -1994,8 +2210,30 @@ const server = http.createServer(async (req, res) => {
         }
       }, 90000);
 
-      // History sync is negotiated at connection time, so reconnect.
       log(`historical scan requested: ${backfill.fromDate || "any"} to ${backfill.toDate || "any"}`);
+      // WhatsApp Web: read the selected chats' older messages directly.
+      if (web) {
+        clearTimeout(backfillTimeout);
+        const c = settings();
+        const jids = [...new Set([...c.allowedChats, ...c.receivingChats, ...c.labChats])];
+        const from = backfill.fromDate ? Math.floor(new Date(backfill.fromDate).getTime() / 1000) : 0;
+        const to = backfill.toDate ? Math.floor(new Date(backfill.toDate).getTime() / 1000) + 86399 : 0;
+        const before = diag.queued;
+        web.fetchHistory(jids, from, to).then((n) => {
+          backfill.seen = n;
+          backfill.queued = diag.queued - before;
+          backfill.active = false;
+          backfill.finishedAt = new Date().toISOString();
+          backfill.note = jids.length ? `Read ${n} older message(s) from ${jids.length} selected chat(s).` : "No chat is selected — select the supply group first.";
+          log(`history scan finished: ${n} messages read, ${backfill.queued} documents queued`);
+        }).catch((err) => {
+          backfill.active = false;
+          backfill.finishedAt = new Date().toISOString();
+          backfill.note = `Could not read older messages: ${err.message}`;
+        });
+        return json(res, 200, { ok: true, backfill });
+      }
+      // History sync is negotiated at connection time, so reconnect.
       try {
         if (sock) {
           intentionalLogout = false;
@@ -2374,6 +2612,12 @@ const server = http.createServer(async (req, res) => {
       log(watchAll ? "now watching all chats" : allowed.length ? `now watching ${allowed.length} chat(s)` : "watching no chats until a scope is selected");
       ignoredChatsLogged.clear();
       replayUnscoped();
+      // Newly selected chats: read their last 7 days once (WhatsApp Web).
+      if (web) {
+        web.fetchHistory([...new Set([...allowed, ...receivingChats, ...labChats])], Math.floor(Date.now() / 1000) - 7 * 86400, 0, 200)
+          .then((n) => log(`selection changed: checked ${n} recent message(s) in the selected chats`))
+          .catch(() => {});
+      }
       return json(res, 200, { ok: true, allowedChats: allowed, trackingAll: watchAll, receivingChats, labChats, learnChats });
     }
 
@@ -2464,18 +2708,46 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    // TEST ONLY (BIOME_AGENT_TEST=1): push a message shaped exactly like
+    // WhatsApp Web's through the same path a real one takes —
+    // toAgentMessage → onIncoming → enqueue → download → read → file.
+    // Used by the build's Windows smoke test; absent in normal running.
+    if (route === "/test/web-message" && req.method === "POST" && process.env.BIOME_AGENT_TEST === "1") {
+      const b = await readBody(req);
+      const data = String(b.base64 || "");
+      const fake = {
+        id: { id: String(b.id || `TEST${Date.now()}${Math.floor(Math.random() * 1e6)}`), remote: b.chat, _serialized: `x_${b.chat}_${b.id || Date.now()}_${Math.random()}` },
+        from: b.fromMe ? "me@c.us" : b.chat, to: b.fromMe ? b.chat : "me@c.us", author: b.author || undefined,
+        fromMe: Boolean(b.fromMe), type: b.type || "document", hasMedia: b.type !== "chat",
+        timestamp: Math.floor(Date.now() / 1000), body: b.body || "",
+        _data: { mimetype: b.mimetype, filename: b.filename, size: Buffer.byteLength(data, "base64"), notifyName: b.sender || "Tester", caption: b.caption || "" },
+        downloadMedia: async () => ({ data, mimetype: b.mimetype, filename: b.filename }),
+      };
+      onIncoming(webEngine.toAgentMessage(fake));
+      return json(res, 200, { ok: true, queued: queue.length, processing: state.processing });
+    }
+
     if (route === "/send" && req.method === "POST") {
       // Send a plain text message from the linked account — used for vendor
       // follow-ups (missing documents, pending credit notes, PO notices).
       // Text only, one recipient, and only when the app asks: the agent never
       // messages anyone on its own.
       const body = await readBody(req);
-      if (!sock || state.status !== "connected") return json(res, 409, { error: "WhatsApp is not connected on the server." });
+      if ((!sock && !web) || state.status !== "connected") return json(res, 409, { error: "WhatsApp is not connected on the server." });
       const digits = String(body.to || "").replace(/\D/g, "");
       const number = digits.length === 10 ? `91${digits}` : digits;
       if (number.length < 11 || number.length > 15) return json(res, 400, { error: "Give a mobile number with country code, e.g. 9198XXXXXXXX." });
       const text = String(body.text || "").trim().slice(0, 4000);
       if (!text) return json(res, 400, { error: "Nothing to send." });
+      if (web) {
+        try {
+          const sent = await web.send(number, text);
+          log(`follow-up sent to ${number}`);
+          return json(res, 200, { ok: true, id: sent?.id?.id || null, to: number });
+        } catch (err) {
+          return json(res, err.notFound ? 404 : 500, { error: err.notFound ? err.message : `WhatsApp refused the message: ${err.message}` });
+        }
+      }
       try {
         const [exists] = await sock.onWhatsApp(number).catch(() => [null]);
         if (exists && exists.exists === false) return json(res, 404, { error: `${number} is not on WhatsApp.` });
@@ -2845,7 +3117,7 @@ depsReady.then(() => server.listen(activePort, HOST, () => {
   }
   // If a session already exists from last time, come straight back up —
   // that's what makes this feel like a background service.
-  const hasSession = fs.existsSync(path.join(PATHS.waAuth, "creds.json"));
+  const hasSession = fs.existsSync(path.join(PATHS.waAuth, "creds.json")) || hasWebSession();
   if (hasSession) {
     log("existing session found — reconnecting automatically");
     connect().catch((err) => setStatus("error", { lastError: err.message }));
@@ -2855,7 +3127,14 @@ depsReady.then(() => server.listen(activePort, HOST, () => {
 for (const sig of ["SIGINT", "SIGTERM"]) {
   process.on(sig, () => {
     cleanup();
-    process.exit(0);
+    const w = web;
+    web = null;
+    if (w) {
+      // Close the headless browser too, or it keeps the profile locked.
+      Promise.race([w.stop(false), new Promise((r) => setTimeout(r, 3000))]).finally(() => process.exit(0));
+    } else {
+      process.exit(0);
+    }
   });
 }
 process.on("exit", cleanup);
