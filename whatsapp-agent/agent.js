@@ -31,7 +31,7 @@ const crypto = require("crypto");
 const { URL } = require("url");
 
 const { PATHS, ensureAllDirs, ensureDir } = require("./lib/paths");
-const { parseReference } = require("./lib/reference");
+const { parseReference, repairReference } = require("./lib/reference");
 const { classifyDocument, readLocally, DOC_TYPE_LABEL } = require("./lib/classify");
 const learning = require("./lib/learning");
 const sampleStore = require("./lib/samples");
@@ -1258,7 +1258,7 @@ async function drain() {
       state.queueDepth = queue.length;
       state.processing += 1;
       try {
-        await handleMedia(job.msg, job.media);
+        await serialized(() => handleMedia(job.msg, job.media));
         diag.processed += 1;
       } catch (err) {
         diag.failed += 1;
@@ -1517,44 +1517,93 @@ function autoSelectSalesGroups() {
  * This walks every filed document of ours and offers it to staging again.
  * It is safe to run repeatedly: markConsumed() removes anything matched.
  */
-function sweepStaged({ limit = 500, logFn = log } = {}) {
+function sweepStaged({ logFn = log } = {}) {
   const opts = { companyCodes: settings().companyCodes, vendorCodes: vendors().map((v) => v.code) };
-  const ours = store
-    .all()
-    .filter((r) => r.bucket === "filed" && r.reference && r.reference.canonical && r.filePath)
-    .slice(-limit);
-
-  let promoted = 0, examined = 0;
-  for (const rec of ours) {
-    const pendingNow = staging.pending();
-    if (!pendingNow.length) break;
-    const reference = parseReference(rec.reference.canonical, opts);
-    if (!reference) continue;
-    examined += 1;
-    const targetDir = path.dirname(rec.filePath);
-    const supplyType = reference.plantCode ? "manufacturing" : "trading";
-    let matches = [];
-    try {
-      matches = staging.findMatches({ reference, extracted: rec.extracted, vendors: vendors(), plantAdjustmentKg: 0 });
-    } catch { continue; }
-    for (const m of matches) {
-      const done = promoteStagedVendorDoc(m.entry, reference, targetDir, supplyType, logFn);
-      if (done) promoted += 1;
+  let anchors = [];
+  try {
+    anchors = supplyAnchors(opts);
+  } catch (err) {
+    logFn(`could not list the supply sets: ${err.message}`);
+  }
+  let promoted = 0, fromTrips = 0, ambiguous = 0;
+  if (anchors.length) {
+    for (const entry of staging.pending()) {
+      let best = null;
+      try {
+        best = staging.bestAnchorFor(entry, anchors);
+      } catch {
+        continue;
+      }
+      if (!best) continue;
+      if (best.ambiguous) {
+        ambiguous += 1;
+        logFn(`"${entry.fileName}" fits ${best.candidates.map((c) => `${c.reference} (${c.score})`).join(" and ")} equally — left for a person to choose`);
+        continue;
+      }
+      const a = best.anchor;
+      const done = promoteStagedVendorDoc(entry, a.reference, a.dir, a.supplyType, logFn, best.reasons, best.score);
+      if (done) {
+        promoted += 1;
+        if (a.source === "trip") fromTrips += 1;
+      }
     }
   }
-  // Coordination trips are anchors too. A trip saved with its reference
-  // (or with our doc no + vendor code + vendor doc no) says outright which
-  // supply a vendor paper belongs to — the vendor paper must not wait for
-  // our invoice to come through WhatsApp as well.
-  let fromTrips = 0;
+  logFn(`staging sweep: ${promoted} document(s) filed (${fromTrips} via coordination trips) against ${anchors.length} supply set(s); ${staging.pending().length} still waiting${ambiguous ? `, ${ambiguous} ambiguous` : ""}`);
+  return { promoted, examined: anchors.length, fromTrips, ambiguous, stillWaiting: staging.pending().length };
+}
+
+const ANCHOR_TYPES = ["biome_tax_invoice", "biome_delivery_challan"];
+const OUR_OTHER_TYPES = ["biome_eway_bill", "biome_debit_note", "biome_credit_note"];
+
+/**
+ * Every supply a waiting paper could belong to: one per supply set whose
+ * OWN invoice/challan is filed (what the set knows about itself merged
+ * from all its filed papers — vehicle, our number, e-way numbers, LR,
+ * weight, date), plus coordination trips that name a reference.
+ */
+function supplyAnchors(opts) {
+  opts = opts || { companyCodes: settings().companyCodes, vendorCodes: vendors().map((v) => v.code) };
+  const byRef = new Map();
+  for (const r of store.all()) {
+    const canon = r.reference?.canonical;
+    if (r.bucket !== "filed" || !canon || !r.filePath) continue;
+    if (!byRef.has(canon)) byRef.set(canon, { our: null, docs: [] });
+    const g = byRef.get(canon);
+    g.docs.push(r);
+    if (!g.our && ANCHOR_TYPES.includes(r.extracted?.documentType)) g.our = r;
+  }
+  const plants = loadPlants();
+  const out = [];
+  for (const [canon, g] of byRef) {
+    if (!g.our) continue;
+    const ex = { ...(g.our.extracted || {}) };
+    const eways = new Set();
+    for (const d of [g.our, ...g.docs]) {
+      const e = d.extracted || {};
+      for (const k of ["vehicleNo", "grNumber", "quantityKg", "netWeight", "documentDate", "biomeDocNo", "clientName"]) {
+        if (ex[k] == null && e[k] != null && (/^biome_/.test(e.documentType || "") || ["vehicleNo", "grNumber"].includes(k))) ex[k] = e[k];
+      }
+      if (/^biome_/.test(e.documentType || "") && e.ewayBillNo) eways.add(String(e.ewayBillNo).replace(/\D/g, ""));
+    }
+    ex.ewayBillNos = [...eways];
+    const parsed = parseReference(canon, { ...opts, plantCodes: plants.map((p) => p.code) });
+    const reference = parsed || { ...g.our.reference };
+    const plant = reference.plantCode ? plants.find((p) => String(p.code || "").toUpperCase() === reference.plantCode) : null;
+    out.push({
+      reference,
+      extracted: ex,
+      vendors: vendors(),
+      plantAdjustmentKg: Number(plant?.weightAdjustmentKg) || 0,
+      dir: path.dirname(g.our.filePath),
+      supplyType: reference.plantCode ? "manufacturing" : "trading",
+      source: "filed",
+    });
+  }
+  // Coordination trips are anchors too: a trip saved with its reference
+  // says outright which supply a vendor paper belongs to.
   try {
     for (const anchor of coordinationAnchors(opts)) {
-      if (!staging.pending().length) break;
-      let matches = [];
-      try {
-        matches = staging.findMatches({ reference: anchor.reference, extracted: anchor.extracted, vendors: vendors(), plantAdjustmentKg: 0 });
-      } catch { continue; }
-      if (!matches.length) continue;
+      if (byRef.has(anchor.reference.canonical)) continue;
       const plan = planFiling({
         reference: anchor.reference,
         supplyType: anchor.reference.plantCode ? "manufacturing" : "trading",
@@ -1564,16 +1613,53 @@ function sweepStaged({ limit = 500, logFn = log } = {}) {
         receivedAt: new Date(anchor.extracted.documentDate || Date.now()),
         senderName: "Coordination",
       });
-      for (const m of matches) {
-        const done = promoteStagedVendorDoc(m.entry, anchor.reference, plan.dir, anchor.reference.plantCode ? "manufacturing" : "trading", logFn);
-        if (done) { promoted += 1; fromTrips += 1; }
-      }
+      out.push({ reference: anchor.reference, extracted: anchor.extracted, vendors: vendors(), plantAdjustmentKg: 0, dir: plan.dir, supplyType: anchor.reference.plantCode ? "manufacturing" : "trading", source: "trip" });
     }
-  } catch (err) {
-    logFn(`coordination anchors skipped: ${err.message}`);
+  } catch {
+    /* trips are optional */
   }
-  logFn(`staging sweep: ${promoted} document(s) filed (${fromTrips} via coordination trips) from ${examined} of our references; ${staging.pending().length} still waiting`);
-  return { promoted, examined, fromTrips, stillWaiting: staging.pending().length };
+  return out;
+}
+
+/** The reference for OUR invoice/challan whose printed reference could not be read. */
+function referenceForOurDocument(extracted, opts) {
+  if (!extracted) return null;
+  // 1. The printed reference, rebuilt from what OCR left of it.
+  try {
+    const fixed = repairReference(extracted.transcription || "", { ...opts, ourDocNo: extracted.biomeDocNo });
+    if (fixed) return { ...fixed, how: `reference rebuilt from "${fixed.repairedFrom}"` };
+  } catch {
+    /* fall through */
+  }
+  const core = (v) => { const m = String(v || "").match(/(\d+)\s*$/); return m ? m[1].replace(/^0+(?=\d)/, "") : null; };
+  const ours = core(extracted.biomeDocNo);
+  // 2. A coordination trip for the same document number (and vehicle).
+  try {
+    const plate = (v) => String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const trip = coordinationAnchors(opts).find((a) =>
+      ours && core(a.extracted.biomeDocNo) === ours &&
+      (!a.extracted.vehicleNo || !extracted.vehicleNo || plate(a.extracted.vehicleNo) === plate(extracted.vehicleNo))
+    );
+    if (trip) return { ...trip.reference, how: "reference taken from the coordination trip" };
+  } catch {
+    /* fall through */
+  }
+  // 3. The set is still created — under our own document number — so
+  //    every paper of this supply can join it now; the vendor part of
+  //    the reference is filled in when it becomes known.
+  if (ours) {
+    const companyCode = (opts.companyCodes || ["BDC"])[0];
+    return {
+      canonical: `${companyCode}/${ours}`,
+      companyCode,
+      biomeDocNo: ours,
+      vendorCode: null,
+      vendorDocNo: null,
+      provisional: true,
+      how: "reference not readable — set opened under our document number",
+    };
+  }
+  return null;
 }
 
 /**
@@ -1613,7 +1699,7 @@ function coordinationAnchors(opts) {
   return out;
 }
 
-function promoteStagedVendorDoc(entry, reference, targetDir, supplyType, logFn = log) {
+function promoteStagedVendorDoc(entry, reference, targetDir, supplyType, logFn = log, reasons = null, score = null) {
   try {
     const sourcePath = entry.filePath;
     if (!sourcePath || !fs.existsSync(sourcePath)) {
@@ -1646,6 +1732,7 @@ function promoteStagedVendorDoc(entry, reference, targetDir, supplyType, logFn =
 
     staging.markConsumed(entry.id, reference.canonical, saved.filePath);
     store.update(entry.id, {
+      ...(reasons ? { autoFiled: true, autoFiledAt: new Date().toISOString(), autoFiledReasons: reasons, autoFiledConfidence: score } : {}),
       bucket: "filed",
       filePath: saved.filePath,
       relativePath: path.relative(PATHS.inbox, saved.filePath),
@@ -1656,6 +1743,7 @@ function promoteStagedVendorDoc(entry, reference, targetDir, supplyType, logFn =
         biomeDocNo: reference.biomeDocNo,
         vendorCode: reference.vendorCode,
         vendorDocNo: reference.vendorDocNo,
+        ...(reference.provisional ? { provisional: true } : {}),
       },
     });
     logFn(
@@ -1675,7 +1763,7 @@ async function handleMedia(msg, media) {
   const receivedAt = new Date(
     Number(msg.messageTimestamp || 0) * 1000 || Date.now()
   );
-  const sender = senderOf(msg);
+  const sender = media.senderOverride || senderOf(msg);
   log(`incoming ${media.kind} "${media.fileName}" from ${sender.name || sender.chatJid}`);
 
   // 1. Download from WhatsApp's media servers.
@@ -1736,8 +1824,9 @@ async function handleMedia(msg, media) {
   // the bytes catches every copy, whoever sent it and whatever they
   // named it — message ids don't, because each forward is a new message.
   const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
+  const thisId = `doc-${msg.key.id}`;
   const alreadyHave = store.findByHash(sha256);
-  if (alreadyHave) {
+  if (alreadyHave && alreadyHave.id !== thisId && !media.reprocess) {
     log(`skipped "${media.fileName}" — same file already handled as ${alreadyHave.originalName}`);
     return store.append({
       id: `doc-${msg.key.id}`,
@@ -1852,13 +1941,35 @@ async function handleMedia(msg, media) {
   // A merged PDF's page and the single file sent later hash differently
   // but ARE the same invoice. Treating each as new is how one document
   // got counted two or three times. The document's own number decides.
-  const logicalDup = store.findLogicalDuplicate(extracted?.documentType, extracted);
-  if (logicalDup && !inheritedFrom) {
+  let logicalDup = store.findLogicalDuplicate(extracted?.documentType, extracted);
+  if (logicalDup && logicalDup.id === thisId) logicalDup = null;
+  // The same invoice again, but this copy's reference IS readable while
+  // the first one's was not (a photo first, the PDF later): give the set
+  // its real reference instead of discarding the better copy's news.
+  if (logicalDup && logicalDup.reference?.provisional && reference && !reference.provisional) {
+    upgradeProvisionalSet(logicalDup.reference.canonical, reference);
+  }
+  if (logicalDup && !inheritedFrom && !media.reprocess) {
     log(`duplicate by identity — "${media.fileName}" is the same ${extracted?.documentType} as ${logicalDup.originalName}`);
+    // Kept (outside the supply folders) rather than thrown away: "same
+    // number" is a judgement from a read, and a misread must be
+    // recoverable — the copy is re-read when the rules improve.
+    let keptPath = null;
+    try {
+      const d = new Date();
+      const keep = saveFile({
+        dir: path.join(PATHS.inbox, "_Review Queue", "_Same document again", `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`),
+        baseName: path.basename(String(media.fileName || "document"), path.extname(String(media.fileName || ""))).replace(/[<>:"/\\|?*\u0000-\u001F]/g, " ").slice(0, 90) || "document",
+        ext: path.extname(String(media.fileName || "")) || (/pdf/.test(media.mimeType || "") ? ".pdf" : ".jpg"),
+      }, buffer);
+      keptPath = keep.filePath;
+    } catch {
+      /* the ledger row below still records it */
+    }
     return store.append({
       id: `doc-${msg.key.id}`, messageId: msg.key.id, receivedAt: receivedAt.toISOString(), sender,
       originalName: media.fileName, mimeType: media.mimeType, sizeBytes: buffer.length, sha256,
-      bucket: "_Duplicate", filePath: null, duplicateOf: logicalDup.id, duplicateOfPath: logicalDup.relativePath || null,
+      bucket: "_Duplicate", filePath: keptPath, relativePath: keptPath ? path.relative(PATHS.inbox, keptPath) : null, logicalDuplicate: true, duplicateOf: logicalDup.id, duplicateOfPath: logicalDup.relativePath || null,
       reference: logicalDup.reference || reference || null, extracted,
       aiStatus: "skipped", aiMessage: `Same ${extracted?.documentType} as "${logicalDup.originalName}" (same document number) — not filed twice.`,
     });
@@ -1872,7 +1983,7 @@ async function handleMedia(msg, media) {
   // staging until our own document names the supply.
   log(`[3/6] reference: ${reference ? reference.canonical : "none on this page"}`);
 
-  const docType = extracted?.documentType || null;
+  let docType = extracted?.documentType || null;
   // The coordination reference is printed ONLY on our own invoice /
   // delivery note. A page that carries one in its own text but whose
   // type could not be read (header cropped, blurred photo) is ours —
@@ -1883,13 +1994,43 @@ async function handleMedia(msg, media) {
     ((extracted.referenceNo && parseReference(extracted.referenceNo, opts)?.canonical === reference.canonical) ||
       (extracted.transcription && parseReference(extracted.transcription, opts)?.canonical === reference.canonical))
   );
-  const isOurs =
-    docType === "biome_tax_invoice" ||
-    docType === "biome_delivery_challan" ||
-    docType === "biome_eway_bill" ||
-    (referenceOnPage && (!docType || docType === "other"));
+  // Our invoice read as a vendor's: it prints our reference, and nothing
+  // on the page puts Biome in the buyer / bill-to / consignee block.
+  if (extracted && referenceOnPage && /^vendor_(tax_invoice|delivery_challan|eway_bill)$/.test(docType || "") && extracted.issuerSide !== "them") {
+    const ours = docType.replace(/^vendor_/, "biome_");
+    log(`"${media.fileName}" prints our reference ${reference.canonical} and does not name Biome as the buyer — it is OUR ${DOC_TYPE_LABEL[ours]}, not the vendor's`);
+    extracted.documentTypeFromReader = docType;
+    extracted.documentType = ours;
+    docType = ours;
+  }
+  const isAnchor = ANCHOR_TYPES.includes(docType) || (referenceOnPage && (!docType || docType === "other"));
+  const isOurs = isAnchor || OUR_OTHER_TYPES.includes(docType);
   if (isOurs && !/^biome_/.test(String(docType))) {
     log(`"${media.fileName}" type unclear but prints ${reference.canonical} — filing it as our document for that supply`);
+  }
+
+  // OUR invoice / challan whose reference could not be read: it still
+  // opens (or joins) its supply set — never waits for itself.
+  if (isAnchor && !reference && extracted) {
+    const found = referenceForOurDocument(extracted, { ...opts });
+    if (found) {
+      reference = found;
+      log(`[3/6] ${found.how}: ${found.canonical}`);
+    }
+  }
+
+  // Our e-way bill / debit or credit note without a reference: it prints
+  // our invoice number (Document No.), the vehicle and the e-way number —
+  // join the set that number belongs to; wait in staging only if that set
+  // does not exist yet.
+  let joinAnchor = null;
+  if (!isAnchor && !reference && extracted && docType !== "receiving" && docType !== "lab_report") {
+    try {
+      const best = staging.bestAnchorFor({ extracted }, supplyAnchors(opts));
+      if (best && !best.ambiguous) joinAnchor = best;
+    } catch {
+      /* falls back to staging */
+    }
   }
 
   // CLIENT RECEIVING: match by vehicle + client within 0..3 days and use
@@ -1959,11 +2100,14 @@ async function handleMedia(msg, media) {
   // buyer is Biome and its date is the vendor's); we reuse the folder our
   // document already sits in. If ours has not arrived yet, the paper is
   // held below and released the moment it does (or by the sweep).
-  if (!isOurs && reference && reference.canonical) {
-    const ourFiled = store.all().find((r) =>
-      r.bucket === "filed" && r.filePath && r.reference && r.reference.canonical === reference.canonical &&
-      ["biome_tax_invoice", "biome_delivery_challan", "biome_eway_bill"].includes(r.extracted?.documentType)
-    );
+  if ((!isOurs && reference && reference.canonical) || joinAnchor) {
+    const ourFiled = joinAnchor
+      ? { filePath: path.join(joinAnchor.anchor.dir, "x") }
+      : store.all().find((r) =>
+          r.bucket === "filed" && r.filePath && r.reference && r.reference.canonical === reference.canonical &&
+          ["biome_tax_invoice", "biome_delivery_challan", "biome_eway_bill"].includes(r.extracted?.documentType)
+        );
+    if (joinAnchor) reference = joinAnchor.anchor.reference;
     if (ourFiled) {
       const targetDir = path.dirname(ourFiled.filePath);
       const namePlan = planFiling({
@@ -1985,10 +2129,11 @@ async function handleMedia(msg, media) {
           canonical: reference.canonical, companyCode: reference.companyCode,
           biomeDocNo: reference.biomeDocNo, vendorCode: reference.vendorCode,
           vendorDocNo: reference.vendorDocNo,
+          ...(reference.provisional ? { provisional: true } : {}),
         },
         extracted, aiStatus: ai.ok ? "ok" : "skipped", aiMessage: ai.ok ? null : ai.message,
-        autoFiled: true, autoFiledConfidence: 95,
-        autoFiledReasons: [`Names ${reference.canonical}; our document for it is already filed — placed beside it`],
+        autoFiled: true, autoFiledConfidence: joinAnchor ? joinAnchor.score : 95,
+        autoFiledReasons: joinAnchor ? joinAnchor.reasons : [`Names ${reference.canonical}; our document for it is already filed — placed beside it`],
         replyToMessageId: quotedMessageId(msg),
       });
       log(`vendor ${docType || "document"} for ${reference.canonical} joined its supply -> ${path.relative(PATHS.inbox, saved.filePath)}`);
@@ -1996,7 +2141,32 @@ async function handleMedia(msg, media) {
     }
   }
 
-  if (!isOurs) {
+  // Nothing a supply could be matched on — a chat screenshot, a selfie,
+  // or a file that could not be read at all. These are not "waiting to
+  // match" (nothing will ever claim them): set them aside, or put them in
+  // front of a person, instead of padding the waiting list.
+  const nothingToMatch = !extracted || (
+    (!docType || docType === "other") &&
+    !extracted.vehicleNo && !extracted.biomeDocNo && !extracted.vendorDocNo && !extracted.ewayBillNo && !extracted.grNumber
+  );
+  if (!isOurs && nothingToMatch) {
+    const plan = planFiling({ reference: null, extracted: extracted || { documentType: "other" }, originalName: media.fileName, mimeType: media.mimeType, receivedAt, senderName: sender.name || sender.chatJid });
+    const unreadable = !extracted;
+    const reviewPlan = unreadable
+      ? { ...plan, bucket: "unmatched", dir: path.join(PATHS.inbox, "_Review Queue", "_Could not read") }
+      : plan;
+    const saved = saveFile(reviewPlan, buffer);
+    log(unreadable ? `"${media.fileName}" could not be read — saved for a person to look at` : `"${media.fileName}" is not supply paperwork — set aside`);
+    return store.append({
+      id: thisId, messageId: msg.key.id, receivedAt: receivedAt.toISOString(), sender,
+      originalName: media.fileName, mimeType: media.mimeType, sizeBytes: buffer.length, sha256, caption: media.caption,
+      bucket: reviewPlan.bucket, filePath: saved.filePath, relativePath: path.relative(PATHS.inbox, saved.filePath),
+      reference: null, extracted, aiStatus: ai.ok ? "ok" : "error", aiMessage: ai.ok ? null : ai.message,
+      reviewRequired: unreadable, reviewReason: unreadable ? (ai.message || "No readable text in this file.") : null,
+    });
+  }
+
+  if (!isOurs || (!isAnchor && !reference)) {
     const stagedId = `doc-${msg.key.id}`;
     staging.stage({
       id: stagedId,
@@ -2109,6 +2279,8 @@ async function handleMedia(msg, media) {
           biomeDocNo: reference.biomeDocNo,
           vendorCode: reference.vendorCode,
           vendorDocNo: reference.vendorDocNo,
+          ...(reference.provisional ? { provisional: true } : {}),
+          ...(reference.how ? { how: reference.how } : {}),
         }
       : null,
     extracted,
@@ -2149,26 +2321,22 @@ async function handleMedia(msg, media) {
       );
       plantAdjustmentKg = Number(plant?.weightAdjustmentKg) || 0;
     }
-    const vendorMatches = staging.findMatches({ reference, extracted, vendors: vendorList, plantAdjustmentKg });
-
-    // A reply is a deliberate pairing by a person — trust it outright even
-    // if field-matching alone wouldn't have cleared the score threshold.
+    // A reply is a deliberate pairing by a person — trust it outright.
     if (replyTo) {
       const repliedEntry = staging.findByMessageId(replyTo);
-      if (repliedEntry && !vendorMatches.some((m) => m.entry.id === repliedEntry.id)) {
-        vendorMatches.unshift({
-          entry: repliedEntry,
-          score: 100,
-          reasons: ["this invoice was sent as a reply to that document"],
-        });
+      if (repliedEntry) {
+        promoteStagedVendorDoc(repliedEntry, reference, plan.dir, supply.type, log, ["this invoice was sent as a reply to that document"], 100);
       }
     }
-
-    for (const match of vendorMatches) {
-      promoteStagedVendorDoc(match.entry, reference, plan.dir, supply.type);
-    }
-    if (vendorMatches.length) {
-      log(`matched ${vendorMatches.length} staged document(s) to ${reference.canonical}`);
+    // Every waiting paper is offered to every supply set; each goes to the
+    // set it fits best (vehicle + date, our number, e-way number, vendor
+    // document number, LR number, weight).
+    void plantAdjustmentKg;
+    try {
+      const r = sweepStaged({ logFn: () => {} });
+      if (r.promoted) log(`matched ${r.promoted} waiting document(s) into their supply sets (this one: ${reference.canonical})`);
+    } catch (err) {
+      log(`matching waiting documents failed: ${err.message}`);
     }
 
     // Pull any of our own previously-filed papers for this reference onto
@@ -2181,12 +2349,144 @@ async function handleMedia(msg, media) {
   // that arrived before it can now be placed.
   if (record.reference) {
     for (const other of store.all()) {
-      if (other.reference || !other.extracted || other.id === record.id) continue;
+      // Staged papers were just offered by the sweep; moving their files
+      // here as well would leave the staging index pointing at nothing.
+      if (other.reference || !other.extracted || other.id === record.id || other.bucket === "_Staged") continue;
       autoFileFromSuggestion(other.id, other.extracted);
     }
   }
 
   return record;
+}
+
+/**
+ * A set opened under our document number alone ("BDC/871") learns its
+ * full reference: every record moves to the real reference and folder.
+ */
+function upgradeProvisionalSet(oldCanonical, reference) {
+  if (!oldCanonical || !reference?.canonical || oldCanonical === reference.canonical) return 0;
+  let n = 0;
+  for (const r of store.all()) {
+    if (r.reference?.canonical !== oldCanonical) continue;
+    store.update(r.id, {
+      reference: {
+        canonical: reference.canonical, companyCode: reference.companyCode, biomeDocNo: reference.biomeDocNo,
+        vendorCode: reference.vendorCode, vendorDocNo: reference.vendorDocNo,
+      },
+    });
+    n += 1;
+  }
+  if (n) {
+    const moved = reanchorReference(reference.canonical, anchorDateFor(reference.canonical), log);
+    log(`supply set ${oldCanonical} now has its full reference ${reference.canonical} (${n} document(s), ${moved} moved)`);
+  }
+  return n;
+}
+
+/**
+ * Read one already-received document again with the current rules and
+ * place it again — exactly the WhatsApp path, keeping its id. Used by the
+ * Re-scan button, and on start-up for everything still waiting.
+ */
+async function rerunRecord(rec) {
+  const source = locateFile(rec);
+  if (!source) throw new Error("The saved file is missing from disk — it may have been moved or deleted.");
+  const buffer = fs.readFileSync(source);
+  const messageId = rec.messageId || String(rec.id || "").replace(/^doc-/, "");
+  const staged = staging.pending().find((e) => e.id === rec.id);
+  if (staged) staging.markConsumed(staged.id, null, null, "reprocessed");
+  const msg = {
+    key: { id: messageId, remoteJid: rec.sender?.chatJid || "reprocess@biome", fromMe: false, participant: rec.sender?.participantJid || null },
+    messageTimestamp: Math.floor(new Date(rec.receivedAt || Date.now()).getTime() / 1000),
+    pushName: rec.sender?.name || null,
+    message: {},
+    __reprocess: true,
+  };
+  let out;
+  try {
+    out = await handleMedia(msg, {
+      kind: /image/.test(rec.mimeType || "") ? "image" : "document",
+      fileName: rec.originalName || path.basename(source),
+      mimeType: rec.mimeType || "application/octet-stream",
+      caption: rec.caption || "",
+      buffer,
+      reprocess: true,
+      senderOverride: rec.sender || null,
+    });
+  } catch (err) {
+    // Put a staged paper back exactly as it was rather than lose it.
+    if (staged) staging.stage({ ...staged, buffer, receivedAt: staged.receivedAt });
+    throw err;
+  }
+  const now = store.byId(rec.id) || out;
+  // The bytes now live where the new decision put them; drop the old copy.
+  const newPath = now?.filePath || staging.pending().find((e) => e.id === rec.id)?.filePath || null;
+  if (newPath && path.resolve(newPath) !== path.resolve(source)) {
+    try {
+      fs.unlinkSync(source);
+      const dir = path.dirname(source);
+      if (fs.readdirSync(dir).length === 0) fs.rmdirSync(dir);
+    } catch {
+      /* a stray copy is better than a lost document */
+    }
+  }
+  return now;
+}
+
+/**
+ * After an update the reading and matching rules are better than the
+ * ones that put documents in "waiting to match". Once per build, every
+ * waiting paper and every one of OUR documents stuck without a supply is
+ * read again with the new rules; then the waiting list is swept.
+ */
+async function recheckWaitingOnStart() {
+  const marker = path.join(PATHS.root, "runtime", "wa-recheck.json");
+  let done = null;
+  try { done = JSON.parse(fs.readFileSync(marker, "utf8")); } catch {}
+  if (done?.build !== BUILD) {
+    const targets = [
+      ...staging.pending().map((e) => store.byId(e.id) || { id: e.id, messageId: e.messageId, originalName: e.fileName, mimeType: e.mimeType, receivedAt: e.receivedAt, sender: e.sender, caption: e.caption }),
+      // Our own papers that never formed a set: held for review, or filed
+      // without a reference ("Unidentified_consignment").
+      ...store.all().filter((r) => r.filePath && !r.reference && !r.standalone &&
+        ((r.bucket === "unmatched" && (/^biome_/.test(r.extracted?.documentType || "") || !r.extracted)) ||
+         (r.bucket === "filed" && /^biome_/.test(r.extracted?.documentType || "")) ||
+         (r.bucket === "_Duplicate" && r.logicalDuplicate))),
+      // Photos/scans the old reader typed as OURS: the old rules called a
+      // vendor's photographed invoice ours whenever our GSTIN was the
+      // clearest one on it. Most recent 200 only, to keep start-up quick.
+      ...store.all().filter((r) => r.bucket === "filed" && r.filePath && r.reference && /^biome_/.test(r.extracted?.documentType || "") &&
+        !/pdf_text$/.test(r.extracted?.readMethod || "") && !r.extracted?.issuerSide).slice(0, 200),
+    ];
+    const seen = new Set();
+    let changed = 0;
+    if (targets.length) log(`new rules (build ${BUILD}): reading ${targets.length} waiting document(s) again`);
+    for (const stale of targets) {
+      if (seen.has(stale.id)) continue;
+      seen.add(stale.id);
+      // Re-reading one paper can move others of its set (re-anchoring), so
+      // always work from the ledger's current row.
+      const rec = store.byId(stale.id) || stale;
+      const before = rec.bucket || "_Staged";
+      try {
+        const after = await serialized(() => rerunRecord(rec));
+        if (after && after.bucket !== before) changed += 1;
+      } catch (err) {
+        log(`could not re-read "${rec.originalName}": ${err.message}`);
+      }
+    }
+    try { fs.mkdirSync(path.dirname(marker), { recursive: true }); fs.writeFileSync(marker, JSON.stringify({ build: BUILD, at: new Date().toISOString(), documents: seen.size, changed }), "utf8"); } catch {}
+    if (seen.size) log(`re-read ${seen.size} waiting document(s): ${changed} placed differently`);
+  }
+  try { sweepStaged({}); } catch (err) { log(`start-up sweep failed: ${err.message}`); }
+}
+
+/** One document at a time through handleMedia, whoever asks. */
+let serialChain = Promise.resolve();
+function serialized(fn) {
+  const p = serialChain.then(fn, fn);
+  serialChain = p.catch(() => {});
+  return p;
 }
 
 /** Re-run AI + filing on an already-downloaded file (used by the UI's
@@ -2209,75 +2509,107 @@ function locateFile(rec) {
   return null;
 }
 
+/**
+ * Where a document's bytes are, for serving to the app: its filed copy,
+ * its staging copy, or another ledger row holding the same file. Only
+ * paths inside the document folders are ever returned.
+ */
+function resolveDocFile(id) {
+  /** Another ledger row for the same document that still has its bytes. */
+  const findTwinWithBytes = (rec, id) => {
+    const all = store.all();
+    const me = rec || all.find((r) => r.id === id);
+    if (!me) return null;
+    const sameName = (a, b) =>
+      a && b && String(a).toLowerCase() === String(b).toLowerCase();
+    return (
+      all.find(
+        (r) =>
+          r.id !== id &&
+          r.filePath &&
+          fs.existsSync(path.resolve(r.filePath)) &&
+          ((me.sha256 && r.sha256 === me.sha256) || sameName(r.fileName, me.fileName))
+      ) || null
+    );
+  };
+
+  let rec = id ? store.byId(id) : null;
+
+  // Staged documents are indexed separately and may carry no filePath
+  // in the main ledger — or, if the ledger row hasn't been written for
+  // some other reason, no ledger row at all. Either way, fall back to
+  // the staging index by id rather than reporting the document
+  // missing when its bytes are sitting right there in staging/.
+  if (id && (!rec || !rec.filePath)) {
+    const staged = staging.findById(id);
+    if (staged?.filePath) {
+      rec = rec
+        ? { ...rec, filePath: staged.filePath, mimeType: staged.mimeType }
+        : { filePath: staged.filePath, mimeType: staged.mimeType };
+    }
+  }
+  // A re-shared document is often stored once and pointed at by
+  // several ledger rows. When the row that was clicked has no bytes of
+  // its own, fall back to another row carrying the same hash or the
+  // same file name — the document IS there, just under a different row.
+  if (id && (!rec || !rec.filePath || !fs.existsSync(path.resolve(rec.filePath)))) {
+    const twin = findTwinWithBytes(rec, id);
+    if (twin) rec = rec ? { ...rec, filePath: twin.filePath, mimeType: rec.mimeType || twin.mimeType } : twin;
+  }
+  if (!rec || !rec.filePath) return { status: 404, error: "Document not found." };
+
+  // Serve only from folders this agent owns. Staging counts: vendor
+  // documents now wait there until our invoice claims them, and they
+  // were being refused — which is why documents stopped opening.
+  const resolved = path.resolve(rec.filePath);
+  const allowedRoots = [
+    path.resolve(PATHS.inbox),
+    path.resolve(staging.stagingDir()),
+  ];
+  const insideAllowed = allowedRoots.some(
+    (root) => resolved === root || resolved.startsWith(root + path.sep)
+  );
+  if (!insideAllowed) {
+    return { status: 403, error: "Refusing to serve a file outside the document folders." };
+  }
+  if (!fs.existsSync(resolved)) return { status: 404, error: "The file is no longer on disk." };
+  return { rec, resolved };
+}
+
+/** First page (or page N) of a PDF, or an image, as a JPEG of the given width. */
+async function renderPreview(resolved, mimeType, page, width) {
+  const { loadMupdf, sniffMime } = require("./lib/imageOcr");
+  const mupdf = await loadMupdf();
+  let buffer = fs.readFileSync(resolved);
+  // Trust the bytes, not the name: WhatsApp images are saved as .jpg even
+  // when they are WebP.
+  let type = sniffMime(buffer, mimeType);
+  if (!/^(application\/pdf|image\/(jpeg|png|bmp|gif|tiff))$/.test(type)) {
+    try {
+      buffer = await require("sharp")(buffer).rotate().png().toBuffer();
+      type = "image/png";
+    } catch {
+      const e = new Error("not renderable");
+      e.code = "NOT_RENDERABLE";
+      e.mime = type;
+      throw e;
+    }
+  }
+  const doc = mupdf.Document.openDocument(buffer, type);
+  const pages = doc.countPages();
+  const n = Math.min(Math.max(1, page), pages) - 1;
+  const pg = doc.loadPage(n);
+  const b = pg.getBounds();
+  const scale = Math.max(0.05, Math.min(6, width / Math.max(1, b[2] - b[0])));
+  const pix = pg.toPixmap(mupdf.Matrix.scale(scale, scale), mupdf.ColorSpace.DeviceRGB, false, true);
+  // JPEG: a page picture is a photograph-like image; PNG was ~5x larger.
+  return { png: Buffer.from(pix.asJPEG(82, false)), pages };
+}
+
 async function reprocess(id) {
   const rec = store.byId(id);
   if (!rec) throw new Error("That document is not in the ledger.");
-
-  const sourcePath = locateFile(rec);
-  if (!sourcePath) {
-    throw new Error(
-      rec.bucket === "_Staged"
-        ? "This document is being held but its file is no longer on disk — it may have been cleared from staging."
-        : "The saved file is missing from disk — it may have been moved or deleted."
-    );
-  }
-
-  const buffer = fs.readFileSync(sourcePath);
-  const vendorList = vendors();
-  const cfg = settings();
-  const ai = await classifyDocument(buffer, rec.mimeType, {
-    geminiKey: aiKeys().gemini,
-    anthropicKey: aiKeys().anthropic,
-    vendors: vendorList.map((v) => ({ code: v.code, name: v.name })),
-  });
-  if (!ai.ok) throw new Error(ai.message);
-
-  const opts = { companyCodes: cfg.companyCodes, vendorCodes: vendorList.map((v) => v.code) };
-  const reference =
-    (ai.data.referenceNo ? parseReference(ai.data.referenceNo, opts) : null) ||
-    (ai.data.transcription ? parseReference(ai.data.transcription, opts) : null) ||
-    (rec.caption ? parseReference(rec.caption, opts) : null);
-
-  const plan = planFiling({
-    reference,
-    extracted: ai.data,
-    originalName: rec.originalName,
-    mimeType: rec.mimeType,
-    receivedAt: new Date(rec.receivedAt),
-    senderName: rec.sender?.name || rec.sender?.chatJid || "Unknown",
-  });
-  const saved = saveFile(plan, buffer);
-
-  // Remove the old copy only once the new one is safely written, and only
-  // if it genuinely moved.
-  if (saved.filePath !== rec.filePath) {
-    try {
-      fs.unlinkSync(rec.filePath);
-    } catch {
-      /* leaving a stray copy is better than throwing away the document */
-    }
-  }
-
-  return store.update(id, {
-    bucket: plan.bucket,
-    filePath: saved.filePath,
-    relativePath: path.relative(PATHS.inbox, saved.filePath),
-    sha256: saved.sha256,
-    referenceTypoNote: reference?.typoNote || null,
-    reference: reference
-      ? {
-          canonical: reference.canonical,
-          companyCode: reference.companyCode,
-          biomeDocNo: reference.biomeDocNo,
-          vendorCode: reference.vendorCode,
-          vendorDocNo: reference.vendorDocNo,
-          confidence: reference.score,
-        }
-      : null,
-    extracted: ai.data,
-    aiStatus: "ok",
-    aiMessage: null,
-  });
+  return serialized(() => rerunRecord(rec));
 }
 
 // ---------------------------------------------------------------------
@@ -2886,7 +3218,7 @@ const server = http.createServer(async (req, res) => {
       const kind = /pdf/.test(mimeType) ? "document" : /image/.test(mimeType) ? "image" : "document";
       try {
         state.processing += 1;
-        const rec = await handleMedia(msg, { kind, fileName, mimeType, buffer, caption: body.caption || "" });
+        const rec = await serialized(() => handleMedia(msg, { kind, fileName, mimeType, buffer, caption: body.caption || "" }));
         return json(res, 200, { ok: true, record: rec || store.all().find((r) => r.messageId === id) || null });
       } catch (err) {
         return json(res, 500, { error: err.message });
@@ -3099,72 +3431,49 @@ const server = http.createServer(async (req, res) => {
       return json(res, removed ? 200 : 404, removed ? { ok: true, samples: sampleStore.listSamples() } : { error: "Sample not found." });
     }
 
-    if (route === "/file" && req.method === "GET") {
-      /** Another ledger row for the same document that still has its bytes. */
-      const findTwinWithBytes = (rec, id) => {
-        const all = store.all();
-        const me = rec || all.find((r) => r.id === id);
-        if (!me) return null;
-        const sameName = (a, b) =>
-          a && b && String(a).toLowerCase() === String(b).toLowerCase();
-        return (
-          all.find(
-            (r) =>
-              r.id !== id &&
-              r.filePath &&
-              fs.existsSync(path.resolve(r.filePath)) &&
-              ((me.sha256 && r.sha256 === me.sha256) || sameName(r.fileName, me.fileName))
-          ) || null
-        );
-      };
-
+    // A picture of the document for the app: thumbnails in the supply-set
+    // panel and the pages of the full-page viewer. PDFs are rendered here
+    // (MuPDF) so every PDF shows the same on every PC; photos are scaled.
+    if ((route === "/preview" || route === "/preview-info") && req.method === "GET") {
       const id = url.searchParams.get("id");
-      let rec = id ? store.byId(id) : null;
+      const found = resolveDocFile(id);
+      if (found.error) return json(res, found.status, { error: found.error });
+      const { rec, resolved } = found;
+      const mime = rec.mimeType || "";
+      const page = Number(url.searchParams.get("page") || 1) || 1;
+      const width = Math.max(40, Math.min(2600, Number(url.searchParams.get("width") || 360) || 360));
+      let drawn = null;
+      let notRenderable = null;
+      try {
+        drawn = await renderPreview(resolved, mime, page, route === "/preview-info" ? 40 : width);
+      } catch (err) {
+        if (err.code === "NOT_RENDERABLE") notRenderable = err.mime || mime;
+        else if (route === "/preview") return json(res, 422, { error: `Could not draw a preview: ${err.message}` });
+      }
+      if (route === "/preview-info") {
+        return json(res, 200, { id, pages: drawn ? drawn.pages : 1, mimeType: notRenderable || mime, fileName: path.basename(resolved), sizeBytes: fs.statSync(resolved).size, renderable: Boolean(drawn) });
+      }
+      if (notRenderable) {
+        // WebP/HEIC with no converter here: the browser shows the original.
+        res.writeHead(200, { "Content-Type": notRenderable, "Cache-Control": "private, max-age=300" });
+        fs.createReadStream(resolved).pipe(res);
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "image/jpeg", "Content-Length": drawn.png.length, "X-Page-Count": String(drawn.pages), "Cache-Control": "private, max-age=300" });
+      return res.end(drawn.png);
+    }
 
-      // Staged documents are indexed separately and may carry no filePath
-      // in the main ledger — or, if the ledger row hasn't been written for
-      // some other reason, no ledger row at all. Either way, fall back to
-      // the staging index by id rather than reporting the document
-      // missing when its bytes are sitting right there in staging/.
-      if (id && (!rec || !rec.filePath)) {
-        const staged = staging.findById(id);
-        if (staged?.filePath) {
-          rec = rec
-            ? { ...rec, filePath: staged.filePath, mimeType: staged.mimeType }
-            : { filePath: staged.filePath, mimeType: staged.mimeType };
-        }
-      }
-      // A re-shared document is often stored once and pointed at by
-      // several ledger rows. When the row that was clicked has no bytes of
-      // its own, fall back to another row carrying the same hash or the
-      // same file name — the document IS there, just under a different row.
-      if (id && (!rec || !rec.filePath || !fs.existsSync(path.resolve(rec.filePath)))) {
-        const twin = findTwinWithBytes(rec, id);
-        if (twin) rec = rec ? { ...rec, filePath: twin.filePath, mimeType: rec.mimeType || twin.mimeType } : twin;
-      }
-      if (!rec || !rec.filePath) return json(res, 404, { error: "Document not found." });
-
-      // Serve only from folders this agent owns. Staging counts: vendor
-      // documents now wait there until our invoice claims them, and they
-      // were being refused — which is why documents stopped opening.
-      const resolved = path.resolve(rec.filePath);
-      const allowedRoots = [
-        path.resolve(PATHS.inbox),
-        path.resolve(staging.stagingDir()),
-      ];
-      const insideAllowed = allowedRoots.some(
-        (root) => resolved === root || resolved.startsWith(root + path.sep)
-      );
-      if (!insideAllowed) {
-        return json(res, 403, { error: "Refusing to serve a file outside the document folders." });
-      }
-      if (!fs.existsSync(resolved)) return json(res, 404, { error: "The file is no longer on disk." });
+    if (route === "/file" && req.method === "GET") {
+      const id = url.searchParams.get("id");
+      const found = resolveDocFile(id);
+      if (found.error) return json(res, found.status, { error: found.error });
+      const { rec, resolved } = found;
 
       const stat = fs.statSync(resolved);
       res.writeHead(200, {
         "Content-Type": rec.mimeType || "application/octet-stream",
         "Content-Length": stat.size,
-        "Content-Disposition": `inline; filename="${path.basename(resolved).replace(/"/g, "")}"`,
+        "Content-Disposition": `${url.searchParams.get("download") === "1" ? "attachment" : "inline"}; filename="${path.basename(resolved).replace(/[^\x20-\x7e]/g, "_").replace(/"/g, "")}"`,
         "Cache-Control": "no-store",
       });
       fs.createReadStream(resolved).pipe(res);
@@ -3322,6 +3631,33 @@ async function selfTest() {
     });
     const target = path.join(plan.dir, plan.baseName);
     checks.push(["files under Month / Client / Reference", /August-2026/.test(target) && /Jhajjar Power Limited/.test(target) && /BDC_840_SAI_545/.test(target)]);
+
+    // Who issued it — the judgement the business said kept going wrong.
+    // A photographed VENDOR invoice where our GSTIN (under "Buyer (Bill
+    // to)") reads cleaner than the vendor's own garbled one.
+    const VENDOR_PHOTO =
+      "TAX INVOICE ORIGINAL FOR RECIPIENT\nARIHANT TRADERS Invoice No AT/26-27/338\nGSTINIUIN: 06ABCFA1234Q128 Delivery Note\n" +
+      "Consignee (Ship to) Dispatch Doc No\nJHAJJAR POWER LIMITED Motor Vehicle No HR55AB1234\n" +
+      "Buyer (Bill to) Destination Jhajjar Power Limited\nBIOME INDUSTRIA PRIVATE LIMITED\nGSTIN/UIN O6AAJCB1927H1zS\n" +
+      "Total 284.50 Qtl Rs 1,67,286.00\nfor ARIHANT TRADERS";
+    const OUR_PHOTO =
+      "Delivery Note (ORIGINAL FOR RECIPIENT)\nB1OME INDUSTRIA PRIVATE LIMITED Delivery Note No. BIPL/2026-27/884\n" +
+      "GSTIN/UIN: O6AAJCB 1927H1z5\nOther References BDC/884/IBS/30\nConsignee (Ship to)\nNABHA POWER LIMITED\n" +
+      "GSTIN/UIN : O3AAECN3714R1ZP\nBuyer (Bill to)\nNABHA POWER LIMITED\nfor BIOME INDUSTRIA PRIVATE LIMITED";
+    const read = async (text, name) => (await classifyDocument(Buffer.from("x"), "image/jpeg", {
+      ocrText: text, fileName: name, vendors: vendors().map((v) => ({ code: v.code, name: v.name })),
+      clients: loadClients().map((c) => ({ name: c.name, shortName: c.shortName, aliases: c.aliases })),
+      companyCodes: settings().companyCodes, geminiKey: "", anthropicKey: "",
+    })).data || {};
+    checks.push(["a vendor's photographed invoice (Biome as buyer) is the vendor's", (await read(VENDOR_PHOTO, "IMG-20260924-WA0012.jpg")).documentType === "vendor_tax_invoice"]);
+    checks.push(["our photographed challan with a garbled GSTIN is ours", (await read(OUR_PHOTO, "IMG-20260927-WA0031.jpg")).documentType === "biome_delivery_challan"]);
+    // A vendor paper waiting for our invoice is matched to it on vehicle + date.
+    const waiting = { extracted: { documentType: "weight_slip", vehicleNo: "HR55AB1234", documentDate: "2026-09-24", netWeight: "28450", quantityKg: 28450 } };
+    const best = staging.bestAnchorFor(waiting, [
+      { reference: { canonical: "BDC/871/AT/338", vendorCode: "AT", vendorDocNo: "338" }, extracted: { vehicleNo: "HR55AB1234", documentDate: "2026-09-25", quantityKg: 28450 }, vendors: [] },
+      { reference: { canonical: "BDC/884/IBS/30", vendorCode: "IBS", vendorDocNo: "30" }, extracted: { vehicleNo: "PB11CK4521", documentDate: "2026-09-27", quantityKg: 31200 }, vendors: [] },
+    ]);
+    checks.push(["a waiting weight slip joins the right supply set", best && !best.ambiguous && best.anchor.reference.canonical === "BDC/871/AT/338"]);
   } catch (err) {
     checks.push([`pipeline threw: ${err.message}`, false]);
   }
@@ -3349,7 +3685,7 @@ depsReady.then(() => server.listen(activePort, HOST, () => {
   } catch {
     /* non-fatal */
   }
-  selfTest();
+  selfTest().finally(() => setTimeout(() => recheckWaitingOnStart().catch((err) => log(`start-up re-check failed: ${err.message}`)), 1500));
   log(`listening on http://${HOST}:${activePort}`);
   log(`data root: ${PATHS.root}`);
   if (!aiKeys().gemini && !aiKeys().anthropic) {

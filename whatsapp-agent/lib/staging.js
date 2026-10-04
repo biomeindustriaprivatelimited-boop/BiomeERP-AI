@@ -95,12 +95,12 @@ function findById(id) {
   return [...load()].reverse().find((e) => e.id === id) || null;
 }
 
-function markConsumed(id, reference, filedPath) {
+function markConsumed(id, reference, filedPath, status = "filed") {
   const entry = [...load()].reverse().find((e) => e.id === id);
   if (!entry) return null;
   return append({
     ...entry,
-    status: "filed",
+    status,
     matchedReference: reference,
     filedPath,
     filedAt: new Date().toISOString(),
@@ -217,86 +217,147 @@ function toNumber(v) {
  * exist to catch the case where OCR misread a digit of that number —
  * without them, one bad character would orphan a whole set.
  */
+function dayDiff(a, b) {
+  const da = new Date(String(a || "").slice(0, 10));
+  const db = new Date(String(b || "").slice(0, 10));
+  if (isNaN(da) || isNaN(db)) return null;
+  return Math.abs(da - db) / 86400000;
+}
+
+function alnum(v) {
+  return String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, "") || null;
+}
+
+/** What matching runs on, read fresh from the staged document's fields. */
+function stagedFields(staged) {
+  const ex = staged.extracted || {};
+  const m = staged.match || {};
+  const own = ex.vendorOwnDocNo || ex.vendorDocNo;
+  return {
+    type: ex.documentType || null,
+    vehicleNo: normPlate(ex.vehicleNo) || m.vehicleNo || null,
+    vendorDocNo: normDocNo(own) || m.vendorDocNo || null,
+    vendorDocCore: docCore(own) || m.vendorDocCore || null,
+    vendorName: normName(ex.vendorName) || m.vendorName || null,
+    biomeDocNo: alnum(ex.biomeDocNo),
+    biomeDocCore: docCore(ex.biomeDocNo),
+    ewayBillNo: (ex.ewayBillNo || "").replace(/\D/g, "") || m.ewayBillNo || null,
+    netWeight: toNumber(ex.netWeight) ?? m.netWeight ?? null,
+    quantityKg: toNumber(ex.quantityKg) ?? m.quantityKg ?? null,
+    grNumber: normDocNo(ex.grNumber) || m.grNumber || null,
+    date: ex.documentDate || null,
+  };
+}
+
+/**
+ * Score how well a staged document matches one supply (our document and
+ * whatever else is already filed in its set).
+ *
+ * Evidence, strongest first:
+ *   our invoice/challan number printed on it (our e-way bill, a tag) +70
+ *   the same e-way bill number                                       +60
+ *   the vendor document number named in the reference                +50
+ *   the GR / LR (Bill T) number our invoice prints                   +45
+ *   the same vehicle                                                 +40
+ *     … within 4 days of our document                                +15
+ *     … but more than 10 days apart (another trip of that truck)     -30
+ *   quantity agreeing in kg (2% / 50 kg, plant adjustment allowed)   +25
+ *   vendor name matching the reference's vendor code                 +20
+ * and against: a different vehicle -40, another vendor's name -40.
+ */
 function scoreMatch(staged, ours) {
   const reasons = [];
   let score = 0;
+  const f = stagedFields(staged);
+  const ex = ours.extracted || {};
 
   const wantVendorCode = (ours.reference?.vendorCode || "").toUpperCase();
   const wantVendorDoc = normDocNo(ours.reference?.vendorDocNo);
   const wantVendorDocCore = docCore(ours.reference?.vendorDocNo);
 
+  // --- our own document number printed on the paper ---
+  const ourNo = alnum(ex.biomeDocNo);
+  const ourCore = docCore(ex.biomeDocNo) || docCore(ours.reference?.biomeDocNo);
+  if (f.biomeDocNo && ourNo && f.biomeDocNo === ourNo) {
+    score += 70;
+    reasons.push(`prints our document number ${ex.biomeDocNo}`);
+  } else if (f.biomeDocCore && ourCore && f.biomeDocCore === ourCore && /^biome_/.test(f.type || "")) {
+    score += 50;
+    reasons.push(`prints our document number ending ${ourCore}`);
+  }
+
+  // --- e-way bill number ---
+  const ourEways = new Set([ex.ewayBillNo, ...(ex.ewayBillNos || [])].map((e) => String(e || "").replace(/\D/g, "")).filter((e) => e.length === 12));
+  if (f.ewayBillNo && ourEways.has(f.ewayBillNo)) {
+    score += 60;
+    reasons.push("same e-way bill number");
+  }
+
   // --- vendor document number from the reference ---
-  //
-  // Try the full normalised string first (covers the common case where
-  // the reference states the vendor's number exactly as they printed
-  // it). Fall back to comparing just the numeric core so a vendor
-  // invoice numbered "MHI/2026-27/588" still matches a reference that
-  // states only "588" — a missing prefix/suffix must never be treated
-  // as a mismatch.
-  if (wantVendorDoc && staged.match.vendorDocNo && staged.match.vendorDocNo === wantVendorDoc) {
+  if (wantVendorDoc && f.vendorDocNo && f.vendorDocNo === wantVendorDoc) {
     score += 50;
     reasons.push(`vendor document number ${wantVendorDoc} matches the reference`);
-  } else if (wantVendorDocCore && staged.match.vendorDocCore && staged.match.vendorDocCore === wantVendorDocCore) {
+  } else if (wantVendorDocCore && f.vendorDocCore && f.vendorDocCore === wantVendorDocCore) {
     score += 50;
-    reasons.push(
-      `vendor document number matches the reference by numeric core (${wantVendorDocCore}, full number on file: ${staged.match.vendorDocNo || "—"})`
-    );
+    reasons.push(`vendor document number matches the reference by numeric core (${wantVendorDocCore}, full number on file: ${f.vendorDocNo || "—"})`);
   }
 
   // --- vendor identity ---
-  if (wantVendorCode && staged.match.vendorName) {
-    const vendorEntry = (ours.vendors || []).find(
-      (v) => String(v.code || "").toUpperCase() === wantVendorCode
-    );
-    if (vendorEntry && normName(vendorEntry.name)) {
-      const a = normName(vendorEntry.name);
-      const b = staged.match.vendorName;
-      if (a && b && (a.includes(b) || b.includes(a))) {
-        score += 20;
-        reasons.push(`vendor name matches ${vendorEntry.name}`);
+  if (wantVendorCode && f.vendorName) {
+    const vendorEntry = (ours.vendors || []).find((v) => String(v.code || "").toUpperCase() === wantVendorCode);
+    const a = normName(vendorEntry?.name);
+    const b = f.vendorName;
+    if (a && b && (a.includes(b) || b.includes(a))) {
+      score += 20;
+      reasons.push(`vendor name matches ${vendorEntry.name}`);
+    } else if (b) {
+      // Named as a DIFFERENT registered vendor: another supply's paper.
+      const other = (ours.vendors || []).find((v) => {
+        const n = normName(v.name);
+        return n && String(v.code || "").toUpperCase() !== wantVendorCode && (n.includes(b) || b.includes(n));
+      });
+      if (other) {
+        score -= 40;
+        reasons.push(`issued by ${other.name}, not vendor ${wantVendorCode}`);
       }
     }
   }
 
   // --- vehicle: the strongest physical link ---
-  const ourVehicle = normPlate(ours.extracted?.vehicleNo);
-  if (ourVehicle && staged.match.vehicleNo) {
-    if (ourVehicle === staged.match.vehicleNo) {
+  const ourVehicle = normPlate(ex.vehicleNo);
+  if (ourVehicle && f.vehicleNo) {
+    if (ourVehicle === f.vehicleNo) {
       score += 40;
       reasons.push(`same vehicle ${ourVehicle}`);
+      const days = dayDiff(ex.documentDate, f.date);
+      if (days != null && days <= 4) {
+        score += 15;
+        reasons.push(days === 0 ? "same day" : `${days} day(s) apart`);
+      } else if (days != null && days > 10) {
+        score -= 30;
+        reasons.push(`same truck but ${Math.round(days)} days apart — another trip`);
+      }
     } else {
-      // A different vehicle is strong evidence AGAINST, not just absence
-      // of evidence — one truck carries one consignment.
+      // One truck carries one consignment.
       score -= 40;
-      reasons.push(`different vehicle (${staged.match.vehicleNo} vs ${ourVehicle})`);
+      reasons.push(`different vehicle (${f.vehicleNo} vs ${ourVehicle})`);
     }
   }
 
   // --- GR / LR / bilty number ---
-  //
-  // A bilty is handed over blank apart from this number — the rest is
-  // filled in by the supervisor after our invoice is raised. So for that
-  // one document this is not a corroborating signal, it is the ONLY
-  // signal, and it has to carry the match on its own.
-  const ourGr = normDocNo(ours.extracted?.grNumber);
-  if (ourGr && staged.match.grNumber && ourGr === staged.match.grNumber) {
+  const ourGr = normDocNo(ex.grNumber);
+  if (ourGr && f.grNumber && ourGr === f.grNumber) {
     score += 45;
     reasons.push(`GR/LR number ${ourGr} matches`);
   }
 
   // --- quantity, compared in kilograms ---
-  //
-  // The same load is written 42,330 KG by us, 423.30 QTL by the vendor
-  // and 42.33 MT elsewhere. Comparing raw numbers made those look like
-  // three different consignments; comparing kilograms makes them agree
-  // exactly.
-  const ourQty = toNumber(ours.extracted?.quantityKg) || toNumber(ours.extracted?.netWeight);
-  const theirQty = staged.match.quantityKg || staged.match.netWeight;
+  const ourQty = toNumber(ex.quantityKg) || toNumber(ex.netWeight);
+  const theirQty = f.quantityKg || f.netWeight;
   if (ourQty && theirQty) {
     const diff = Math.abs(ourQty - theirQty);
     // Gangakhed documents are deliberately raised 400-500 kg above the
-    // weighbridge figure. Without allowing for that, every single GKD
-    // supply reads as a quantity mismatch.
+    // weighbridge figure.
     const plantAdjustment = Number(ours.plantAdjustmentKg) || 0;
     const tolerance = Math.max(50, ourQty * 0.02) + plantAdjustment;
     if (diff <= tolerance) {
@@ -307,14 +368,25 @@ function scoreMatch(staged, ours) {
     }
   }
 
-  // --- e-way bill printed on both ---
-  const ourEway = (ours.extracted?.ewayBillNo || "").replace(/\D/g, "");
-  if (ourEway && staged.match.ewayBillNo && ourEway === staged.match.ewayBillNo) {
-    score += 15;
-    reasons.push("same e-way bill number");
-  }
-
   return { score, reasons };
+}
+
+/**
+ * The single best supply for one staged document, among every supply we
+ * know (`anchors`: [{ reference, extracted, vendors, plantAdjustmentKg, … }]).
+ * Requires the winner to clear `minScore` AND to beat the runner-up by a
+ * clear margin — two equally good homes means a person should decide.
+ */
+function bestAnchorFor(entry, anchors, options = {}) {
+  const minScore = options.minScore ?? 45;
+  const scored = anchors
+    .map((a) => ({ anchor: a, ...scoreMatch(entry, a) }))
+    .sort((x, y) => y.score - x.score);
+  if (!scored.length || scored[0].score < minScore) return null;
+  if (scored[1] && scored[1].score >= minScore && scored[0].score - scored[1].score < 10) {
+    return { ambiguous: true, candidates: scored.slice(0, 3).map((x) => ({ reference: x.anchor.reference?.canonical, score: x.score })) };
+  }
+  return scored[0];
 }
 
 /**
@@ -380,6 +452,8 @@ module.exports = {
   findMatches,
   markConsumed,
   scoreMatch,
+  bestAnchorFor,
+  stagedFields,
   stale,
   stats,
   stagingDir,

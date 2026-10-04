@@ -101,16 +101,197 @@ function gstinPositions(text) {
       continue;
     }
     // OCR swaps O and 0 freely inside GSTINs; normalise candidates before
-    // judging them (a real vendor GSTIN arrived as "03ABDFGO879P1Z1").
-    const fixed = tok.replace(/^(..)/, (x) => x.replace(/O/g, "0")).replace(/^(.{7})(.{4})/, (x, a, b) => a + b.replace(/O/g, "0"));
-    if (foreignPos === -1 && /^\d{2}[A-Z]{5}\d{4}[A-Z][0-9A-Z]Z[0-9A-Z]$/.test(fixed)) foreignPos = m.index;
+    // judging them (a real vendor GSTIN arrived as "03ABDFGO879P1Z1", and
+    // a photographed one as "06ABCFA1234Q128" — the Z read as 2).
+    if (foreignPos === -1 && looksLikeGstin(tok)) foreignPos = m.index;
   }
   return { ourPos, foreignPos };
+}
+
+const TO_DIGIT = { O: "0", Q: "0", D: "0", I: "1", L: "1", S: "5", B: "8", Z: "2", G: "6", T: "7" };
+const TO_LETTER = { 0: "O", 1: "I", 5: "S", 8: "B", 2: "Z", 6: "G", 7: "T", 4: "A" };
+
+/** A 15-character token that is a GSTIN once OCR look-alikes are folded back. */
+function looksLikeGstin(token) {
+  const t = String(token || "").toUpperCase();
+  if (t.length !== 15) return false;
+  const d = (c) => (/\d/.test(c) ? c : TO_DIGIT[c] || "x");
+  const l = (c) => (/[A-Z]/.test(c) ? c : TO_LETTER[c] || "x");
+  const fixed =
+    d(t[0]) + d(t[1]) + [...t.slice(2, 7)].map(l).join("") + [...t.slice(7, 11)].map(d).join("") + l(t[11]) + t[12] +
+    (/[Z27]/.test(t[13]) ? "Z" : t[13]) + t[14];
+  return /^\d{2}[A-Z]{5}\d{4}[A-Z][0-9A-Z]Z[0-9A-Z]$/.test(fixed);
+}
+
+/* ------------------------------------------------------------------ */
+/* Who issued the page — seller/supplier/consignor vs buyer/consignee   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Every place OUR identity appears on the page: our PAN (inside either
+ * GSTIN — 06… Haryana or 27… Maharashtra — or printed alone as
+ * "Company's PAN"), tolerant of one misread character and of spaces OCR
+ * inserts; the name "Biome Industria" with up to two misread letters; our
+ * e-mail and CIN.
+ */
+function ourMarks(text) {
+  const src = String(text || "");
+  const marks = [];
+
+  // PAN: compare folded 10-character windows over the alphanumerics only.
+  const idx = [];
+  let compact = "";
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i].toUpperCase();
+    if (/[A-Z0-9]/.test(c)) { compact += c; idx.push(i); }
+  }
+  const target = foldOcr(OUR_PAN);
+  const folded = foldOcr(compact);
+  for (let i = 0; i + 10 <= folded.length; i++) {
+    let miss = 0;
+    for (let k = 0; k < 10 && miss <= 1; k++) if (folded[i + k] !== target[k]) miss++;
+    if (miss <= 1 && (miss === 0 || folded.slice(i, i + 5) === target.slice(0, 5) || folded.slice(i + 5, i + 10) === target.slice(5))) {
+      marks.push({ pos: idx[i], kind: "pan" });
+      i += 9;
+    }
+  }
+
+  // Name: "biomeindustria" over letters only, up to 2 edits.
+  const lidx = [];
+  let letters = "";
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i].toLowerCase();
+    if (/[a-z0-9|!]/.test(c)) { letters += c.replace(/[1|!]/, "i").replace(/0/, "o"); lidx.push(i); }
+  }
+  const pat = "biomeindustria";
+  for (let i = 0; i < letters.length - 8; i++) {
+    if (!"b8".includes(letters[i]) && letters[i + 1] !== "i" && letters.slice(i, i + 4) !== "iome") continue;
+    const d = substringDistance(pat, letters.slice(i, i + pat.length + 3));
+    if (d <= 2) {
+      marks.push({ pos: lidx[i], kind: "name" });
+      i += pat.length - 1;
+    }
+  }
+
+  const lower = src.toLowerCase();
+  for (const re of [/biomeindustria@/g, /u23200dl2020ptc368121/g]) {
+    let m;
+    while ((m = re.exec(lower))) marks.push({ pos: m.index, kind: "id" });
+  }
+  return marks.sort((a, b) => a.pos - b.pos);
+}
+
+/** Edit distance between `pat` and the best-matching PREFIX of `s`. */
+function substringDistance(pat, s) {
+  const m = pat.length, n = s.length;
+  let prev = new Array(n + 1);
+  for (let j = 0; j <= n; j++) prev[j] = j;
+  for (let i = 1; i <= m; i++) {
+    const cur = [i];
+    for (let j = 1; j <= n; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (pat[i - 1] === s[j - 1] ? 0 : 1));
+    }
+    prev = cur;
+  }
+  return Math.min(...prev.slice(Math.max(0, m - 3)));
+}
+
+/** Labels that introduce the ISSUING party. */
+const SELLER_LABEL_RE = /\b(?:seller|supplier(?!'?s?\s*(?:ref|code|name\s*:?\s*$))|consignor|sold\s*by|bill(?:ed)?\s*from|dispatch(?:ed)?\s*from|generated\s*by|details\s*of\s*supplier|issued\s*by|company'?s\s*pan|from\s*:)/gi;
+/** Labels that introduce the RECEIVING party. */
+const BUYER_LABEL_RE = /\b(?:buyer(?!'?s?\s*(?:order|ref))|bill(?:ed)?\s*to|ship(?:ped)?\s*to|consignee|recipient|receiver|purchaser|customer|sold\s*to|details\s*of\s*(?:receiver|recipient|buyer)|m\/s\b)/gi;
+
+function labelsIn(text) {
+  const out = [];
+  for (const [re, role] of [[SELLER_LABEL_RE, "seller"], [BUYER_LABEL_RE, "buyer"]]) {
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(text))) {
+      // "(ORIGINAL FOR RECIPIENT)" is a copy marking, not a party label.
+      const before = text.slice(Math.max(0, m.index - 14), m.index).toLowerCase();
+      if (/(?:original|duplicate|triplicate|copy)\s*for\s*$|\bfor\s*$/.test(before)) continue;
+      out.push({ pos: m.index, end: m.index + m[0].length, role, label: m[0] });
+    }
+  }
+  return out.sort((a, b) => a.pos - b.pos);
+}
+
+const OUR_SERIES_RE = /\bB[I1l]\s?\d{2}\s?[-\/]\s?\d{2}\s?[-\/]\s?[A-Z]{2}\s?\d{3,5}\b|\bB[I1l]PL\s?[\/\-]\s?\d{4}\s?-?\s?\d{2,4}\s?[\/\-]\s?\d{1,6}\b/i;
+
+/**
+ * Decide from the page itself whether Biome ISSUED it (seller / supplier /
+ * consignor / letterhead) or RECEIVED it (buyer / bill to / consignee /
+ * recipient). Each appearance of our identity is judged by the party label
+ * closest above it; an unlabelled appearance before any other party is the
+ * letterhead. Returns side "us" | "them" | null (no evidence either way).
+ */
+function issuerSide(text) {
+  const src = String(text || "").replace(/[\u00ad\u2010-\u2015]/g, "-");
+  const marks = ourMarks(src);
+  const labels = labelsIn(src);
+  const reasons = [];
+  let score = 0;
+
+  // First foreign party GSTIN that is NOT under a buyer label = someone
+  // else's letterhead.
+  let foreignHead = -1;
+  {
+    const re = /\b[0-9A-Z]{15}\b/g;
+    const up = src.toUpperCase();
+    let m;
+    while ((m = re.exec(up))) {
+      if (isOurGstin(m[0]) || !looksLikeGstin(m[0])) continue;
+      const lab = [...labels].reverse().find((l) => l.end <= m.index && m.index - l.end < 240);
+      if (lab && lab.role === "buyer") continue;
+      foreignHead = m.index;
+      break;
+    }
+  }
+  const firstBuyerLabel = labels.find((l) => l.role === "buyer");
+
+  marks.forEach((mk, n) => {
+    const weight = n === 0 ? 1.5 : 1;
+    const prefix = src.slice(Math.max(0, mk.pos - 22), mk.pos).toLowerCase();
+    let role = null;
+    let why = "";
+    if (/\bfor\s*[:\-]?\s*$|signed\s*by\s*[:\-]?\s*$|generated\s*by\s*[:\-]?\s*(?:[0-9a-z]{15}\s*[-,]?\s*)?$/.test(prefix)) {
+      role = "seller"; why = "signed/issued by";
+    } else {
+      const lab = [...labels].reverse().find((l) => l.end <= mk.pos && mk.pos - l.end < 240);
+      if (lab) { role = lab.role; why = `under "${lab.label.trim()}"`; }
+      // Letterhead = the top of the page, before any other party. A name
+      // floating mid-page with its label lost to OCR proves nothing.
+      else if ((foreignHead === -1 || mk.pos < foreignHead) && (!firstBuyerLabel || mk.pos < firstBuyerLabel.pos) &&
+        mk.pos < Math.max(450, src.length * 0.3)) { role = "seller"; why = "letterhead"; }
+    }
+    if (role === "seller") score += 3 * weight;
+    else if (role === "buyer") score -= 3 * weight;
+    if (role) reasons.push(`Biome ${mk.kind} ${role === "seller" ? "as issuer" : "as buyer"} (${why})`);
+  });
+
+  if (foreignHead !== -1 && (!marks.length || foreignHead < marks[0].pos)) {
+    score -= 2;
+    reasons.push("another party's GSTIN heads the page");
+  }
+
+  // Our own numbering printed against the document's number label.
+  const numLabel = /(?:invoice|delivery\s*note|challan|document)\s*(?:no|number)?\.?\s*[:\-]?\s*(?:tax\s*invoice\s*-\s*|delivery\s*challan\s*-\s*)?([^\n]{0,60})/gi;
+  let nm;
+  let series = false;
+  while ((nm = numLabel.exec(src))) if (OUR_SERIES_RE.test(nm[1].split(/\s{2,}/)[0] || nm[1])) { series = true; break; }
+  if (series) { score += 2; reasons.push("our invoice/challan number series"); }
+
+  const side = score >= 2 ? "us" : score <= -2 ? "them" : null;
+  return { side, score, reasons, marks: marks.length };
 }
 
 const AS_BUYER_RE = /(?:billed\s*to|bill\s*to|buyer|shipped\s*to|consignee|recipient)\s*:?[\s\S]{0,200}?biome\s*industria/i;
 
 function issuerIsUs(text) {
+  // The party labels decide first (Seller/Supplier/Consignor vs
+  // Buyer/Bill to/Consignee/Recipient) — that is what the page states.
+  const decided = issuerSide(text);
+  if (decided.side) return decided.side === "us";
   const { ourPos, foreignPos } = gstinPositions(text);
   // Our GSTIN printed before anyone else's: our letterhead.
   if (ourPos !== -1 && (foreignPos === -1 || ourPos < foreignPos)) return true;
@@ -149,9 +330,15 @@ function byStructure(text, knownClients = [], knownVendors = []) {
   // --- E-way bill printout: its own structure, announced up top.
   // Checked FIRST because the printout also lists "Tax Invoice" as a
   // sub-field under Document Details — header position beats that.
+  // The NIC printout: "E-Way Bill No: 3223 0170 5535 … Valid Upto",
+  // "Part - A … GSTIN of Supplier … GSTIN of Recipient". OCR and pdfjs
+  // keep the hyphen of "E-Way", so the old "eway bill no" test missed
+  // every real printout and it was typed as the invoice it lists under
+  // Document Details.
   const ewayStructure =
     /e[\s\-.]*way\s*bill\s*details/.test(full) ||
-    (/eway\s*bill\s*no\s*[:.]?\s*\d/.test(full) && /valid\s*upto/.test(full));
+    (/e[\s\-.]*way\s*bill\s*(?:no|date)\.?\s*[:.]?\s*\d/.test(full) && /valid\s*(?:upto|up\s*to|until|from)/.test(full)) ||
+    (/gstin\s*of\s*supplier/.test(full) && /gstin\s*of\s*recipient/.test(full) && /e[\s\-.]*way\s*bill/.test(full));
   if (ewayStructure && /e[\s\-.]*way\s*bill/.test(strip) && !/tax\s*invo[il]ce|delivery\s*(?:note|challan)/.test(strip)) {
     return {
       documentType: side(us, "biome_eway_bill", "vendor_eway_bill"),
@@ -234,7 +421,11 @@ function byStructure(text, knownClients = [], knownVendors = []) {
     "कांटा", "काटा", "कॉटा", "वजन", "गाड़ी", "गाडी", "खाली", "पक्का", "क्विंटल", "टन", "धर्म"];
   const weighHits = weighWords.filter((w) => full.includes(w)).length;
   if (weighHits >= 2 && full.length < 2200 && !/invoice|challan|e[\s-]*way/.test(h)) {
-    const clientHit = (knownClients || []).find((c) => c && full.includes(c));
+    // Our own plant's weighbridge (Gangakhed / Rewari) names the client as
+    // the party it is loading for — it is still OUR loading slip, not the
+    // client's receiving.
+    const ourKanta = /biome|gangakhed|rewari\s*plant|mayan/.test(strip);
+    const clientHit = ourKanta ? null : (knownClients || []).find((c) => c && full.includes(c));
     const vendorHit = (knownVendors || []).find((v) => v && v.length > 3 && full.includes(v));
     const inward = /unload|inward|gate\s*entry|gate\s*pass|grn|mrn|receipt|received|receiving|material\s*receipt|उतराई|प्राप्ति/.test(full);
     const outward = /loading|dispatch|outward|loaded\s*at|gross\s*at\s*loading|लोडिंग|भराई|रवाना/.test(full);
@@ -305,4 +496,4 @@ function decideType({ text, fileName, clients, vendors }) {
   return s || f || null;
 }
 
-module.exports = { decideType, byStructure, byFileName, issuerIsUs, isOurGstin, gstinPositions };
+module.exports = { decideType, byStructure, byFileName, issuerIsUs, issuerSide, ourMarks, looksLikeGstin, isOurGstin, gstinPositions, OUR_SERIES_RE };

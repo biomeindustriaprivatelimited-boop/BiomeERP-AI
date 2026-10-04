@@ -1,7 +1,15 @@
 /** Build stamp — shown in the UI so the running version is never a guess. */
 module.exports = {
-  BUILD: "20261003-webengine",
+  BUILD: "20261004-wa-sets",
   FEATURES: [
+    "issuer-by-party-labels-seller-vs-buyer",
+    "our-invoice-never-waits-provisional-set",
+    "reference-repair-from-ocr",
+    "best-set-matching-vehicle-date-eway-our-number",
+    "photo-ocr-orientation-deskew-lighting",
+    "office-and-mixed-pdf-reading",
+    "ai-second-opinion-low-ocr",
+    "recheck-waiting-on-new-build",
     "supply-set-attaches-unreferenced-docs",
     "bill-t-from-our-invoice",
     "weight-slip-by-vehicle-and-weight",

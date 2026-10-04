@@ -51,8 +51,19 @@ const MOBILE_RE = /(?:\+?91[\s-]?)?\b([6-9]\d{9})\b/g;
 const PAN_RE = /\b[A-Z]{5}\d{4}[A-Z]\b/g;
 
 /** Biome's own invoice and challan numbering. */
-const BIOME_INVOICE_RE = /\b(BI[\s\-\/]?\d{2}[\s\-\/]?\d{2}[\s\-\/]?[A-Z]{2}\d{3,5})\b/gi;
-const BIOME_CHALLAN_RE = /\b(BIPL\s?[\/\-]\s?\d{4}\s?-?\s?\d{2,4}\s?[\/\-]\s?\d{1,6})\b/gi;
+// OCR reads the I of "BI" as 1, l or | often enough that it must be allowed.
+const BIOME_INVOICE_RE = /\b(B[I1l|][\s\-\/]?\d{2}[\s\-\/]?\d{2}[\s\-\/]?[A-Z]{2}\s?(?=[0-9OSB]*\d[0-9OSB]*\d)[0-9OSB]{3,5})\b/g;
+const BIOME_CHALLAN_RE = /\b(B[I1l|]PL\s?[\/\-]\s?\d{4}\s?-?\s?\d{2,4}\s?[\/\-]\s?\d{1,6})\b/gi;
+
+/** "Bl26-27-HR087l" → "BI26-27-HR0871"; "B1PL/2026-27/884" → "BIPL/2026-27/884". */
+function cleanOurDocNo(raw) {
+  if (!raw) return null;
+  let t = String(raw).replace(/\s/g, "").toUpperCase();
+  t = t.replace(/^B[1L|]/, "BI");
+  const m = t.match(/^(BI)(\d{2})[\-\/]?(\d{2})[\-\/]?([A-Z]{2})([0-9OSB]{3,5})$/);
+  if (m) return `${m[1]}${m[2]}-${m[3]}-${m[4]}${m[5].replace(/O/g, "0").replace(/S/g, "5").replace(/B/g, "8")}`;
+  return t;
+}
 
 /** Dates as they actually appear: 29-Jul-26, 29/07/2026, 2026-07-29. */
 const MONTHS = {
@@ -271,8 +282,13 @@ function classifyFromText(text) {
   const biomeIsBuyerMultiline =
     /(?:billed\s*to|bill\s*to|buyer|shipped\s*to|consignee)\s*:?[\s\S]{0,160}?biome\s*industria/i.test(text);
 
-  // GSTIN first, layout only as a tie-breaker.
-  const issuedByUs = gstinSaysOurs
+  // The party labels on the page decide first (docRules.issuerSide): our
+  // identity under "Buyer / Bill to / Consignee / Recipient" is a vendor's
+  // paper; under "Seller / Supplier / Consignor", the letterhead or the
+  // signature block it is ours. GSTIN order and layout are only used when
+  // the page gives no such evidence.
+  const sided = docRules.issuerSide(text);
+  const issuedByUs = sided.side ? sided.side === "us" : gstinSaysOurs
     ? true
     : gstinSaysTheirs
       ? false
@@ -309,7 +325,7 @@ function classifyFromText(text) {
   else if (best >= 3) confidence = 70;
   else if (best >= 2) confidence = 55;
   else confidence = 25;
-  if (!biomePresent && ["biome_tax_invoice", "biome_delivery_challan", "biome_eway_bill"].includes(documentType)) {
+  if (!biomePresent && !sided.marks && ["biome_tax_invoice", "biome_delivery_challan", "biome_eway_bill"].includes(documentType)) {
     confidence -= 20;
   }
   // ---- Shape-based fallback for hand-filled Hindi forms ----
@@ -339,7 +355,7 @@ function classifyFromText(text) {
   // never going to be much readable text.
   if (text.length < 120 && !structurallyConfirmed) confidence = Math.min(confidence, 30);
 
-  return { documentType, confidence: Math.max(0, Math.min(100, confidence)), issuedByUs, base };
+  return { documentType, confidence: Math.max(0, Math.min(100, confidence)), issuedByUs, base, issuerSide: sided.side, issuerReason: sided.reasons.slice(0, 4).join("; ") };
 }
 
 // ---------------------------------------------------------------------
@@ -473,7 +489,16 @@ function findQuantityKg(text) {
   // read it as 4,800 tonnes. A truck carries roughly 5-60 tonnes, so
   // anything outside that is a rate, a value or a serial.
   const plausible = found.filter((kg) => kg >= 3000 && kg <= 80000);
-  if (plausible.length) return Math.max(...plausible);
+  if (plausible.length) {
+    // The quantity is printed twice on an invoice (the item row and the
+    // Total row); a rate such as "560.00 Qtl" (₹ per quintal) only once.
+    // So the most repeated figure wins, the largest only breaks a tie.
+    const count = new Map();
+    for (const kg of plausible) count.set(kg, (count.get(kg) || 0) + 1);
+    const top = Math.max(...count.values());
+    if (top > 1) return Math.max(...[...count.entries()].filter(([, c]) => c === top).map(([kg]) => kg));
+    return Math.max(...plausible);
+  }
 
   // Nothing in range — return the smallest, which is far more likely to
   // be a real load than a six-figure rupee figure.
@@ -582,6 +607,20 @@ function extractOffline(text, ctx = {}) {
       if (biomeDocNoRaw && biomeDocNoRaw.toUpperCase().includes(v)) continue;
       if (!vehicles.includes(v)) vehicles.push(v);
     }
+    // Next to a "Vehicle / Truck / Lorry No" label, accept the plate even
+    // when OCR turned a digit into its look-alike letter (HRSSAB1234).
+    if (!vehicles.length) {
+      const near = /(?:vehicle|veh|truck|lorry|motor\s*vehicle|gaadi|gadi)\s*(?:no|number|#)?\.?\s*[:\-]?\s*([A-Z0-9 ]{7,14})/gi;
+      let n;
+      while ((n = near.exec(upper))) {
+        const raw = n[1].replace(/\s/g, "");
+        const p = raw.match(/^([A-Z]{2})([0-9OSIZBLQ]{1,2})([A-Z]{1,3})([0-9OSIZBLQ]{3,4})/);
+        if (!p) continue;
+        const dig = (x) => x.replace(/[OQ]/g, "0").replace(/[IL]/g, "1").replace(/S/g, "5").replace(/Z/g, "2").replace(/B/g, "8");
+        const v = p[1] + dig(p[2]) + p[3] + dig(p[4]);
+        if ((p[4].match(/\d/g) || []).length >= 2 && /^[A-Z]{2}\d{1,2}[A-Z]{1,3}\d{3,4}$/.test(v)) { vehicles.push(v); break; }
+      }
+    }
   }
 
   const ewayCandidates = [...new Set((upper.match(EWAY_RE) || []).map((e) => e.replace(/\s/g, "")))]
@@ -591,7 +630,7 @@ function extractOffline(text, ctx = {}) {
   const amounts = findAmounts(raw);
   const weights = findWeights(raw);
 
-  const biomeDocNo = biomeDocNoRaw ? biomeDocNoRaw.replace(/\s/g, "") : null;
+  const biomeDocNo = biomeDocNoRaw ? cleanOurDocNo(biomeDocNoRaw) : null;
 
   // The vendor's own document number, as printed on their invoice:
   // "Invoice No. SAI/26-27/0545". The reference on OUR invoice says
@@ -617,6 +656,20 @@ function extractOffline(text, ctx = {}) {
     vendorCodes: (ctx.vendors || []).map((v) => v.code),
   });
   const reference = references[0] || null;
+
+  // Our document number and the reference's second segment are the same
+  // number. When OCR misread one digit of the printed invoice number
+  // (MH0S05 for MH0905) the reference — read from a separate box — settles it.
+  let biomeDocNoChecked = biomeDocNo;
+  if (reference && biomeDocNo && /^\d+$/.test(reference.biomeDocNo || "")) {
+    const m = biomeDocNo.match(/^(.*?)(\d+)$/);
+    if (m) {
+      const a = m[2].replace(/^0+(?=\d)/, "");
+      const b = reference.biomeDocNo.replace(/^0+(?=\d)/, "");
+      let diff = a.length === b.length ? [...a].filter((c, i) => c !== b[i]).length : 99;
+      if (diff === 1) biomeDocNoChecked = m[1] + b.padStart(m[2].length, "0");
+    }
+  }
 
   // Use the shared client matcher rather than a local copy — it knows
   // about spelling variants ("Jhajjhar" for "Jhajjar") and prefers the
@@ -655,8 +708,10 @@ function extractOffline(text, ctx = {}) {
     documentType: cls.documentType,
     confidence,
     issuedBy: cls.issuedByUs ? "Biome Industria Private Limited" : vendor?.name || null,
+    issuerSide: cls.issuerSide || null,
+    issuerReason: cls.issuerReason || null,
     referenceNo: reference ? reference.canonical : null,
-    biomeDocNo,
+    biomeDocNo: biomeDocNoChecked,
     // Prefer the reference (authoritative), else what their own paper says.
     vendorDocNo: reference ? reference.vendorDocNo : vendorOwnDocNo,
     vendorOwnDocNo,
@@ -671,7 +726,12 @@ function extractOffline(text, ctx = {}) {
     tareWeight: weights.tareWeight,
     netWeight: weights.netWeight,
     /** Everything normalised to KG so units can never break a match. */
+    // A weighbridge slip's load is its NET weight — taking the largest
+    // "… Kg" on the slip picked the gross (load + truck).
     quantityKg:
+      (["weight_slip", "receiving"].includes(cls.documentType) && weights.netWeight && Number(weights.netWeight) >= 1000
+        ? toKilograms(weights.netWeight, "kg")
+        : null) ||
       findQuantityKg(raw) ||
       (weights.netWeight ? toKilograms(weights.netWeight, "kg") : null),
     grNumber: findGrNumber(raw),

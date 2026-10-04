@@ -100,4 +100,17 @@ async function recognize(image, options = {}, lang = "eng") {
   }
 }
 
-module.exports = { recognize, getWorker, langPath };
+/** Read one image and return the text with Tesseract's mean confidence (0-100). */
+async function recognizeFull(image, options = {}, lang = "eng") {
+  const worker = await getWorker(lang);
+  try {
+    const result = await withTimeout(worker.recognize(image, options), 90_000, "Reading the page");
+    const data = (result && result.data) || {};
+    return { text: data.text || "", confidence: Number(data.confidence) || 0 };
+  } catch (err) {
+    await discard(lang);
+    throw err;
+  }
+}
+
+module.exports = { recognize, recognizeFull, getWorker, langPath };
