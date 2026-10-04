@@ -159,7 +159,8 @@ function finish() {
   finished = true;
   // The agent's own last log lines, as annotations: the CI log itself is not
   // always readable, these are.
-  if (CI) {
+  // Only when something failed — on a green run these lines are just noise.
+  if (CI && results.some((r) => !r.ok)) {
     const tail = logLines.join("").split(/\r?\n/).filter((l) => /WhatsApp|engine|status|error|fail|filed|held|QR|qr|browser|could not/i.test(l)).slice(-10);
     for (const l of tail) console.log(`::warning title=agent log::${l.replace(/^\[Biome WhatsApp Agent [^\]]+\]\s*/, "").slice(0, 300)}`);
   }
