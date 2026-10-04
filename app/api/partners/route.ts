@@ -10,7 +10,7 @@ import {
   loadPartners, savePartners, blankPartner, gapsFor, partnersDir,
   documentTypesFor, partnerDocAllowed, gstinLooksRight, panLooksRight, ifscLooksRight,
   PARTNER_KINDS, PARTNER_STATUS, PARTNER_DOCUMENT_TYPES, VENDOR_CATEGORIES, SUPPLY_CATEGORIES,
-  freezeInfoFor,
+  freezeInfoFor, partnersVisibleTo, codeClash, normaliseCode, codeLooksRight, codeLabelFor, suggestNextCode,
   Partner, PartnerKind, PartnerStatus, PartnerDocument, VendorCategory, SupplyCategory,
 } from "@/lib/partners";
 import { devStamp } from "@/lib/devEdit";
@@ -40,33 +40,8 @@ function kindOf(v: unknown): PartnerKind {
   return PARTNER_KINDS.some((k) => k.id === v) ? (v as PartnerKind) : "biomass_vendor";
 }
 
-/**
- * Who sees which records. The business asked for a hard split:
- *
- *   coordinator    — TRADING vendors, clients and transporters.
- *   plant_manager  — MANUFACTURING vendors, clients and transporters for
- *                    THEIR site. Trading records never appear for them.
- *   accounts/admin/developer — everything.
- */
-function visibleTo(partners: Partner[], role: string, plant: string | null): Partner[] {
-  if (role === "coordinator") {
-    return partners.filter((p) => p.category === "trading");
-  }
-  if (role === "procurement") {
-    // Buys spare parts and stores for every plant — manufacturing side only.
-    return partners.filter((p) => p.category !== "trading");
-  }
-  if (role === "plant_manager") {
-    return partners.filter(
-      (p) =>
-        p.category !== "trading" &&
-        // A partner with no plants named serves the whole business — a head
-        // office contract is not hidden from the site that works with it.
-        (!plant || p.plants.length === 0 || p.plants.includes(plant))
-    );
-  }
-  return partners;
-}
+/** Who sees which records — see partnersVisibleTo in lib/partners.ts. */
+const visibleTo = partnersVisibleTo;
 
 /** Accounts, admin and the developer may correct or unlock a frozen record. */
 function canOverrideFreeze(role: string): boolean {
@@ -105,6 +80,19 @@ export async function GET(req: NextRequest) {
 
   const all = loadPartners();
   const mine = visibleTo(all, user.role, auth.session.plant);
+
+  // "Suggest a code" on the registration form. Worked out over the records
+  // this person can already see, so it never reveals another plant's codes.
+  if (req.nextUrl.searchParams.get("nextCode")) {
+    const kind = kindOf(req.nextUrl.searchParams.get("kind"));
+    let category = categoryOf(req.nextUrl.searchParams.get("category"));
+    if (user.role === "coordinator") category = "trading";
+    if (user.role === "plant_manager" || user.role === "procurement") category = "raw_material";
+    const plants = user.role === "plant_manager" && auth.session.plant
+      ? [auth.session.plant]
+      : (req.nextUrl.searchParams.get("plants") || "").split(",").map((x) => x.trim().toUpperCase()).filter(Boolean);
+    return NextResponse.json({ code: suggestNextCode(mine, { kind, category, plants }) });
+  }
 
   const kind = req.nextUrl.searchParams.get("kind");
   const status = req.nextUrl.searchParams.get("status");
@@ -189,18 +177,15 @@ export async function POST(req: NextRequest) {
       { status: 409 }
     );
   }
-  // A code identifies exactly one company. Duplicates are refused with the
-  // reason, across registrations AND the vendor master the agent uses.
-  const wantedCode = str(body?.code, 12).toUpperCase();
+  // A code identifies exactly one company within a plant (or within the
+  // trading register). Duplicates are refused with the reason. The check
+  // runs over the same plants the record will be saved with.
+  const wantedCode = normaliseCode(body?.code);
   if (wantedCode) {
-    const taken = partners.find((p) => p.code && p.code.toUpperCase() === wantedCode);
-    const masterTaken = vendorMasterHolder(wantedCode);
-    if (taken || masterTaken) {
-      return NextResponse.json(
-        { error: `Not registered — code ${wantedCode} is already used by ${taken?.name || masterTaken}. Every vendor / transporter needs its own code; choose a different one.`, reason: "duplicate_code" },
-        { status: 409 }
-      );
-    }
+    const problem = codeProblem(partners, wantedCode, {
+      kind, category, plants: readPartner(body, auth.session.plant, user.role).plants || [],
+    });
+    if (problem) return codeRefusal(problem);
   }
 
   const partner: Partner = {
@@ -280,6 +265,19 @@ export async function PUT(req: NextRequest) {
 
   const lock = frozenFor(existing, user.role);
   if (lock) return NextResponse.json({ error: lock }, { status: 423 });
+
+  {
+    const incoming = readPartner(body, auth.session.plant, user.role);
+    const nextCode = normaliseCode(incoming.code);
+    const nextCategory = canOverrideFreeze(user.role) && body.category ? categoryOf(body.category) : existing.category;
+    const plantsChanged = JSON.stringify(incoming.plants || []) !== JSON.stringify(existing.plants);
+    if (nextCode && (nextCode !== normaliseCode(existing.code) || plantsChanged || nextCategory !== existing.category)) {
+      const problem = codeProblem(partners, nextCode, {
+        kind: existing.kind, category: nextCategory, plants: incoming.plants || [], excludeId: existing.id,
+      });
+      if (problem) return codeRefusal(problem);
+    }
+  }
 
   const updated: Partner = devStamp({
     ...existing,
@@ -433,6 +431,48 @@ export async function PATCH(req: NextRequest) {
   return NextResponse.json({ partner: { ...updated, gaps: gapsFor(updated) }, document: doc }, { status: 201 });
 }
 
+/** 400 for a malformed code, 409 for one already taken. */
+function codeRefusal(problem: string) {
+  const malformed = problem.includes("can only use");
+  return NextResponse.json(
+    { error: problem, reason: malformed ? "invalid_code" : "duplicate_code" },
+    { status: malformed ? 400 : 409 }
+  );
+}
+
+/**
+ * Why this code cannot be used for this record, or null if it can.
+ *
+ * Unique per plant for manufacturing records and across the trading
+ * register for trading ones (see codeClash). A trading code is also
+ * checked against the WhatsApp agent's vendor master, which can hold codes
+ * that were never registered here.
+ */
+function codeProblem(
+  partners: Partner[],
+  code: string,
+  scope: { kind: PartnerKind; category: VendorCategory; plants: string[]; excludeId?: string }
+): string | null {
+  const label = codeLabelFor(scope.kind);
+  if (!codeLooksRight(code)) {
+    return `${label} "${code}" can only use letters, numbers and - _ / . (up to 12 characters).`;
+  }
+  const clash = codeClash(partners, code, scope);
+  if (clash) {
+    const where = scope.category === "trading" ? "in the trading register" : clash.plants.length ? `at ${clash.plants.join(", ")}` : "(it serves every plant)";
+    return `Not saved — ${label.toLowerCase()} ${code} is already used by ${clash.name} ${where}. Every vendor / transporter needs its own code at a plant; choose a different one.`;
+  }
+  if (scope.category === "trading") {
+    const holder = vendorMasterHolder(code);
+    // A master entry that is itself one of our registrations was handled above.
+    const fromRegistration = partners.some((p) => p.id !== scope.excludeId && normaliseCode(p.code) === code);
+    if (holder && !fromRegistration) {
+      return `Not saved — code ${code} is already used by ${holder} in the coordination vendor list. Choose a different one.`;
+    }
+  }
+  return null;
+}
+
 /** Who holds a code in the vendor master (config/vendors.json), if anyone. */
 function vendorMasterHolder(code: string): string | null {
   try {
@@ -457,7 +497,7 @@ function readPartner(body: any, sessionPlant: string | null, role: string): Part
 
   return {
     kind: kindOf(body?.kind),
-    code: str(body?.code, 12).toUpperCase(),
+    code: normaliseCode(body?.code),
     name: str(body?.name),
     legalName: str(body?.legalName),
     gstin, pan,

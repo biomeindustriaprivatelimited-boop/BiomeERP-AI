@@ -56,8 +56,18 @@ export function syncMasterFromRegistration(removedCodes: string[] = []): void {
     if (!code || removed.has(code)) continue;
     byCode.set(code, v);
   }
-  for (const p of loadPartners().filter((p) => p.kind === "biomass_vendor" && p.code)) {
+  // Codes are unique per plant (and within trading), so two plants may use
+  // the same code. The agent's list is keyed by code alone: trading vendors
+  // (the coordination register it serves) claim a code first, and a code is
+  // written once per pass — never two vendors' names and aliases merged.
+  const claimed = new Set<string>();
+  const ordered = loadPartners()
+    .filter((p) => p.kind === "biomass_vendor" && p.code)
+    .sort((a, b) => (a.category === "trading" ? 0 : 1) - (b.category === "trading" ? 0 : 1));
+  for (const p of ordered) {
     const code = p.code.toUpperCase();
+    if (claimed.has(code)) continue;
+    claimed.add(code);
     const prev: Partial<MasterVendor> = byCode.get(code) || {};
     const aliases = Array.from(new Set([...(prev.aliases || []), ...((p as any).aliases || []), p.name.toLowerCase(), ...(p.legalName ? [p.legalName.toLowerCase()] : [])])).filter(Boolean);
     byCode.set(code, { ...prev, code, name: p.name, aliases, active: p.status !== "blocked", gstin: p.gstin || prev.gstin || "", category: p.category, kyc: prev.kyc || [] });

@@ -42,7 +42,7 @@ export default function CommandPage() {
   }
   async function emailBriefing() {
     const r = await fetch("/api/command", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "email-briefing" }) });
-    const j = await r.json().catch(() => ({})); setNote(r.ok ? `Briefing emailed to ${j.sent} recipient(s).` : j.error || "Failed.");
+    const j = await r.json().catch(() => ({})); setNote(!r.ok ? j.error || "Failed." : j.failed?.length ? `Briefing emailed to ${j.sent} recipient(s). Not sent — ${j.failed.join(" · ")}` : `Briefing emailed to ${j.sent} recipient(s).`);
   }
   function downloadBriefing() {
     const text = extra.briefing?.text || ""; const w = window.open("", "_blank"); if (!w) return;
