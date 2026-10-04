@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/lib/authServer";
+import { respondWithProgress } from "@/lib/tallyStream";
 import {
   fetchTallyFinance,
   missingGroups,
@@ -17,6 +18,9 @@ import {
  * netted — a customer advance reduces receivables, it is not added to it.
  * Where the company has no ledger in a group the figure is null, so the
  * screen shows "—" rather than a confident zero.
+ *
+ * fromDate/toDate pick the period (sales/purchases for exactly that range,
+ * balances "as on" toDate); `stream: true` sends progress lines first.
  */
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -49,6 +53,8 @@ export async function POST(req: NextRequest) {
     fromDate?: string;
     toDate?: string;
     timeoutMs?: number;
+    fresh?: boolean;
+    stream?: boolean;
   };
   try {
     body = await req.json();
@@ -56,6 +62,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
   }
 
+  return respondWithProgress(body.stream === true, async (progress) => {
   try {
     const fin = await fetchTallyFinance({
       mode: body.mode,
@@ -67,9 +74,11 @@ export async function POST(req: NextRequest) {
       company: (body.company ?? body.companyName ?? "").trim() || undefined,
       fromDate: body.fromDate,
       toDate: body.toDate,
+      fresh: body.fresh === true,
+      onProgress: progress,
     });
     const b = fin.buckets;
-    return NextResponse.json({
+    return { status: 200, body: {
       ok: true,
       fetchedAt: fin.fetchedAt,
       company: fin.company,
@@ -91,9 +100,14 @@ export async function POST(req: NextRequest) {
       },
       warnings: fin.warnings,
       missingGroups: missingGroups(b),
-    });
+      opening: fin.opening,
+      readings: fin.readings,
+      fromCache: fin.fromCache,
+      retried: fin.retried,
+    } };
   } catch (err) {
     const { status, body: errBody } = tallyErrorBody(err);
-    return NextResponse.json(errBody, { status });
+    return { status, body: errBody };
   }
+  });
 }

@@ -18,9 +18,10 @@ import GlassCard from "@/components/GlassCard";
 import { getTallySettings } from "@/lib/preferences";
 import { inrShort, useTallyFull } from "@/lib/useTallyFull";
 import TallyError from "@/components/TallyError";
+import TallyPeriodBar from "@/components/tally/TallyPeriodBar";
 
 export default function AnalyticsPage() {
-  const { data, loading, error, reload } = useTallyFull();
+  const { data, loading, error, reload, progress, periodChoice, setPeriodChoice } = useTallyFull();
 
   const months = data?.monthlySeries ?? [];
   const maxMonthly = useMemo(
@@ -37,7 +38,7 @@ export default function AnalyticsPage() {
             Analytics
           </h1>
           <p className="mt-1 max-w-2xl text-xs leading-relaxed text-biome-muted">
-            Trends built from your Tally vouchers for the current financial year — month by month,
+            Trends built from your Tally vouchers for the period you pick below — month by month,
             party by party. Nothing here is estimated; if Tally doesn&apos;t have it, it isn&apos;t
             shown.
           </p>
@@ -51,6 +52,14 @@ export default function AnalyticsPage() {
           Refresh
         </button>
       </div>
+
+      <TallyPeriodBar
+        choice={periodChoice}
+        onChange={setPeriodChoice}
+        period={data?.period}
+        loading={loading}
+        progress={progress}
+      />
 
       {error && <TallyError error={error} />}
 

@@ -65,6 +65,13 @@ function monthLabel(k: string) {
   return new Date(y, m - 1, 1).toLocaleString("en-IN", { month: "short" });
 }
 
+/** "Receivable as on 04-Oct-2026 · sales for FY 2026-27 till today" */
+function periodNote(d: TallyFull, balance: string): string | undefined {
+  if (!d.period?.label) return undefined;
+  const asOn = d.period.asOn ? `${balance} as on ${d.period.asOn} · ` : "";
+  return `${asOn}${balance === "Receivable" ? "sales" : "purchases"} for ${d.period.label}`;
+}
+
 export default function HomeReports({ tally, tallyLoading, wa }: { tally: TallyFull | null; tallyLoading: boolean; wa: any }) {
   const { can, visible } = useSession();
   const [server, setServer] = useState<Card[] | null>(null);
@@ -95,7 +102,7 @@ export default function HomeReports({ tally, tallyLoading, wa }: { tally: TallyF
       rows: debtors.sort((a, b) => Math.abs(b.closingBalance) - Math.abs(a.closingBalance)).slice(0, 5)
         .map((p) => ({ label: p.name, value: p.closingBalance, kind: "money" as Kind, sub: p.transactionCount ? `${p.transactionCount} vouchers` : undefined })),
       empty: !d || (!debtors.length && d.summary.receivables == null),
-      note: !d ? "Appears once Tally is connected." : undefined,
+      note: !d ? "Appears once Tally is connected." : periodNote(d, "Receivable"),
     });
     finance.push({
       id: "payables", title: "Vendor payables", module: "Finance", href: "/vendors", reportHref: "/reports",
@@ -108,7 +115,7 @@ export default function HomeReports({ tally, tallyLoading, wa }: { tally: TallyF
       rows: creditors.sort((a, b) => Math.abs(b.closingBalance) - Math.abs(a.closingBalance)).slice(0, 5)
         .map((p) => ({ label: p.name, value: Math.abs(p.closingBalance), kind: "money" as Kind, sub: p.transactionCount ? `${p.transactionCount} vouchers` : undefined })),
       empty: !d || (!creditors.length && d.summary.payables == null),
-      note: !d ? "Appears once Tally is connected." : undefined,
+      note: !d ? "Appears once Tally is connected." : periodNote(d, "Payable"),
     });
     const series = (d?.monthlySeries || []).slice(-6);
     finance.push({
@@ -159,7 +166,7 @@ export default function HomeReports({ tally, tallyLoading, wa }: { tally: TallyF
       <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
         <div>
           <h2 id="home-reports" className="biome-shout text-[22px] leading-none text-biome-text">Reports<span className="text-biome-leafBright">.</span></h2>
-          <p className="mt-1 text-[11px] text-biome-muted">Live summaries of your data — open any card for the full report. Figures are this financial year unless stated.</p>
+          <p className="mt-1 text-[11px] text-biome-muted">Live summaries of your data — open any card for the full report. Tally figures are for the period chosen above; other figures are this financial year unless stated.</p>
         </div>
         {visible("/report-builder") && (
           <Link href="/report-builder" className="flex items-center gap-1 rounded-xl border border-biome-line px-3 py-1.5 text-[11.5px] font-semibold text-biome-text hover:border-biome-leafBright/50">

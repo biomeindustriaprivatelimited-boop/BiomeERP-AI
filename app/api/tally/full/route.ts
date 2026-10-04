@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/lib/authServer";
+import { respondWithProgress } from "@/lib/tallyStream";
 import {
   fetchTallyFinance,
-  fetchVouchers,
+  fetchVouchersRange,
+  type VoucherRangeFetch,
   missingGroups,
   tallyErrorBody,
   round2,
@@ -22,8 +24,14 @@ import {
  * VOUCHERS are optional extras (month-by-month chart, transaction list).
  * They never change a KPI.
  *
- * Nothing is cached: if Tally can't be read, the caller gets an error and
- * no figures, rather than old figures that look current.
+ * PERIOD: fromDate/toDate (YYYY-MM-DD) pick any range — P&L figures are
+ * for exactly that range, balances are "as on" toDate. Long ranges are read
+ * in pieces (balances per FY, transactions per month); send `stream: true`
+ * to get progress lines while that happens (lib/tallyStream.ts).
+ *
+ * Readings are kept for 2 minutes (lib/tallyFinance.ts); `fresh: true`
+ * (the Refresh button) reads Tally again. If Tally can't be read, the
+ * caller gets an error and no figures.
  */
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -60,6 +68,10 @@ export async function POST(req: NextRequest) {
     timeoutMs?: number;
     /** Skip the voucher pull when only balances are needed — it's slower. */
     includeVouchers?: boolean;
+    /** Bypass the 2-minute cache. */
+    fresh?: boolean;
+    /** Answer with progress lines (NDJSON). */
+    stream?: boolean;
   };
   try {
     body = await req.json();
@@ -77,6 +89,7 @@ export async function POST(req: NextRequest) {
   };
   const includeVouchers = body.includeVouchers !== false;
 
+  return respondWithProgress(body.stream === true, async (progress) => {
   let fin;
   try {
     fin = await fetchTallyFinance({
@@ -84,24 +97,31 @@ export async function POST(req: NextRequest) {
       company: (body.company ?? body.companyName ?? "").trim() || undefined,
       fromDate: body.fromDate,
       toDate: body.toDate,
+      fresh: body.fresh === true,
+      onProgress: progress,
     });
   } catch (err) {
     const { status, body: errBody } = tallyErrorBody(err);
-    return NextResponse.json(
-      { ...errBody, host: target.host || "localhost", port: target.port, attemptedAt: new Date().toISOString() },
-      { status }
-    );
+    return {
+      status,
+      body: { ...errBody, host: target.host || "localhost", port: target.port, attemptedAt: new Date().toISOString() },
+    };
   }
 
-  // ---- Vouchers (best effort) ----
+  // ---- Vouchers (best effort, one month at a time) ----
   let vouchers: TallyVoucher[] = [];
   let voucherError: string | null = null;
   let voucherSource: string | null = null;
+  let voucherChunks: VoucherRangeFetch["chunks"] | null = null;
   if (includeVouchers) {
-    const v = await fetchVouchers(target, fin.company, fin.period.from, fin.period.to);
+    const v = await fetchVouchersRange(target, fin.company, fin.period.from, fin.period.to, {
+      fresh: body.fresh === true,
+      onProgress: progress,
+    });
     vouchers = v.vouchers;
     voucherError = v.error;
     voucherSource = v.source;
+    voucherChunks = v.chunks;
   }
 
   // ---- Join balances with transactions, by party name ----
@@ -184,7 +204,7 @@ export async function POST(req: NextRequest) {
     return acc;
   }, {});
 
-  return NextResponse.json({
+  return { status: 200, body: {
     ok: true,
     fetchedAt: fin.fetchedAt,
     company: fin.company,
@@ -224,5 +244,12 @@ export async function POST(req: NextRequest) {
     monthlySeries,
     voucherTypeCounts,
     missingGroups: missingGroups(b),
+    opening: fin.opening,
+    booksFrom: fin.booksFrom,
+    readings: fin.readings,
+    fromCache: fin.fromCache,
+    retried: fin.retried,
+    voucherChunks,
+  } };
   });
 }

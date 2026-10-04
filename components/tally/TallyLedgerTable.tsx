@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { Search, Loader2, AlertCircle, FileSpreadsheet, RefreshCw, LucideIcon } from "lucide-react";
 import GlassCard from "@/components/GlassCard";
@@ -8,6 +8,9 @@ import PremiumButton from "@/components/ui/PremiumButton";
 import { getTallySettings } from "@/lib/preferences";
 import { TallyLedgerMaster } from "@/lib/tally";
 import { downloadExcelWorkbook, formatINR } from "@/lib/reconciliation";
+import { postTallyStream } from "@/lib/tallyClient";
+import { useTallyPeriod, type ResolvedPeriod, type TallyProgressInfo } from "@/lib/tallyPeriod";
+import TallyPeriodBar from "@/components/tally/TallyPeriodBar";
 
 interface Props {
   title: string;
@@ -25,42 +28,62 @@ export default function TallyLedgerTable({ title, description, icon: Icon, group
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [basis, setBasis] = useState<string | null>(null);
+  const [period, setPeriod] = useState<ResolvedPeriod | null>(null);
+  const [progress, setProgress] = useState<TallyProgressInfo | null>(null);
+  const { choice, setChoice, dates } = useTallyPeriod();
+  const abortRef = useRef<AbortController | null>(null);
+  const { fromDate, toDate } = dates;
 
-  async function fetchLedgers() {
-    setLoading(true);
-    setError(null);
-    try {
-      const settings = getTallySettings();
-      const res = await fetch("/api/tally/ledgers", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(settings),
-      });
-      const data = await res.json();
-      if (!res.ok || data.error) throw new Error(data.error || "Could not fetch from Tally.");
-      setLedgers(data.ledgers);
-      setBasis(
-        data.company
-          ? `${data.company} · ${data.period?.label ?? ""} (${data.period?.range ?? ""}) · read ${new Date(
-              data.fetchedAt
-            ).toLocaleTimeString("en-IN")}`
-          : null
-      );
-    } catch (err: any) {
-      setError(
-        err?.message || "Could not fetch from Tally. Check Settings → Tally Integration."
-      );
+  const fetchLedgers = useCallback(
+    async (fresh: boolean) => {
+      abortRef.current?.abort();
+      const ctrl = new AbortController();
+      abortRef.current = ctrl;
+      setLoading(true);
+      setError(null);
+      setProgress(null);
+      // Never show one period's balances under another period's heading.
       setLedgers(null);
+      setPeriod(null);
       setBasis(null);
-    } finally {
-      setLoading(false);
-    }
-  }
+      try {
+        const settings = getTallySettings();
+        const { ok, json: data } = await postTallyStream(
+          "/api/tally/ledgers",
+          { ...settings, fromDate, toDate, fresh },
+          { signal: ctrl.signal, onProgress: (p) => !ctrl.signal.aborted && setProgress(p) }
+        );
+        if (ctrl.signal.aborted) return;
+        if (!ok || data.error) throw new Error(data.error || "Could not fetch from Tally.");
+        setLedgers(data.ledgers);
+        setPeriod(data.period ?? null);
+        setBasis(
+          data.company
+            ? `${data.company} · read ${new Date(data.fetchedAt).toLocaleTimeString("en-IN")}`
+            : null
+        );
+      } catch (err: any) {
+        if (ctrl.signal.aborted || err?.name === "AbortError") return;
+        setError(err?.message || "Could not fetch from Tally. Check Settings → Tally Integration.");
+        setLedgers(null);
+        setBasis(null);
+      } finally {
+        if (abortRef.current === ctrl) {
+          setLoading(false);
+          setProgress(null);
+        }
+      }
+    },
+    [fromDate, toDate]
+  );
 
   useEffect(() => {
-    fetchLedgers();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    fetchLedgers(false);
+    return () => abortRef.current?.abort();
+  }, [fetchLedgers]);
+
+  const openingHead = period?.openingOn ? `Opening (${period.openingOn})` : "Opening Balance";
+  const closingHead = period?.asOn ? `Closing (as on ${period.asOn})` : "Closing Balance";
 
   const filtered = useMemo(() => {
     if (!ledgers) return [];
@@ -93,10 +116,12 @@ export default function TallyLedgerTable({ title, description, icon: Icon, group
           Name: l.name,
           Group: l.group ?? "",
           "Tally Group": l.reservedGroup ?? "",
-          "Opening Balance": Math.abs(l.openingBalance),
+          Period: period ? `${period.label ?? ""} (${period.range ?? `${period.from} to ${period.to}`})` : "",
+          [openingHead]: Math.abs(l.openingBalance),
           "Opening Dr/Cr": drCr(l.openingBalance),
-          "Closing Balance": Math.abs(l.closingBalance),
+          [l.movement ? "Movement in period" : closingHead]: Math.abs(l.closingBalance),
           "Closing Dr/Cr": drCr(l.closingBalance),
+          "Closing is": l.movement ? "movement in the period" : `balance as on ${period?.asOn ?? ""}`,
         })),
       },
       `${title.toLowerCase().replace(/\s+/g, "-")}.xlsx`
@@ -126,6 +151,8 @@ export default function TallyLedgerTable({ title, description, icon: Icon, group
         </div>
       )}
 
+      <TallyPeriodBar choice={choice} onChange={setChoice} period={period} loading={loading} progress={progress} showAsOn={false} />
+
       <GlassCard delay={0.05} className="p-5">
         <div className="mb-4 flex flex-wrap items-center gap-3">
           <div className="flex flex-1 items-center gap-2 rounded-xl border border-biome-line bg-biome-hover px-3 py-2">
@@ -137,7 +164,7 @@ export default function TallyLedgerTable({ title, description, icon: Icon, group
               className="flex-1 bg-transparent text-xs text-biome-text outline-none placeholder:text-biome-muted/60"
             />
           </div>
-          <PremiumButton variant="ghost" onClick={fetchLedgers} disabled={loading}>
+          <PremiumButton variant="ghost" onClick={() => fetchLedgers(true)} disabled={loading}>
             {loading ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
             Refresh from Tally
           </PremiumButton>
@@ -148,7 +175,13 @@ export default function TallyLedgerTable({ title, description, icon: Icon, group
 
         {loading && !ledgers && (
           <p className="flex items-center gap-2 py-8 text-xs text-biome-muted">
-            <Loader2 size={13} className="animate-spin" /> Fetching from Tally…
+            <Loader2 size={13} className="animate-spin" /> Fetching from Tally{progress?.label ? ` — ${progress.label}` : "…"}
+          </p>
+        )}
+        {period && ledgers && (
+          <p className="mb-3 text-[11px] text-biome-muted">
+            Balance-sheet ledgers (cash, bank, parties, taxes): closing balance as on {period.asOn}. Sales, purchase,
+            expense and income ledgers: movement within {period.label}.
           </p>
         )}
 
@@ -162,7 +195,7 @@ export default function TallyLedgerTable({ title, description, icon: Icon, group
           <>
             <div className="mb-3 flex items-center justify-between text-[11px] text-biome-muted">
               <span>
-                {filtered.length} ledgers{basis ? ` · ${basis}` : ""}
+                {filtered.length} ledgers{period?.label ? ` · ${period.label}` : ""}{basis ? ` · ${basis}` : ""}
               </span>
               <span>
                 Total closing balance:{" "}
@@ -175,8 +208,8 @@ export default function TallyLedgerTable({ title, description, icon: Icon, group
                   <tr>
                     <th className="px-3 py-2 font-medium">Name</th>
                     <th className="px-3 py-2 font-medium">Group</th>
-                    <th className="px-3 py-2 text-right font-medium">Opening Balance</th>
-                    <th className="px-3 py-2 text-right font-medium">Closing Balance</th>
+                    <th className="px-3 py-2 text-right font-medium">{openingHead}</th>
+                    <th className="px-3 py-2 text-right font-medium">{closingHead}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -200,6 +233,9 @@ export default function TallyLedgerTable({ title, description, icon: Icon, group
                       </td>
                       <td className="px-3 py-2 text-right font-medium text-biome-text">
                         {formatDrCr(l.closingBalance)}
+                        {l.movement && (
+                          <span className="block text-[9.5px] font-normal text-biome-muted">movement in period</span>
+                        )}
                       </td>
                     </motion.tr>
                   ))}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { Search, Loader2, AlertCircle, FileSpreadsheet, RefreshCw, LucideIcon } from "lucide-react";
 import GlassCard from "@/components/GlassCard";
@@ -8,6 +8,9 @@ import PremiumButton from "@/components/ui/PremiumButton";
 import { getTallySettings } from "@/lib/preferences";
 import { TallyVoucherRow } from "@/lib/tally";
 import { downloadExcelWorkbook, formatINR } from "@/lib/reconciliation";
+import { postTallyStream } from "@/lib/tallyClient";
+import { useTallyPeriod, type ResolvedPeriod, type TallyProgressInfo } from "@/lib/tallyPeriod";
+import TallyPeriodBar from "@/components/tally/TallyPeriodBar";
 
 interface Props {
   title: string;
@@ -16,15 +19,6 @@ interface Props {
   /** Case-insensitive substrings matched against the voucher type name
    *  (e.g. ["payment"] for the Payments page). Empty = show all types. */
   voucherTypeKeywords?: string[];
-}
-
-function defaultFromDate() {
-  const d = new Date();
-  d.setMonth(d.getMonth() - 3);
-  return d.toISOString().slice(0, 10);
-}
-function defaultToDate() {
-  return new Date().toISOString().slice(0, 10);
 }
 
 export default function TallyVoucherTable({
@@ -37,34 +31,55 @@ export default function TallyVoucherTable({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [fromDate, setFromDate] = useState(defaultFromDate());
-  const [toDate, setToDate] = useState(defaultToDate());
+  const [warning, setWarning] = useState<string | null>(null);
+  const [period, setPeriod] = useState<ResolvedPeriod | null>(null);
+  const [progress, setProgress] = useState<TallyProgressInfo | null>(null);
+  const { choice, setChoice, dates } = useTallyPeriod();
+  const { fromDate, toDate } = dates;
+  const abortRef = useRef<AbortController | null>(null);
 
-  async function fetchVouchers() {
-    setLoading(true);
-    setError(null);
-    try {
-      const settings = getTallySettings();
-      const res = await fetch("/api/tally/fetch", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...settings,
-          companyName: settings.companyName || undefined,
-          fromDate,
-          toDate,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok || data.error) throw new Error(data.error || "Could not fetch from Tally.");
-      setRows(data.rows || []);
-    } catch (err: any) {
-      setError(err?.message || "Could not fetch from Tally. Check Settings → Tally Integration.");
+  // Read month by month on the server (with retries), progress shown here.
+  const fetchVouchers = useCallback(
+    async (fresh: boolean) => {
+      abortRef.current?.abort();
+      const ctrl = new AbortController();
+      abortRef.current = ctrl;
+      setLoading(true);
+      setError(null);
+      setWarning(null);
+      setProgress(null);
       setRows(null);
-    } finally {
-      setLoading(false);
-    }
-  }
+      setPeriod(null);
+      try {
+        const settings = getTallySettings();
+        const { ok, json: data } = await postTallyStream(
+          "/api/tally/fetch",
+          { ...settings, companyName: settings.companyName || undefined, fromDate, toDate, fresh },
+          { signal: ctrl.signal, onProgress: (p) => !ctrl.signal.aborted && setProgress(p) }
+        );
+        if (ctrl.signal.aborted) return;
+        setPeriod(data.period ?? null);
+        if (!ok || data.error) throw new Error(data.error || "Could not fetch from Tally.");
+        setRows(data.rows || []);
+        setWarning(data.warning || null);
+      } catch (err: any) {
+        if (ctrl.signal.aborted || err?.name === "AbortError") return;
+        setError(err?.message || "Could not fetch from Tally. Check Settings → Tally Integration.");
+        setRows(null);
+      } finally {
+        if (abortRef.current === ctrl) {
+          setLoading(false);
+          setProgress(null);
+        }
+      }
+    },
+    [fromDate, toDate]
+  );
+
+  useEffect(() => {
+    fetchVouchers(false);
+    return () => abortRef.current?.abort();
+  }, [fetchVouchers]);
 
   const filtered = useMemo(() => {
     if (!rows) return [];
@@ -125,29 +140,20 @@ export default function TallyVoucherTable({
         </div>
       )}
 
+      <TallyPeriodBar choice={choice} onChange={setChoice} period={period} loading={loading} progress={progress} showAsOn={false} />
+
+      {warning && (
+        <div className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs text-biome-text">
+          <AlertCircle size={15} className="mt-0.5 shrink-0 text-amber-500" />
+          {warning}
+        </div>
+      )}
+
       <GlassCard delay={0.05} className="p-5">
         <div className="mb-4 flex flex-wrap items-end gap-3">
-          <label className="text-[11px] text-biome-muted">
-            From
-            <input
-              type="date"
-              value={fromDate}
-              onChange={(e) => setFromDate(e.target.value)}
-              className="mt-0.5 block rounded-lg border border-biome-line bg-biome-hover px-2 py-1.5 text-xs text-biome-text outline-none focus:border-biome-leaf/40"
-            />
-          </label>
-          <label className="text-[11px] text-biome-muted">
-            To
-            <input
-              type="date"
-              value={toDate}
-              onChange={(e) => setToDate(e.target.value)}
-              className="mt-0.5 block rounded-lg border border-biome-line bg-biome-hover px-2 py-1.5 text-xs text-biome-text outline-none focus:border-biome-leaf/40"
-            />
-          </label>
-          <PremiumButton variant="ghost" onClick={fetchVouchers} disabled={loading}>
+          <PremiumButton variant="ghost" onClick={() => fetchVouchers(true)} disabled={loading}>
             {loading ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
-            Fetch from Tally
+            Refresh from Tally
           </PremiumButton>
           <div className="flex flex-1 items-center gap-2 rounded-xl border border-biome-line bg-biome-hover px-3 py-2">
             <Search size={14} className="text-biome-muted" />
@@ -165,26 +171,29 @@ export default function TallyVoucherTable({
 
         {rows === null && !loading && !error && (
           <p className="py-8 text-center text-xs text-biome-muted">
-            Pick a date range and click "Fetch from Tally" to load {title.toLowerCase()}.
+            Pick a period above to load {title.toLowerCase()} from Tally.
           </p>
         )}
 
         {loading && (
           <p className="flex items-center gap-2 py-8 text-xs text-biome-muted">
-            <Loader2 size={13} className="animate-spin" /> Fetching from Tally…
+            <Loader2 size={13} className="animate-spin" /> Fetching from Tally{progress?.label ? ` — ${progress.label}` : "…"}
           </p>
         )}
 
         {!loading && rows !== null && filtered.length === 0 && !error && (
           <p className="py-8 text-center text-xs text-biome-muted">
-            No {title.toLowerCase()} found in this date range.
+            No {title.toLowerCase()} found in {period?.label ?? "this period"}.
           </p>
         )}
 
         {!loading && filtered.length > 0 && (
           <>
             <div className="mb-3 flex items-center justify-between text-[11px] text-biome-muted">
-              <span>{filtered.length} vouchers</span>
+              <span>
+                {filtered.length} vouchers{period?.label ? ` · ${period.label}` : ""}
+                {period?.range && period.range !== period.label ? ` (${period.range})` : ""}
+              </span>
               <span>
                 Total: <span className="font-medium text-biome-text">{formatINR(total)}</span>
               </span>

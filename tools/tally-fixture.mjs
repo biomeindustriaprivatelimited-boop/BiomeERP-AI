@@ -279,3 +279,105 @@ export function expectedMonthly(today) {
   add(cur(40), "receipts", 10 * L);
   return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([month, v]) => ({ month, ...v }));
 }
+
+/* =====================================================================
+ * Company C — MULTI-YEAR books, for period tests (tools/tally-check.mjs
+ * "Periods" section). Books begin 1 April three FYs before the current
+ * one. Every month, generated from simple rules so the expected figure
+ * for ANY From–To is plain arithmetic over the voucher list:
+ *   day 5   Sales      Customer C Dr S / Sales C Cr S, S = (10 + k) × 10,000
+ *   day 8   Purchase   Purchase C Dr P / Vendor C Cr P, P = 60% of S
+ *   day 20  Receipt    Bank C Dr S/2 / Customer C Cr S/2
+ *   day 25  Payment    Office Exp C Dr 1,000 / Cash C Cr 1,000
+ * (k = months since the books beginning; only dates up to today exist.)
+ * Opening: Cash C 1,00,000 Dr, Capital C 1,00,000 Cr.
+ * ===================================================================== */
+export const COMPANY_C = "Biome Multi-Year Test Co";
+
+const ymd = (y, m, d) => `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+
+export function buildCompanyC(today) {
+  const fy = Number(fyStart(today).slice(0, 4));
+  const booksFrom = `${fy - 3}-04-01`;
+  const T = isoDate(today);
+  const vouchers = [];
+  let y = fy - 3;
+  let m = 4;
+  for (let k = 0; ; k++) {
+    if (ymd(y, m, 1) > T) break;
+    const S = (10 + k) * 10000;
+    const P = Math.round(S * 0.6);
+    const add = (d, type, no, party, entries) => {
+      const date = ymd(y, m, d);
+      if (date <= T) vouchers.push({ date, type, no: `${no}-${y}${String(m).padStart(2, "0")}`, party, entries });
+    };
+    add(5, "Sales", "S", "Customer C", [
+      { ledger: "Customer C", dr: S },
+      { ledger: "Sales C", dr: -S },
+    ]);
+    add(8, "Purchase", "P", "Vendor C", [
+      { ledger: "Vendor C", dr: -P },
+      { ledger: "Purchase C", dr: P },
+    ]);
+    add(20, "Receipt", "R", "Customer C", [
+      { ledger: "Customer C", dr: -S / 2 },
+      { ledger: "Bank C", dr: S / 2 },
+    ]);
+    add(25, "Payment", "E", "Office Exp C", [
+      { ledger: "Cash C", dr: -1000 },
+      { ledger: "Office Exp C", dr: 1000 },
+    ]);
+    m += 1;
+    if (m === 13) {
+      m = 1;
+      y += 1;
+    }
+  }
+  const defs = [
+    ["Capital C", "Capital Account", -1 * L, false],
+    ["Cash C", "Cash-in-Hand", 1 * L, false],
+    ["Bank C", "Bank Accounts", 0, false],
+    ["Customer C", "Sundry Debtors", 0, false],
+    ["Vendor C", "Sundry Creditors", 0, false],
+    ["Sales C", "Sales Accounts", 0, true],
+    ["Purchase C", "Purchase Accounts", 0, true],
+    ["Office Exp C", "Indirect Expenses", 0, true],
+  ];
+  const ledgers = defs.map(([name, parent, opening, isPl]) => ({
+    name,
+    parent,
+    opening,
+    pl: isPl,
+    txns: vouchers.flatMap((v) => v.entries.filter((e) => e.ledger === name).map((e) => ({ date: v.date, dr: e.dr }))),
+  }));
+  return { booksFrom, groups: buildCompanyA(today).groups, ledgers, vouchers };
+}
+
+/** Expected figures of company C for [from, to] (natural signs: assets
+ *  positive, liabilities positive). */
+export function expectedC(today, from, to) {
+  const c = buildCompanyC(today);
+  const led = (n) => c.ledgers.find((l) => l.name === n);
+  const upTo = (n, d) => led(n).opening + led(n).txns.filter((t) => t.date <= d).reduce((a, t) => a + t.dr, 0);
+  const within = (n) => led(n).txns.filter((t) => t.date >= from && t.date <= to).reduce((a, t) => a + t.dr, 0);
+  const before = (d) => {
+    const x = new Date(`${d}T00:00:00`);
+    x.setDate(x.getDate() - 1);
+    return isoDate(x);
+  };
+  const inRange = c.vouchers.filter((v) => v.date >= from && v.date <= to);
+  return {
+    sales: -within("Sales C"),
+    purchases: within("Purchase C"),
+    expenses: within("Office Exp C"),
+    cashInHand: upTo("Cash C", to),
+    bankBalance: upTo("Bank C", to),
+    receivables: upTo("Customer C", to),
+    payables: -upTo("Vendor C", to),
+    openingReceivables: upTo("Customer C", before(from)),
+    openingCash: upTo("Cash C", before(from)),
+    voucherCount: inRange.length,
+    salesVouchers: inRange.filter((v) => v.type === "Sales").length,
+    months: new Set(inRange.map((v) => v.date.slice(0, 7))).size,
+  };
+}
