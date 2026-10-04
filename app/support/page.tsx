@@ -52,6 +52,9 @@ export default function SupportPage() {
     board?: Board | null; maxAttachments?: number;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Saving never waits on email, but nobody should believe "they were told"
+  // when the notice didn't go — so failed notices are said out loud.
+  const [mailNote, setMailNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ subject: "", topic: "", message: "", urgency: "normal" });
@@ -86,6 +89,7 @@ export default function SupportPage() {
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json.error || `Failed (${res.status}).`);
+      setMailNote(mailSummary(json.mail));
       setForm({ ...form, subject: "", message: "", urgency: "normal" });
       setOpen(false);
       await load();
@@ -101,6 +105,7 @@ export default function SupportPage() {
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json.error || `Failed (${res.status}).`);
+      setMailNote(mailSummary(json.mail));
       await load();
     } catch (err) { setError((err as Error).message); } finally { setBusy(false); }
   }
@@ -133,6 +138,14 @@ export default function SupportPage() {
         <div className="bmx-msg-in flex items-start gap-2 rounded-2xl border border-rose-400/25 bg-rose-400/[.07] px-4 py-3">
           <AlertCircle size={15} className="mt-px shrink-0 text-rose-500" />
           <p className="text-[11.5px] text-biome-text">{error}</p>
+        </div>
+      )}
+
+      {mailNote && (
+        <div data-testid="support-mail-note" className="bmx-msg-in flex items-start gap-2 rounded-2xl border border-amber-500/30 bg-amber-500/[.07] px-4 py-3">
+          <AlertCircle size={15} className="mt-px shrink-0 text-amber-600" />
+          <p className="flex-1 text-[11.5px] text-biome-text">{mailNote}</p>
+          <button onClick={() => setMailNote(null)} className="text-[10.5px] font-semibold text-biome-muted">Dismiss</button>
         </div>
       )}
 
@@ -818,4 +831,13 @@ function Stat({
       </div>
     </div>
   );
+}
+
+/** "Saved, but the email notice didn't reach …" — null when every notice went. */
+function mailSummary(mail: unknown): string | null {
+  const list = Array.isArray(mail) ? (mail as { name: string; ok: boolean; error: string }[]) : [];
+  const failed = list.filter((m) => !m.ok);
+  if (!failed.length) return null;
+  const sent = list.length - failed.length;
+  return `Saved. ${sent ? `Email notice sent to ${sent}; ` : ""}not emailed: ${failed.map((f) => `${f.name} (${f.error || "send failed"})`).join("; ")}`;
 }

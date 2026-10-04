@@ -240,7 +240,12 @@ export interface Partner {
   lockHistory: LockEvent[];
   /** Set when a developer rewrote this record (stays highlighted). */
   devEdited?: { by: string; at: string; fields: string[]; note?: string } | null;
-  /** Short code. Matches the operational vendor master where it exists. */
+  /**
+   * Vendor / transporter / client code — what the plant sheets and the
+   * coordination register type. Unique within a plant (manufacturing) or
+   * within the trading register. Optional, but the sheets fill the name
+   * from it, so it is recommended.
+   */
   code: string;
   name: string;
   legalName: string;
@@ -397,6 +402,111 @@ export function partnerSuggestions(
       status: p.status,
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/* ------------------------------------------------------------------ */
+/* Who sees which records                                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The business's hard split, in one place so the register, the
+ * registration letter and anything else that reads a partner agree:
+ *
+ *   coordinator    — TRADING vendors, clients and transporters.
+ *   procurement    — every MANUFACTURING record (buys for all plants).
+ *   plant_manager  — MANUFACTURING records for THEIR site (or with no
+ *                    plant named — a head-office contract serves them too).
+ *   accounts/admin/developer — everything.
+ */
+export function partnersVisibleTo(partners: Partner[], role: string, plant: string | null): Partner[] {
+  if (role === "coordinator") return partners.filter((p) => p.category === "trading");
+  if (role === "procurement") return partners.filter((p) => p.category !== "trading");
+  if (role === "plant_manager") {
+    return partners.filter(
+      (p) => p.category !== "trading" && (!plant || p.plants.length === 0 || p.plants.includes(plant))
+    );
+  }
+  return partners;
+}
+
+/* ------------------------------------------------------------------ */
+/* Vendor / transporter / client codes                                 */
+/* ------------------------------------------------------------------ */
+
+/** What a code is called on screen, by kind of partner. */
+export function codeLabelFor(kind: PartnerKind): string {
+  return kind === "transporter" ? "Transporter code" : kind === "client" ? "Client code" : kind === "other" ? "Partner code" : "Vendor code";
+}
+
+/** Codes are typed by hand at a weighbridge; keep them simple. */
+export function normaliseCode(v: unknown): string {
+  return String(v ?? "").trim().toUpperCase().replace(/\s+/g, "").slice(0, 12);
+}
+
+export function codeLooksRight(code: string): boolean {
+  return /^[A-Z0-9][A-Z0-9\-_/.]{0,11}$/.test(code);
+}
+
+/**
+ * Do two records live in the same code space?
+ *
+ * A code must be unique wherever the two could be confused on one sheet:
+ *   - trading records share one register (the coordinator's);
+ *   - manufacturing records clash when they serve a common plant, or when
+ *     either serves every plant.
+ * Trading and manufacturing never clash — they are separate registers,
+ * and a plant manager is never shown a trading record (or told it exists).
+ */
+function sameCodeSpace(
+  a: { category: VendorCategory; plants: string[] },
+  b: { category: VendorCategory; plants: string[] }
+): boolean {
+  if (a.category !== b.category) return false;
+  if (a.category === "trading") return true;
+  if (!a.plants.length || !b.plants.length) return true;
+  const set = new Set(a.plants.map((x) => String(x).toUpperCase()));
+  return b.plants.some((x) => set.has(String(x).toUpperCase()));
+}
+
+/** The registered partner already holding this code in the same plant / register, if any. */
+export function codeClash(
+  partners: Partner[],
+  code: string,
+  scope: { category: VendorCategory; plants: string[]; excludeId?: string }
+): Partner | null {
+  const want = normaliseCode(code);
+  if (!want) return null;
+  return (
+    partners.find(
+      (p) => p.id !== scope.excludeId && p.code && normaliseCode(p.code) === want && sameCodeSpace(scope, p)
+    ) || null
+  );
+}
+
+/**
+ * A suggested next code: the plant's (or trading's) prefix plus the next
+ * free number, e.g. REW-V007, GKD-T002, TRD-V041. Only looks at codes in
+ * the same code space, so it never reveals another plant's numbering.
+ */
+export function suggestNextCode(
+  partners: Partner[],
+  scope: { category: VendorCategory; plants: string[]; kind: PartnerKind }
+): string {
+  const letter = scope.kind === "transporter" ? "T" : scope.kind === "client" ? "C" : scope.kind === "other" ? "P" : "V";
+  const site = scope.category === "trading" ? "TRD" : scope.plants.length === 1 ? String(scope.plants[0]).toUpperCase().slice(0, 4) : "BIO";
+  const prefix = `${site}-${letter}`;
+  const inSpace = partners.filter((p) => p.code && sameCodeSpace(scope, p)).map((p) => normaliseCode(p.code));
+  let max = 0;
+  for (const c of inSpace) {
+    if (!c.startsWith(prefix)) continue;
+    const n = Number(c.slice(prefix.length));
+    if (Number.isFinite(n) && n > max) max = n;
+  }
+  for (let n = max + 1; n < max + 1000; n++) {
+    const candidate = `${prefix}${String(n).padStart(3, "0")}`;
+    if (!inSpace.includes(candidate)) return candidate;
+  }
+  return `${prefix}${String(max + 1).padStart(3, "0")}`;
 }
 
 /* ------------------------------------------------------------------ */

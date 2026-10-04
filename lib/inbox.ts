@@ -74,7 +74,9 @@ export interface InboxConfig { host: string; port: number; secure: boolean; user
 export function inboxConfig(): InboxConfig | null {
   const s = loadMail();
   if (!s.user || !s.passwordEnc) return null;
-  const host = s.provider === "gmail" ? "imap.gmail.com" : (s.host || "").replace(/^smtp\./, "imap.");
+  const host = s.provider === "gmail" ? "imap.gmail.com"
+    : s.provider === "outlook" || /office365\.com$|outlook\.com$/i.test(s.host || "") ? "outlook.office365.com"
+    : (s.host || "").replace(/^smtp\./, "imap.");
   return { host, port: 993, secure: true, user: s.user, password: decrypt(s.passwordEnc), mailbox: "INBOX" };
 }
 

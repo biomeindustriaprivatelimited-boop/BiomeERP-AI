@@ -264,7 +264,11 @@ export const TRANSPORT_COLUMNS: SheetColumn[] = [
   // Added at the company's request: a driver without a number is a driver
   // nobody can reach when a truck is late at the gate.
   { cell: "M", key: "driverMobile", label: "Driver Mobile", kind: "entry", width: 130, hint: "10-digit mobile" },
-  { cell: "N", key: "transporter", label: "Transporter", kind: "entry", width: 150, suggest: "transporter", suggestField: "name" },
+  // Code and name fill each other from the plant's registered transporters,
+  // the same way Vendor Code / Name do on the biomass sheet. Sits at NA so
+  // the plant's own column letters (A–T) stay where their workbook has them.
+  { cell: "NA", key: "transporterCode", label: "Transporter Code", kind: "entry", width: 120, suggest: "transporter", suggestField: "code", pairKey: "transporter" },
+  { cell: "N", key: "transporter", label: "Transporter", kind: "entry", width: 150, suggest: "transporter", suggestField: "name", pairKey: "transporterCode" },
   { cell: "O", key: "rate", label: "Rate", kind: "entry", type: "number", width: 90 },
   { cell: "P", key: "daala", label: "Daala", kind: "entry", type: "number", width: 90 },
   {

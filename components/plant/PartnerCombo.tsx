@@ -61,15 +61,17 @@ export default function PartnerCombo({
   const q = String(value ?? "");
   const matches = useMemo(() => {
     const s = q.trim().toLowerCase();
-    if (showAll && s.length < 2) return options.slice(0, 60);
-    if (s.length < 2) return [];
+    // Codes are short (V1, R07) — one character is enough to start the list.
+    const min = field === "code" ? 1 : 2;
+    if (showAll && s.length < min) return options.slice(0, 60);
+    if (s.length < min) return [];
     const hit = options.filter((o) => optionMatches(o, s));
     // Starts-with first, then contains; registered before the plant list.
     const rank = (o: ComboOption) =>
       (o.source === "registered" ? 0 : 2) +
       ([o.code, o.name].some((x) => x.toLowerCase().startsWith(s)) ? 0 : 1);
     return hit.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name)).slice(0, 60);
-  }, [q, options, showAll]);
+  }, [q, options, showAll, field]);
 
   // Registered = the cell's text is exactly a registered partner's name/code.
   const registered = useMemo(() => {
@@ -161,8 +163,13 @@ export default function PartnerCombo({
               onMouseEnter={() => setActive(idx)}
               className={`flex cursor-pointer items-center gap-2 px-2.5 py-1.5 ${idx === active ? "bg-biome-leaf/10 text-biome-text" : "text-biome-text/90"}`}
             >
-              {o.code && <span className="shrink-0 rounded bg-biome-hover px-1 font-mono text-[10px] text-biome-muted">{o.code}</span>}
-              <span className="min-w-0 flex-1 truncate">
+              {/* "CODE — Name", so either half can be recognised at a glance. */}
+              <span className="min-w-0 flex-1 truncate" data-testid="partner-option-label">
+                {o.code ? (
+                  <><span className="font-mono font-semibold">{o.code}</span><span className="text-biome-muted"> — </span></>
+                ) : (
+                  <span className="text-[10px] italic text-biome-muted">no code — </span>
+                )}
                 {o.name}
                 {o.city && <span className="ml-1 text-[10px] text-biome-muted">· {o.city}</span>}
               </span>
@@ -195,7 +202,7 @@ export default function PartnerCombo({
         onFocus={() => onOpen?.()}
         onBlur={() => { setOpen(false); setShowAll(false); }}
         onKeyDown={onKeyDown}
-        title={registered ? `Type 2+ letters for registered ${kindsLabel} of this plant · ↓ for the full list` : undefined}
+        title={registered ? `Type ${field === "code" ? "a code" : "2+ letters"} for registered ${kindsLabel} of this plant · ↓ for the full list` : undefined}
         className={`${className} ${registered ? "" : "border-amber-500/50 pr-5"}`}
       />
       {!registered && (

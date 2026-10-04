@@ -357,6 +357,7 @@ export const DATASETS: DatasetDef[] = [
       { key: "place", label: "To", type: "text" },
       { key: "vehicle", label: "Vehicle", type: "text" },
       { key: "driver", label: "Driver", type: "text" },
+      { key: "transporterCode", label: "Transporter code", type: "text" },
       { key: "transporter", label: "Transporter", type: "text" },
       { key: "purpose", label: "Purpose", type: "text" },
       { key: "weight", label: "Dispatch wt", type: "number", sum: true },
@@ -373,7 +374,7 @@ export const DATASETS: DatasetDef[] = [
       const w = !a ? b : !b ? a : Math.min(a, b);
       return {
         date: String(r.date || "").slice(0, 10), plant: code, plantName: plantLabel(code), party: r.partyName || "", place: r.to || "",
-        vehicle: String(r.vehicleNo || "").toUpperCase(), driver: r.driver || "", transporter: r.transporter || "", purpose: r.tripPurpose || "Supply",
+        vehicle: String(r.vehicleNo || "").toUpperCase(), driver: r.driver || "", transporterCode: String(r.transporterCode || "").toUpperCase(), transporter: r.transporter || "", purpose: r.tripPurpose || "Supply",
         weight: a, rWeight: b, actualWeight: w, amount: n(r.rate) * w - n(r.daala),
       };
     })),

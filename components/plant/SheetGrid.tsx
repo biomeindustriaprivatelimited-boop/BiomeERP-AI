@@ -782,7 +782,36 @@ export default function SheetGrid({
                             options={optionsFor(c)}
                             kindsLabel={kindsOf(c).map((k) => KIND_PLURAL[k]).join(" / ")}
                             onOpen={refreshIfStale}
-                            onChange={(v) => setCell(i, c.key, v)}
+                            onChange={(v) => {
+                              setCell(i, c.key, v);
+                              // An exact registered code (or name) fills the other
+                              // half by itself — no need to open the list.
+                              if (!c.pairKey || !columns.some((c2) => c2.key === c.pairKey)) return;
+                              const isCode = (c.suggestField || "name") === "code";
+                              const opts = optionsFor(c);
+                              const resolve = (val: string): ComboOption | null => {
+                                const s = val.trim().toLowerCase();
+                                if (!s) return null;
+                                const hits = opts.filter((o) => (isCode ? o.code.toLowerCase() === s : o.name.toLowerCase() === s));
+                                const distinct = new Set(hits.map((o) => `${o.code.toUpperCase()}|${o.name.toLowerCase()}`));
+                                return distinct.size === 1 ? hits[0] : null;
+                              };
+                              const otherOf = (o: ComboOption) => (isCode ? o.name : o.code);
+                              const before = resolve(String(row[c.key] ?? ""));
+                              const now = resolve(v);
+                              const pairVal = String(row[c.pairKey] ?? "");
+                              const pairWasAuto = !pairVal || (before !== null && otherOf(before) === pairVal);
+                              if (now && otherOf(now)) {
+                                // A code names one vendor, so it always sets the name;
+                                // a name only fills a code nobody typed by hand.
+                                if (isCode || pairWasAuto) setCell(i, c.pairKey, otherOf(now));
+                                if (isCode && now.code !== v) setCell(i, c.key, now.code);
+                              } else if (before && pairVal && pairVal === otherOf(before)) {
+                                // The code no longer matches — don't leave the old
+                                // vendor's name sitting next to it.
+                                setCell(i, c.pairKey, "");
+                              }
+                            }}
                             onPick={(o) => {
                               const isCode = (c.suggestField || "name") === "code";
                               setCell(i, c.key, isCode ? o.code : o.name);

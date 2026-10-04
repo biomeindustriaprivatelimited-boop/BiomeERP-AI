@@ -63,6 +63,10 @@ const blank = {
   rateTerms: "", paymentTerms: "", agreementFrom: "", agreementTo: "", notes: "",
 };
 
+/** What the code is called for this kind of partner. */
+const codeLabel = (kind: string) =>
+  kind === "transporter" ? "Transporter code" : kind === "client" ? "Client code" : kind === "other" ? "Partner code" : "Vendor code";
+
 const STATUS_TONE: Record<string, string> = {
   active: "border-emerald-500/35 bg-emerald-500/10 text-emerald-600",
   draft: "border-biome-line text-biome-muted",
@@ -209,6 +213,37 @@ export default function PartnersPage() {
   );
   const editingLocked = Boolean(editing?.locked);
 
+  /**
+   * Instant duplicate check over the records this person can see — the
+   * server repeats it (per plant / trading register) on save, so this is
+   * only the early warning, never the rule.
+   */
+  const codeTaken: Partner | null = (() => {
+    const c = String(form.code || "").trim().toUpperCase();
+    if (!c) return null;
+    const cat = isCoordinator ? "trading" : isPlantManager ? "raw_material" : form.category;
+    const plants: string[] = (form.plants || []).map((x: string) => x.toUpperCase());
+    return partners.find((p) => {
+      if (editing && p.id === editing.id) return false;
+      if (String(p.code || "").toUpperCase() !== c) return false;
+      if ((p.category === "trading") !== (cat === "trading")) return false;
+      if (cat === "trading") return true;
+      if (!plants.length || !p.plants.length) return true;
+      return p.plants.some((x) => plants.includes(String(x).toUpperCase()));
+    }) || null;
+  })();
+
+  async function suggestCode() {
+    try {
+      const qs = new URLSearchParams({
+        nextCode: "1", kind: form.kind, category: form.category || "", plants: (form.plants || []).join(","),
+      });
+      const res = await fetch(`/api/partners?${qs}`, { cache: "no-store" });
+      const json = await res.json().catch(() => ({}));
+      if (res.ok && json.code) setForm((f: any) => ({ ...f, code: json.code }));
+    } catch { /* typing one by hand still works */ }
+  }
+
   return (
     <div className="space-y-5">
       <header className="flex flex-wrap items-end justify-between gap-3">
@@ -273,7 +308,7 @@ export default function PartnersPage() {
         <div className="relative ml-auto">
           <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-biome-muted" />
           <input value={filters.search} onChange={(e) => setFilters({ ...filters, search: e.target.value })}
-            placeholder="Name, GSTIN, PAN, city"
+            placeholder="Name, code, GSTIN, PAN, city"
             className="bmx-input w-[240px] rounded-xl border border-biome-line bg-biome-bg py-2 pl-8 pr-3 text-[11.5px] text-biome-text outline-none" />
         </div>
       </div>
@@ -300,7 +335,11 @@ export default function PartnersPage() {
                 <div className="min-w-[200px] flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <p className="text-[12.5px] font-semibold text-biome-text">{p.name}</p>
-                    {p.code && <span className="font-mono text-[10px] text-biome-muted">{p.code}</span>}
+                    {p.code ? (
+                      <span data-testid="partner-code-badge" title={codeLabel(p.kind)} className="rounded-md border border-biome-line bg-biome-bg px-1.5 py-0.5 font-mono text-[10px] font-semibold text-biome-text">{p.code}</span>
+                    ) : (
+                      <span title="No code — the plant sheets cannot fill this name from a code" className="rounded-md border border-dashed border-amber-500/50 px-1.5 py-0.5 text-[9.5px] font-semibold text-amber-600">no code</span>
+                    )}
                     <span className={`rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase tracking-[.1em] ${STATUS_TONE[p.status]}`}>
                       {(data?.statuses || []).find((x: any) => x.id === p.status)?.label || p.status}
                     </span>
@@ -448,9 +487,28 @@ export default function PartnersPage() {
             </p>
           </F>
           <F label="Trading name"><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inputCls} /></F>
-          <F label="Short code (optional)">
-            <input value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value.toUpperCase() })}
-              placeholder="Matches the coordination reference" className={inputCls} />
+          <F label={`${codeLabel(form.kind)} (recommended)`}>
+            <div className="flex gap-1.5">
+              <input value={form.code} data-testid="partner-code"
+                onChange={(e) => setForm({ ...form, code: e.target.value.toUpperCase().replace(/\s+/g, "").slice(0, 12) })}
+                disabled={editingLocked}
+                placeholder={form.kind === "transporter" ? "e.g. REW-T001" : form.kind === "client" ? "e.g. REW-C001" : "e.g. REW-V001"}
+                className={`${inputCls} font-mono ${codeTaken ? "border-rose-500/60" : ""}`} />
+              {!editingLocked && (
+                <button type="button" onClick={suggestCode} data-testid="partner-code-suggest"
+                  title="Fill the next free code for this plant"
+                  className="bmx-chip shrink-0 rounded-xl border border-biome-line px-2.5 text-[10.5px] font-semibold text-biome-muted">
+                  Suggest
+                </button>
+              )}
+            </div>
+            <p className={`mt-1 text-[9.5px] ${codeTaken ? "font-semibold text-rose-500" : form.code ? "text-biome-muted" : "text-amber-600"}`}>
+              {codeTaken
+                ? `Already used by ${codeTaken.name} — choose a different code.`
+                : form.code
+                  ? "Typing this code in the biomass / transport sheet fills the name automatically."
+                  : "Not filled — the plant sheets can only fill the name from a code if one is set here."}
+            </p>
           </F>
           <div className="md:col-span-2">
             <F label="Legal name, as on the GST certificate">
@@ -907,38 +965,81 @@ function F({ label, children }: { label: string; children: React.ReactNode }) {
  * half-finished registration reads as a confirmation the business never
  * meant to give. The button proposes the partner's email and lets the
  * sender change it before anything leaves.
+ *
+ * The address is asked for in a small inline box, NOT window.prompt():
+ * the desktop app (Electron) does not support prompt() at all — it returns
+ * nothing, so the old button silently did nothing there.
  */
 function RegistrationEmailButton({ partner }: { partner: Partner }) {
+  const [open, setOpen] = useState(false);
+  const [to, setTo] = useState("");
   const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const [note, setNote] = useState<{ ok: boolean; text: string; detail?: string } | null>(null);
+
+  function start() {
+    setTo((partner as any).email || "");
+    setNote(null);
+    setOpen(true);
+  }
 
   async function send() {
-    const to = window.prompt("Send the registration letter to:", (partner as any).email || "");
-    if (to === null) return;
+    const addr = to.trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(addr)) {
+      setNote({ ok: false, text: "Type a valid email address first." });
+      return;
+    }
     setBusy(true); setNote(null);
     try {
       const res = await fetch("/api/partners/registration-email", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: partner.id, to }),
+        body: JSON.stringify({ id: partner.id, to: addr }),
       });
       const json = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(json.error || `Failed (${res.status}).`);
-      setNote({ ok: true, text: `Sent to ${json.to}.` });
+      if (!res.ok) {
+        setNote({ ok: false, text: json.error || `Not sent (${res.status}).` });
+        return;
+      }
+      setNote({ ok: true, text: `Registration email sent to ${json.to}.` });
+      setOpen(false);
     } catch (e) {
-      setNote({ ok: false, text: (e as Error).message });
+      setNote({ ok: false, text: `Not sent — the Biome server could not be reached (${(e as Error).message}).` });
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <span className="mr-auto flex items-center gap-2">
-      <button onClick={send} disabled={busy}
-        className="bmx-chip flex items-center gap-1.5 rounded-xl border border-biome-line px-4 py-2.5 text-[11.5px] font-semibold text-biome-muted disabled:opacity-60">
-        {busy ? <Loader2 size={13} className="bmx-spin" /> : <Mail size={13} />} Send registration email
-      </button>
+    <span className="mr-auto flex min-w-0 flex-1 flex-wrap items-center gap-2">
+      {!open ? (
+        <button onClick={start} disabled={busy} data-testid="reg-email-open"
+          className="bmx-chip flex items-center gap-1.5 rounded-xl border border-biome-line px-4 py-2.5 text-[11.5px] font-semibold text-biome-muted disabled:opacity-60">
+          <Mail size={13} /> Send registration email
+        </button>
+      ) : (
+        <span className="flex flex-wrap items-center gap-1.5">
+          <input autoFocus value={to} onChange={(e) => setTo(e.target.value)} data-testid="reg-email-to"
+            onKeyDown={(e) => { if (e.key === "Enter") send(); if (e.key === "Escape") setOpen(false); }}
+            placeholder="vendor@example.com"
+            className="bmx-input w-[220px] rounded-xl border border-biome-line bg-biome-bg px-3 py-2 text-[11.5px] text-biome-text outline-none" />
+          <button onClick={send} disabled={busy} data-testid="reg-email-send"
+            className="bmx-btn flex items-center gap-1.5 rounded-xl bg-biome-leaf px-3.5 py-2 text-[11.5px] font-bold text-white disabled:opacity-60">
+            {busy ? <Loader2 size={13} className="bmx-spin" /> : <Mail size={13} />} {busy ? "Sending…" : "Send"}
+          </button>
+          <button onClick={() => { setOpen(false); setNote(null); }} disabled={busy}
+            className="bmx-chip rounded-xl border border-biome-line px-3 py-2 text-[11px] font-semibold text-biome-muted">Cancel</button>
+        </span>
+      )}
       {note && (
-        <span className={`text-[10.5px] ${note.ok ? "text-emerald-500" : "text-rose-500"}`}>{note.text}</span>
+        <span data-testid="reg-email-note" data-ok={note.ok ? "1" : "0"}
+          className={`flex max-w-[520px] items-start gap-1.5 rounded-xl border px-3 py-1.5 text-[10.5px] leading-snug ${
+            note.ok ? "border-emerald-500/30 bg-emerald-500/[.07] text-emerald-600" : "border-rose-400/30 bg-rose-400/[.07] text-biome-text"
+          }`}>
+          {note.ok ? <Check size={12} className="mt-px shrink-0" /> : <AlertCircle size={12} className="mt-px shrink-0 text-rose-500" />}
+          <span>
+            {note.text}
+            {!note.ok && /Settings → Email/.test(note.text) && " If you can't open Settings, ask the admin."}
+          </span>
+        </span>
       )}
     </span>
   );
