@@ -853,7 +853,11 @@ group("The checks still match lib/numberSeries.ts", () => {
   } catch { /* reported by the checks below */ }
   check(
     "coordinator is pinned to trading records in the API",
-    /role === "coordinator"\) \{\s*return partners\.filter\(\(p\) => p\.category === "trading"\)/.test(partnersRoute),
+    /role === "coordinator"\) \{\s*return partners\.filter\(\(p\) => p\.category === "trading"\)/.test(partnersRoute) ||
+      (/visibleTo = partnersVisibleTo/.test(partnersRoute) &&
+        /role === "coordinator"\) return partners\.filter\(\(p\) => p\.category === "trading"\)/.test(
+          readFileSync(join(here, "..", "lib", "partners.ts"), "utf8")
+        )),
     true
   );
   check(
