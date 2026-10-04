@@ -1,65 +1,51 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/lib/authServer";
-import {
-  buildLedgerMastersRequestXml,
-  parseLedgerMastersXml,
-  looksLikeTallyResponse,
-  extractTallyLineError,
-  resolveTallyTarget,
-} from "@/lib/tally";
+import { CATEGORY_LABEL, fetchTallyFinance, tallyErrorBody } from "@/lib/tallyFinance";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
+/**
+ * Every ledger of the configured company with opening and closing balance
+ * for the current FY till today. Balances keep Tally's sign (Dr negative,
+ * Cr positive) and carry `reservedGroup` — the Tally group above the
+ * ledger after walking sub-groups — so "Customers" also finds parties in
+ * sub-groups of Sundry Debtors.
+ */
 export async function POST(req: NextRequest) {
   const auth = await requirePermission(req, "finance");
   if ("response" in auth) return auth.response;
 
   const body = await req.json().catch(() => ({}));
-  const { url, headers } = resolveTallyTarget(body);
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 25000);
-
   try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers,
-      body: buildLedgerMastersRequestXml(),
-      signal: controller.signal,
+    const fin = await fetchTallyFinance({
+      mode: body.mode,
+      host: body.host,
+      port: Number(body.port) || 9000,
+      agentUrl: body.agentUrl,
+      agentApiKey: body.agentApiKey,
+      timeoutMs: 25000,
+      company: (body.companyName ?? body.company ?? "").trim() || undefined,
+      fromDate: body.fromDate,
+      toDate: body.toDate,
     });
-    const text = await res.text();
-    clearTimeout(timeout);
-
-    if (res.status === 401) {
-      return NextResponse.json(
-        { error: "The Agent rejected the request — check the API key in Settings matches config.json." },
-        { status: 401 }
-      );
-    }
-
-    if (!looksLikeTallyResponse(text)) {
-      return NextResponse.json(
-        {
-          error: `${url} didn't return Tally XML. Raw response: ${text.slice(0, 300).trim() || "(empty)"}`,
-        },
-        { status: 502 }
-      );
-    }
-    const lineError = extractTallyLineError(text);
-    if (lineError) {
-      return NextResponse.json({ error: `Tally reported: "${lineError}"` }, { status: 502 });
-    }
-
-    const ledgers = parseLedgerMastersXml(text);
-    return NextResponse.json({ ledgers, count: ledgers.length });
-  } catch (err: any) {
-    clearTimeout(timeout);
-    const isAbort = err?.name === "AbortError";
-    return NextResponse.json(
-      {
-        error: isAbort ? `Timed out waiting for ${url}.` : `Could not reach ${url}: ${err?.message || "connection failed"}.`,
-      },
-      { status: 502 }
-    );
+    const ledgers = fin.ledgers.map((l) => ({
+      name: l.name,
+      group: l.group,
+      openingBalance: l.openingBalance,
+      closingBalance: l.closingBalance,
+      primaryGroup: l.primaryGroup,
+      reservedGroup: l.category === "other" ? null : CATEGORY_LABEL[l.category],
+    }));
+    return NextResponse.json({
+      ledgers,
+      count: ledgers.length,
+      company: fin.company,
+      period: fin.period,
+      fetchedAt: fin.fetchedAt,
+    });
+  } catch (err) {
+    const { status, body: errBody } = tallyErrorBody(err);
+    return NextResponse.json(errBody, { status });
   }
 }

@@ -10,6 +10,7 @@ import {
   parseStock,
   type TallyConn,
 } from "@/lib/tallyBridge";
+import { buildGroupClassifier, resolvePeriod, CATEGORY_LABEL } from "@/lib/tallyFinance";
 
 /**
  * The full Tally pull, through the BiomeBridge TDL.
@@ -21,12 +22,6 @@ import {
  */
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-function financialYear() {
-  const now = new Date();
-  const y = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
-  return { from: `${y}-04-01`, to: `${y + 1}-03-31` };
-}
 
 export async function POST(req: NextRequest) {
   const auth = await requirePermission(req, "finance");
@@ -56,9 +51,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: probe.message, probe, needsBridge: true }, { status: 409 });
   }
 
-  const fy = financialYear();
-  const from = body.fromDate || fy.from;
-  const to = body.toDate || fy.to;
+  // Current FY till today (not to 31 March — post-dated vouchers are not
+  // today's position).
+  const period = resolvePeriod({ fromDate: body.fromDate, toDate: body.toDate });
+  const from = period.from;
+  const to = period.to;
 
   // Each section is fetched independently so one failure doesn't lose the
   // rest — a large voucher range timing out shouldn't cost you the ledgers.
@@ -72,19 +69,24 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const ledgers = await safely("ledgers", async () => parseLedgers(await askTally(conn, requests.ledgers(conn))), [] as any[]);
+  const ledgers = await safely("ledgers", async () => parseLedgers(await askTally(conn, requests.ledgers(conn, from, to))), [] as any[]);
   const vouchers = await safely("vouchers", async () => parseVouchers(await askTally(conn, requests.vouchers(conn, from, to))), [] as any[]);
-  const balanceSheet = await safely("balanceSheet", async () => parseGroups(await askTally(conn, requests.balanceSheet(conn))), [] as any[]);
-  const profitLoss = await safely("profitLoss", async () => parseGroups(await askTally(conn, requests.profitLoss(conn))), [] as any[]);
-  const stock = await safely("stock", async () => parseStock(await askTally(conn, requests.stock(conn))), [] as any[]);
+  const balanceSheet = await safely("balanceSheet", async () => parseGroups(await askTally(conn, requests.balanceSheet(conn, from, to))), [] as any[]);
+  const profitLoss = await safely("profitLoss", async () => parseGroups(await askTally(conn, requests.profitLoss(conn, from, to))), [] as any[]);
+  const stock = await safely("stock", async () => parseStock(await askTally(conn, requests.stock(conn, from, to))), [] as any[]);
 
   const gstParties = ledgers.filter((l: any) => l.isGstRegistered);
-  const inGroup = (g: string | null, keys: string[]) => keys.some((k) => (g || "").toLowerCase().includes(k));
+  // Walk the group tree (balance sheet + P&L groups) so parties in
+  // sub-groups of Sundry Debtors/Creditors are found, not just direct ones.
+  const classifier = buildGroupClassifier(
+    [...balanceSheet, ...profitLoss].map((g: any) => ({ name: g.name, parent: g.parent, reservedName: null }))
+  );
+  const reservedOf = (g: string | null) => CATEGORY_LABEL[classifier.classify(g).category];
 
   return NextResponse.json({
     fetchedAt: new Date().toISOString(),
     probe,
-    period: { from, to },
+    period,
     counts: {
       ledgers: ledgers.length,
       vouchers: vouchers.length,
@@ -102,8 +104,8 @@ export async function POST(req: NextRequest) {
     stock,
     /** Split out because GST reconciliation needs exactly this. */
     parties: {
-      customers: ledgers.filter((l: any) => inGroup(l.group, ["sundry debtor"])),
-      vendors: ledgers.filter((l: any) => inGroup(l.group, ["sundry creditor"])),
+      customers: ledgers.filter((l: any) => reservedOf(l.group) === "Sundry Debtors"),
+      vendors: ledgers.filter((l: any) => reservedOf(l.group) === "Sundry Creditors"),
       gstRegistered: gstParties,
     },
     partialErrors: Object.keys(errors).length ? errors : null,

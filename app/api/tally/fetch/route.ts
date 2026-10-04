@@ -1,12 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/lib/authServer";
-import {
-  buildVoucherFetchRequestXml,
-  parseVoucherExportXml,
-  looksLikeTallyResponse,
-  extractTallyLineError,
-  resolveTallyTarget,
-} from "@/lib/tally";
+import { fetchVouchers } from "@/lib/tallyFinance";
 
 export const runtime = "nodejs";
 
@@ -23,70 +17,28 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "fromDate and toDate are required." }, { status: 400 });
   }
 
-  const { url, headers } = resolveTallyTarget(body);
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 25000);
-
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers,
-      body: buildVoucherFetchRequestXml(fromDate, toDate, companyName),
-      signal: controller.signal,
-    });
-    const text = await res.text();
-    clearTimeout(timeout);
-
-    if (res.status === 401) {
-      return NextResponse.json(
-        { error: "The Agent rejected the request — check the API key in Settings matches config.json." },
-        { status: 401 }
-      );
-    }
-
-    if (!looksLikeTallyResponse(text)) {
-      return NextResponse.json(
-        {
-          error: `${url} didn't return a Tally XML response. Raw response: ${
-            text.slice(0, 300).trim() || "(empty)"
-          }`,
-        },
-        { status: 502 }
-      );
-    }
-
-    const lineError = extractTallyLineError(text);
-    if (lineError) {
-      return NextResponse.json(
-        {
-          error: `Tally reported: "${lineError}". This usually means the "Biome Voucher Export" TDL report isn't loaded yet, or the company name doesn't match exactly.`,
-        },
-        { status: 502 }
-      );
-    }
-
-    const rows = parseVoucherExportXml(text);
-    if (!rows.length) {
-      return NextResponse.json(
-        {
-          error:
-            "Connected successfully, but no vouchers came back for that date range. Try widening the dates, or confirm the right company is open in Tally.",
-        },
-        { status: 200 }
-      );
-    }
-
-    return NextResponse.json({ rows, count: rows.length });
-  } catch (err: any) {
-    clearTimeout(timeout);
-    const isAbort = err?.name === "AbortError";
+  // BiomeBridge.tdl first (the one Settings tells you to load), then the
+  // older "Biome Voucher Export" report. Previously only the old report was
+  // asked for, so with the new bridge loaded nothing ever came back.
+  const v = await fetchVouchers(
+    { ...body, timeoutMs: 25000 },
+    companyName || "",
+    fromDate,
+    toDate
+  );
+  if (v.error) {
+    return NextResponse.json({ error: v.error }, { status: 502 });
+  }
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const rows = v.vouchers.map(({ entries, ...r }) => r);
+  if (!rows.length) {
     return NextResponse.json(
       {
-        error: isAbort
-          ? `Timed out waiting for ${url}.`
-          : `Could not reach ${url}: ${err?.message || "connection failed"}.`,
+        error:
+          "Connected successfully, but no vouchers came back for that date range. Try widening the dates, or confirm the right company is open in Tally.",
       },
-      { status: 502 }
+      { status: 200 }
     );
   }
+  return NextResponse.json({ rows, count: rows.length, source: v.source });
 }
