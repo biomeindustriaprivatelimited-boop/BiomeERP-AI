@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { requirePermission, findById } from "@/lib/authServer";
+import { effectivePermissions } from "@/lib/access";
 import { loadEmployees, saveEmployees } from "@/lib/payroll";
 import { LETTER_TEMPLATES, templateById, fillTemplate, missingPlaceholders, PLACEHOLDERS } from "@/lib/letters";
 import { sendMail } from "@/lib/mailer";
@@ -43,7 +44,10 @@ export async function GET(req: NextRequest) {
 
   let draft: { subject: string; body: string; missing: string[] } | null = null;
   if (employeeId && templateId) {
-    const employee = loadEmployees().find((e) => e.id === employeeId);
+    const found = loadEmployees().find((e) => e.id === employeeId);
+    // Same plant scope as the employee list.
+    const employee = found && (effectivePermissions(user.role, user.access).includes("payroll") ||
+      (auth.session.plant && found.plant === auth.session.plant)) ? found : undefined;
     const template = templateById(templateId);
     if (employee && template) {
       const values = valuesFor(employee, user.name);

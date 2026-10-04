@@ -113,14 +113,20 @@ export function isHoliday(date: string, region: HolidayRegion, holidays = loadHo
   return holidays.find((h) => h.date === date && h.regions.includes(region)) ?? null;
 }
 
-/** Sunday is the weekly off. Kept separate so it can be changed per plant later. */
-export function isWeeklyOff(date: string): boolean {
-  return new Date(`${date}T00:00:00`).getDay() === 0;
+/**
+ * The weekly off. Sunday unless the developer changed it under
+ * Attendance → Rules (stored in config/attendance-rules.json).
+ */
+export function isWeeklyOff(date: string, weekOffDays?: number[]): boolean {
+  const days = weekOffDays ?? loadRules().weekOffDays;
+  return days.includes(new Date(`${date}T00:00:00`).getDay());
 }
 
 /** A day nobody is expected to mark. */
-export function isNonWorkingDay(date: string, region: HolidayRegion, holidays = loadHolidays()): boolean {
-  return isWeeklyOff(date) || Boolean(isHoliday(date, region, holidays));
+export function isNonWorkingDay(
+  date: string, region: HolidayRegion, holidays = loadHolidays(), weekOffDays?: number[]
+): boolean {
+  return isWeeklyOff(date, weekOffDays) || Boolean(isHoliday(date, region, holidays));
 }
 
 /* ------------------------------------------------------------------ */
@@ -225,7 +231,9 @@ export function datesBetween(from: string, to: string): string[] {
   const end = new Date(`${to}T00:00:00`);
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) return out;
   for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    out.push(d.toISOString().slice(0, 10));
+    // Local date, not toISOString(): on an IST machine local midnight is
+    // 18:30 the previous day in UTC, which shifted every date back by one.
+    out.push(localDate(d));
   }
   return out;
 }
@@ -237,7 +245,8 @@ export function datesBetween(from: string, to: string): string[] {
  * entitlement the person never used.
  */
 export function workingDaysIn(from: string, to: string, region: HolidayRegion, holidays = loadHolidays()): number {
-  return datesBetween(from, to).filter((d) => !isNonWorkingDay(d, region, holidays)).length;
+  const weekOff = loadRules().weekOffDays;
+  return datesBetween(from, to).filter((d) => !isNonWorkingDay(d, region, holidays, weekOff)).length;
 }
 
 export interface LeaveBalance {
@@ -331,6 +340,26 @@ export interface AttendanceRules {
   /** Next-day hour after which silence becomes a warning. */
   warnNextDayHour: number;
   enabled: boolean;
+
+  /* ---- Developer-controlled register rules (Attendance → Rules) ---- */
+  /** Weekly off days, 0 = Sunday … 6 = Saturday. */
+  weekOffDays: number[];
+  /** Shown against the Late mark — "arrived after 09:30". */
+  lateAfter: string;
+  /** Every N Late marks in a month cut half a day's pay. 0 = never. */
+  latesPerHalfDay: number;
+  /** A plant manager may edit today and this many days back. */
+  managerBackDays: number;
+  /** Allow marks on days that have not happened yet (planned leave, etc.). */
+  allowFutureMarks: boolean;
+  /** Announced holidays are written into the register as H. */
+  autoMarkHolidays: boolean;
+  /** Blank weekly-off days are shown (and saved) as WO. */
+  autoMarkWeekOff: boolean;
+  /** Plant managers may raise leave on behalf of their plant's staff. */
+  plantManagerLeave: boolean;
+  updatedAt?: string;
+  updatedByName?: string;
 }
 
 export const DEFAULT_RULES: AttendanceRules = {
@@ -339,17 +368,82 @@ export const DEFAULT_RULES: AttendanceRules = {
   reminderCount: 3,
   warnNextDayHour: 13,  // 1 PM next day
   enabled: true,
+  weekOffDays: [0],
+  lateAfter: "09:30",
+  latesPerHalfDay: 0,
+  managerBackDays: 3,
+  allowFutureMarks: false,
+  autoMarkHolidays: true,
+  autoMarkWeekOff: true,
+  plantManagerLeave: true,
 };
 
 function rulesFile() { return path.join(paths.configDir, "attendance-rules.json"); }
 
+const clampInt = (v: unknown, lo: number, hi: number, dflt: number) => {
+  const n = Math.round(Number(v));
+  return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : dflt;
+};
+
+/** Cleans a stored or submitted rule set — the file is hand-editable. */
+export function cleanRules(raw: Partial<AttendanceRules> | null | undefined): AttendanceRules {
+  const r = { ...DEFAULT_RULES, ...(raw || {}) };
+  const week = Array.isArray(r.weekOffDays)
+    ? [...new Set(r.weekOffDays.map((d) => Math.round(Number(d))).filter((d) => d >= 0 && d <= 6))].sort()
+    : DEFAULT_RULES.weekOffDays;
+  return {
+    markByHour: clampInt(r.markByHour, 0, 23, DEFAULT_RULES.markByHour),
+    remindAfterHour: clampInt(r.remindAfterHour, 0, 23, DEFAULT_RULES.remindAfterHour),
+    reminderCount: clampInt(r.reminderCount, 0, 10, DEFAULT_RULES.reminderCount),
+    warnNextDayHour: clampInt(r.warnNextDayHour, 0, 23, DEFAULT_RULES.warnNextDayHour),
+    enabled: Boolean(r.enabled),
+    weekOffDays: week.length < 7 ? week : DEFAULT_RULES.weekOffDays,
+    lateAfter: /^([01]\d|2[0-3]):[0-5]\d$/.test(String(r.lateAfter)) ? String(r.lateAfter) : DEFAULT_RULES.lateAfter,
+    latesPerHalfDay: clampInt(r.latesPerHalfDay, 0, 31, 0),
+    managerBackDays: clampInt(r.managerBackDays, 0, 62, DEFAULT_RULES.managerBackDays),
+    allowFutureMarks: Boolean(r.allowFutureMarks),
+    autoMarkHolidays: Boolean(r.autoMarkHolidays),
+    autoMarkWeekOff: Boolean(r.autoMarkWeekOff),
+    plantManagerLeave: Boolean(r.plantManagerLeave),
+    updatedAt: r.updatedAt,
+    updatedByName: r.updatedByName,
+  };
+}
+
 export function loadRules(): AttendanceRules {
-  return { ...DEFAULT_RULES, ...readJson<Partial<AttendanceRules>>(rulesFile(), {}) };
+  return cleanRules(readJson<Partial<AttendanceRules>>(rulesFile(), {}));
 }
 
 export function saveRules(rules: AttendanceRules): void {
   ensureDir(paths.configDir);
-  writeJsonAtomic(rulesFile(), rules);
+  writeJsonAtomic(rulesFile(), cleanRules(rules));
+}
+
+/** YYYY-MM-DD in the server's own clock (not UTC — 1 AM in India is today). */
+export function localDate(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/**
+ * Whether a PLANT MANAGER (or anyone marking a team without approval
+ * rights) may change a given day: today and `managerBackDays` before it.
+ * Future days only when the developer allowed them.
+ */
+export function canManagerMark(date: string, now: Date, rules = loadRules()): { allowed: boolean; reason?: string } {
+  const today = localDate(now);
+  if (date > today) {
+    return rules.allowFutureMarks ? { allowed: true } : { allowed: false, reason: "That day hasn't happened yet." };
+  }
+  const earliest = new Date(now);
+  earliest.setDate(earliest.getDate() - rules.managerBackDays);
+  if (date < localDate(earliest)) {
+    return {
+      allowed: false,
+      reason: `Only the last ${rules.managerBackDays} day(s) can be changed from here. Ask accounts to correct older days.`,
+    };
+  }
+  return { allowed: true };
 }
 
 /**
@@ -410,7 +504,7 @@ export function chaseStageFor(input: {
   if (input.hasLeaveRequest) return { stage: "none", reason: "A leave request covers this day." };
 
   const holidays = input.holidays ?? loadHolidays();
-  if (isNonWorkingDay(input.date, input.region, holidays)) {
+  if (isNonWorkingDay(input.date, input.region, holidays, rules.weekOffDays)) {
     return { stage: "none", reason: "Not a working day for this person." };
   }
 

@@ -106,7 +106,7 @@ export default function DataManagementPanel({ onChanged }: { onChanged: () => vo
   }
 
   const input =
-    "w-full rounded-xl border border-biome-line bg-white/[0.03] px-3 py-2 text-[11.5px] text-biome-text outline-none focus:border-biome-leaf/40";
+    "w-full rounded-xl border border-biome-line bg-biome-bg px-3 py-2 text-[11.5px] text-biome-text outline-none focus:border-biome-leaf/40";
 
   return (
     <GlassCard className="overflow-hidden">
@@ -267,7 +267,7 @@ export default function DataManagementPanel({ onChanged }: { onChanged: () => vo
                 </label>
 
                 {confirming && (
-                  <p className="mt-2 rounded-xl border border-rose-400/30 bg-rose-400/5 px-3 py-2 text-[11px] leading-relaxed text-rose-300">
+                  <p className="mt-2 rounded-xl border border-rose-400/30 bg-rose-400/5 px-3 py-2 text-[11px] leading-relaxed text-rose-700 dark:text-rose-300">
                     {scope === "all"
                       ? "This clears EVERY scanned record."
                       : scope === "period"
@@ -283,7 +283,7 @@ export default function DataManagementPanel({ onChanged }: { onChanged: () => vo
                       <PremiumButton variant="ghost" onClick={() => setConfirming(false)}>
                         Cancel
                       </PremiumButton>
-                      <PremiumButton onClick={runDelete} disabled={busy} className="border-rose-400/40 text-rose-300">
+                      <PremiumButton onClick={runDelete} disabled={busy} className="border-rose-400/40 text-rose-600 dark:text-rose-300">
                         {busy ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
                         Yes, delete
                       </PremiumButton>

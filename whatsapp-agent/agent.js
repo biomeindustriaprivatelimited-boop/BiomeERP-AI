@@ -379,15 +379,15 @@ async function connectWeb() {
           state.qrExpiresAt = null;
           state.me = me;
           setStatus("connected", { lastError: null });
+          // Even if the group list at "ready" fails, the picker gets chats.
+          scheduleChatListRefresh();
         },
         onGroups: (list) => {
-          for (const g of list) {
-            const existing = knownChats.get(g.jid) || { jid: g.jid, isGroup: true, messageCount: 0, documentCount: 0, firstSeen: new Date().toISOString() };
-            existing.name = g.name || existing.name;
-            existing.participantCount = g.participants;
-            knownChats.set(g.jid, existing);
-          }
+          for (const g of list) upsertKnownChat({ jid: g.jid, name: g.name, isGroup: true, participants: g.participants });
           log(`found ${list.length} group(s)`);
+          // The first read at "ready" often sees only part of the chat
+          // list — read again (groups AND people) while WhatsApp fills it.
+          scheduleChatListRefresh();
           afterConnected();
           // Catch up: documents posted while this PC was off do not arrive
           // as new messages in WhatsApp Web — read the last 7 days of the
@@ -716,13 +716,65 @@ function loadKnownChats() {
   try {
     const file = path.join(PATHS.configDir, "known-chats.json");
     if (!fs.existsSync(file)) return;
-    for (const c of JSON.parse(fs.readFileSync(file, "utf8")).chats || []) {
-      knownChats.set(c.jid, c);
+    for (const raw of JSON.parse(fs.readFileSync(file, "utf8")).chats || []) {
+      const jid = normChatJid(raw && raw.jid);
+      if (!jid || !isListableChat(jid)) continue;
+      const c = { ...raw, jid };
+      // Older builds wrote the member count as `participantCount` (web
+      // engine) or `participants` (Baileys). One name from here on.
+      if (c.participants == null && c.participantCount != null) c.participants = c.participantCount;
+      delete c.participantCount;
+      knownChats.set(jid, { ...(knownChats.get(jid) || {}), ...c });
     }
   } catch {
     /* start empty */
   }
 }
+
+/**
+ * One spelling per chat. WhatsApp Web says "@c.us" for a person, Baileys
+ * and the rest of the agent say "@s.whatsapp.net" — a chat selected under
+ * one spelling never matched messages arriving under the other.
+ */
+function normChatJid(j) {
+  const s = String(j || "").trim();
+  return s.endsWith("@c.us") ? s.replace(/@c\.us$/, "@s.whatsapp.net") : s;
+}
+
+/** Status posts, broadcast lists and channels are not chats anyone picks. */
+function isListableChat(jid) {
+  return Boolean(jid) && jid !== "status@broadcast" && !jid.endsWith("@broadcast") && !jid.endsWith("@newsletter");
+}
+
+/** Merge what WhatsApp says about a chat into the known list. */
+function upsertKnownChat({ jid, name, isGroup, participants, lastSeen }) {
+  jid = normChatJid(jid);
+  if (!isListableChat(jid)) return null;
+  const existing = knownChats.get(jid) || {
+    jid,
+    name: null,
+    isGroup: jid.endsWith("@g.us"),
+    lastSeen: null,
+    documentCount: 0,
+    messageCount: 0,
+    firstSeen: new Date().toISOString(),
+  };
+  if (name) existing.name = name;
+  if (typeof isGroup === "boolean") existing.isGroup = isGroup || jid.endsWith("@g.us");
+  if (Number.isFinite(participants) && participants > 0) existing.participants = participants;
+  delete existing.participantCount;
+  if (lastSeen && (!existing.lastSeen || String(lastSeen) > String(existing.lastSeen))) existing.lastSeen = lastSeen;
+  if (existing.documentCount == null) existing.documentCount = 0;
+  if (existing.messageCount == null) existing.messageCount = 0;
+  knownChats.set(jid, existing);
+  return existing;
+}
+
+/**
+ * Where the chat list stands, so the picker can say WHY it is empty
+ * ("still loading your chats from WhatsApp") instead of showing nothing.
+ */
+const chatList = { loading: false, refreshedAt: null, lastError: null, source: null };
 
 /**
  * Every chat we've seen traffic in, so the UI can offer a real list to
@@ -731,52 +783,227 @@ function loadKnownChats() {
 const knownChats = new Map(); // jid -> { jid, name, isGroup, lastSeen, documentCount }
 
 function rememberChat(msg) {
-  const jid = msg?.key?.remoteJid;
-  if (!jid || jid === "status@broadcast") return;
-  const existing = knownChats.get(jid) || {
-    jid,
-    name: null,
-    isGroup: jid.endsWith("@g.us"),
-    lastSeen: null,
-    documentCount: 0,
-    messageCount: 0,
-  };
+  const jid = normChatJid(msg?.key?.remoteJid);
+  if (!isListableChat(jid)) return;
+  const existing = upsertKnownChat({ jid });
+  if (!existing) return;
   // Group subjects arrive separately; a participant's pushName is only
-  // the sender's name, so it must not be used as the group's name.
-  if (!existing.isGroup && msg.pushName) existing.name = msg.pushName;
-  existing.lastSeen = new Date(Number(msg.messageTimestamp || 0) * 1000 || Date.now()).toISOString();
-  existing.messageCount += 1;
-  if (describeMedia(msg)) existing.documentCount += 1;
-  knownChats.set(jid, existing);
+  // the sender's name, so it must not be used as the group's name. And a
+  // message WE sent carries OUR name — a personal chat was being renamed
+  // after the company account every time we replied in it.
+  if (!existing.isGroup && msg.pushName && !msg.key?.fromMe) existing.name = msg.pushName;
+  const at = new Date(Number(msg.messageTimestamp || 0) * 1000 || Date.now()).toISOString();
+  if (!existing.lastSeen || at > existing.lastSeen) existing.lastSeen = at;
+  existing.messageCount = (existing.messageCount || 0) + 1;
+  if (describeMedia(msg)) existing.documentCount = (existing.documentCount || 0) + 1;
+  persistChats();
 }
 
-/** Ask WhatsApp for the real names of every group this account is in. */
-async function refreshGroupNames() {
-  if (web) {
+/**
+ * Every chat on the linked WhatsApp Web, read straight from WhatsApp's own
+ * chat store in the page.
+ *
+ * whatsapp-web.js's getChats() refreshes each group's metadata over the
+ * network inside one Promise.all — a single group that errors (left,
+ * removed, a community announcement group) rejected the WHOLE list, and
+ * right after linking the store is still filling. The group list then came
+ * back empty, nothing could be selected, and nothing was ever saved. This
+ * reads names, member counts and last activity without any network call,
+ * one chat at a time, so one odd chat can never hide the rest.
+ */
+async function listWebChats() {
+  const page = web && web.client && web.client.pupPage;
+  if (page && typeof page.evaluate === "function") {
     try {
-      for (const g of await web.groups()) {
-        const existing = knownChats.get(g.jid) || { jid: g.jid, isGroup: true, documentCount: 0 };
-        existing.name = g.name || existing.name;
-        existing.participants = g.participants;
-        knownChats.set(g.jid, existing);
+      const rows = await page.evaluate(() => {
+        const out = [];
+        let models = [];
+        try {
+          models = window.require("WAWebCollections").Chat.getModelsArray();
+        } catch (e) {
+          return { error: String((e && e.message) || e) };
+        }
+        for (const c of models) {
+          try {
+            const id = c.id && c.id._serialized;
+            if (!id) continue;
+            const gm = c.groupMetadata;
+            let participants = 0;
+            try {
+              const p = gm && gm.participants;
+              participants = p ? (typeof p.length === "number" ? p.length : p.getModelsArray ? p.getModelsArray().length : 0) : 0;
+            } catch (e) { /* count unknown */ }
+            let name = null;
+            try { name = c.formattedTitle || c.name || null; } catch (e) { /* no name */ }
+            if (!name && c.contact) {
+              try { name = c.contact.name || c.contact.verifiedName || c.contact.pushname || null; } catch (e) { /* no name */ }
+            }
+            out.push({ id, name, isGroup: Boolean(gm) || id.endsWith("@g.us"), participants, t: Number(c.t || 0) });
+          } catch (e) { /* skip just this chat */ }
+        }
+        return { rows: out };
+      });
+      if (rows && Array.isArray(rows.rows)) {
+        return rows.rows.map((r) => ({
+          jid: r.id,
+          name: r.name,
+          isGroup: r.isGroup,
+          participants: r.participants,
+          lastSeen: r.t ? new Date(r.t * 1000).toISOString() : null,
+        }));
       }
+      if (rows && rows.error) log(`chat list: WhatsApp Web store not readable (${rows.error}) — using the slower group list`);
     } catch (err) {
-      log("could not fetch group names:", err.message);
+      log(`chat list: could not read WhatsApp Web's chats (${err.message}) — using the slower group list`);
     }
-    return;
   }
-  if (!sock) return;
+  // Fallback 1: the library's full chat list — groups AND people.
   try {
-    const groups = await sock.groupFetchAllParticipating();
-    for (const [jid, meta] of Object.entries(groups || {})) {
-      const existing = knownChats.get(jid) || { jid, isGroup: true, documentCount: 0 };
-      existing.name = meta.subject || existing.name;
-      existing.participants = (meta.participants || []).length;
-      knownChats.set(jid, existing);
-    }
+    const all = await web.client.getChats();
+    return all
+      .filter((c) => c && c.id)
+      .map((c) => {
+        let participants = 0;
+        try { participants = c.isGroup ? (c.participants || []).length : 0; } catch { /* unknown */ }
+        return {
+          jid: webEngine.normJid(c.id),
+          name: c.name || null,
+          isGroup: Boolean(c.isGroup),
+          participants,
+          lastSeen: c.timestamp ? new Date(c.timestamp * 1000).toISOString() : null,
+        };
+      });
   } catch (err) {
-    log("could not fetch group names:", err.message);
+    log(`chat list: getChats failed (${err.message}) — trying the group list only`);
   }
+  // Fallback 2: the group list (network, all-or-nothing).
+  const groups = await web.groups();
+  return groups.map((g) => ({ jid: g.jid, name: g.name, isGroup: true, participants: g.participants }));
+}
+
+/**
+ * Ask WhatsApp for every chat this account has — groups AND people — with
+ * their real names. Used on connect, a few times after it (WhatsApp Web
+ * fills its chat store gradually after linking) and by the picker's
+ * Refresh button. Returns how many chats WhatsApp listed.
+ */
+async function refreshGroupNames() {
+  if (!web && !sock) {
+    chatList.lastError = "WhatsApp is not linked on this PC yet.";
+    return 0;
+  }
+  chatList.loading = true;
+  try {
+    let n = 0;
+    if (web) {
+      for (const c of await listWebChats()) if (upsertKnownChat(c)) n += 1;
+      chatList.source = "web";
+    } else {
+      const groups = await sock.groupFetchAllParticipating();
+      for (const [jid, meta] of Object.entries(groups || {})) {
+        if (upsertKnownChat({ jid, name: meta.subject, isGroup: true, participants: (meta.participants || []).length })) n += 1;
+      }
+      chatList.source = "baileys";
+    }
+    chatList.refreshedAt = new Date().toISOString();
+    chatList.lastError = null;
+    persistChats();
+    return n;
+  } catch (err) {
+    chatList.lastError = `Could not read the chat list from WhatsApp: ${err.message}`;
+    log("could not fetch group names:", err.message);
+    return 0;
+  } finally {
+    chatList.loading = false;
+  }
+}
+
+/**
+ * Right after linking, WhatsApp Web is still downloading the chat list, so
+ * one read at "ready" saw few or none. Read again a few times, then stop.
+ */
+function scheduleChatListRefresh() {
+  for (const t of global.__biomeChatListTimers || []) clearTimeout(t);
+  global.__biomeChatListTimers = [5, 20, 60, 180].map((s) =>
+    setTimeout(() => {
+      if (!web && !sock) return;
+      refreshGroupNames()
+        .then((n) => n && log(`chat list: ${n} chat(s) available to select`))
+        .catch(() => {});
+    }, s * 1000)
+  );
+}
+
+/** The chat list plus the current selection — what the picker shows. */
+function chatsPayload() {
+  const cfg = settings();
+  const norm = (list) => [...new Set((list || []).map(normChatJid).filter(Boolean))];
+  const allowed = norm(cfg.allowedChats);
+  const receiving = norm(cfg.receivingChats);
+  const lab = norm(cfg.labChats);
+  const learn = norm(cfg.learnChats);
+  const SUGGEST = /sales?|supply|supplies|dispatch|document|docs|coordination|logistic|सेल्स|सप्लाई/i;
+  // A chat that is selected but no longer in the list (renamed, history
+  // cleared) still shows, so it can be unselected.
+  const all = new Map(knownChats);
+  for (const jid of [...allowed, ...receiving, ...lab, ...learn]) {
+    if (!all.has(jid) && isListableChat(jid)) {
+      all.set(jid, { jid, name: null, isGroup: jid.endsWith("@g.us"), lastSeen: null, documentCount: 0, messageCount: 0 });
+    }
+  }
+  const chats = [...all.values()]
+    .filter((c) => isListableChat(c.jid))
+    .map((c) => {
+      const participants = c.participants ?? c.participantCount ?? null;
+      const { participantCount, ...rest } = c;
+      const watched = cfg.watchAllChats || allowed.includes(c.jid) || receiving.includes(c.jid) || lab.includes(c.jid);
+      return {
+        ...rest,
+        participants,
+        tracked: watched,
+        watched,
+        selected: allowed.includes(c.jid),
+        receivingSelected: receiving.includes(c.jid),
+        labSelected: lab.includes(c.jid),
+        learnFrom: learn.includes(c.jid),
+        suggested: Boolean(c.isGroup && SUGGEST.test(String(c.name || ""))),
+      };
+    })
+    .sort(
+      (a, b) =>
+        Number(b.isGroup) - Number(a.isGroup) ||
+        (b.documentCount || 0) - (a.documentCount || 0) ||
+        String(b.lastSeen || "").localeCompare(String(a.lastSeen || "")) ||
+        String(a.name || a.jid).localeCompare(String(b.name || b.jid))
+    );
+  return {
+    chats,
+    trackingAll: cfg.watchAllChats,
+    watchingAll: cfg.watchAllChats,
+    allowedChats: allowed,
+    receivingChats: receiving,
+    labChats: lab,
+    learnChats: learn,
+    listState: {
+      status: state.status,
+      engine: state.engine || null,
+      linked: Boolean(web || sock) && state.status === "connected",
+      loading: chatList.loading || (Boolean(web || sock) && state.status === "connected" && !chatList.refreshedAt && knownChats.size === 0),
+      refreshedAt: chatList.refreshedAt,
+      lastError: chatList.lastError,
+      groups: chats.filter((c) => c.isGroup).length,
+      people: chats.filter((c) => !c.isGroup).length,
+    },
+  };
+}
+
+/** Writes the settings file whole, through a temp file, so a reader never sees half of it. */
+function writeChatSettings(patch) {
+  const current = readJsonSafe(PATHS.settingsFile, {});
+  ensureDir(PATHS.configDir);
+  const tmp = `${PATHS.settingsFile}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify({ ...current, ...patch, updatedAt: new Date().toISOString() }, null, 2), "utf8");
+  fs.renameSync(tmp, PATHS.settingsFile);
 }
 
 const chatText = new Map(); // jid -> [{ text, at }]
@@ -2562,63 +2789,79 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (route === "/chats" && req.method === "GET") {
-      const cfg = settings();
-      const chats = [...knownChats.values()]
-        .sort((a, b) => (b.documentCount || 0) - (a.documentCount || 0) || String(b.lastSeen).localeCompare(String(a.lastSeen)))
-        .map((c) => ({
-          ...c,
-          tracked: cfg.watchAllChats || cfg.allowedChats.includes(c.jid) || cfg.receivingChats.includes(c.jid) || cfg.labChats.includes(c.jid),
-          watched: cfg.watchAllChats || cfg.allowedChats.includes(c.jid) || cfg.receivingChats.includes(c.jid) || cfg.labChats.includes(c.jid),
-          selected: cfg.allowedChats.includes(c.jid),
-          receivingSelected: cfg.receivingChats.includes(c.jid),
-          labSelected: cfg.labChats.includes(c.jid),
-          learnFrom: (cfg.learnChats || []).includes(c.jid),
-        }));
-      return json(res, 200, {
-        chats,
-        // An empty allowlist means "watch everything", which is rarely
-        // what someone wants once they have more than a few groups.
-        trackingAll: cfg.watchAllChats,
-        watchingAll: cfg.watchAllChats,
-        allowedChats: cfg.allowedChats,
-        receivingChats: cfg.receivingChats,
-        labChats: cfg.labChats,
-        learnChats: cfg.learnChats || [],
-      });
+      return json(res, 200, chatsPayload());
+    }
+
+    // Ask WhatsApp for the chat list again (the picker's Refresh button).
+    if (route === "/chats/refresh" && req.method === "POST") {
+      if (!web && !sock) {
+        return json(res, 200, { ...chatsPayload(), refreshed: 0, note: "WhatsApp is not linked on this PC yet — link it first, then the chats appear here." });
+      }
+      const refreshed = await refreshGroupNames();
+      log(`chat list refreshed: ${refreshed} chat(s) from WhatsApp`);
+      return json(res, 200, { ...chatsPayload(), refreshed });
     }
 
     if (route === "/chats" && req.method === "POST") {
+      // Two shapes, both PATCHES — a field that is not sent is left alone:
+      //   { jid | jids, role: "sales"|"receiving"|"lab"|"learn", on }  one click in the picker
+      //   { allowedChats?, receivingChats?, labChats?, learnChats?, watchAllChats? }  whole lists
+      // The old handler treated a missing allowedChats as "select nothing"
+      // and a missing watchAllChats as false, so any partial save wiped
+      // the selection.
       const body = await readBody(req);
-      const allowed = Array.isArray(body.allowedChats)
-        ? body.allowedChats.map((j) => String(j).trim()).filter(Boolean)
-        : [];
-      const watchAll = body.watchAllChats === true;
-      const receivingChats = Array.isArray(body.receivingChats)
-        ? body.receivingChats.map((j) => String(j).trim()).filter(Boolean)
-        : (Array.isArray(settings().receivingChats) ? settings().receivingChats : []);
-      const labChats = Array.isArray(body.labChats)
-        ? body.labChats.map((j) => String(j).trim()).filter(Boolean)
-        : (Array.isArray(settings().labChats) ? settings().labChats : []);
-      const learnChats = Array.isArray(body.learnChats)
-        ? body.learnChats.map((j) => String(j).trim()).filter(Boolean)
-        : (Array.isArray(settings().learnChats) ? settings().learnChats : []);
-      const current = readJsonSafe(PATHS.settingsFile, {});
-      ensureDir(PATHS.configDir);
-      fs.writeFileSync(
-        PATHS.settingsFile,
-        JSON.stringify({ ...current, allowedChats: allowed, watchAllChats: watchAll, receivingChats, labChats, learnChats, updatedAt: new Date().toISOString() }, null, 2),
-        "utf8"
+      const cfg = settings();
+      const clean = (list) => [...new Set(list.map((j) => normChatJid(j)).filter((j) => isListableChat(j)))];
+      const lists = {
+        allowedChats: clean(cfg.allowedChats),
+        receivingChats: clean(cfg.receivingChats),
+        labChats: clean(cfg.labChats),
+        learnChats: clean(cfg.learnChats || []),
+      };
+      const before = new Set([...lists.allowedChats, ...lists.receivingChats, ...lists.labChats]);
+      let watchAll = cfg.watchAllChats;
+
+      const ROLE = { sales: "allowedChats", watch: "allowedChats", receiving: "receivingChats", lab: "labChats", learn: "learnChats" };
+      const targets = clean([...(Array.isArray(body.jids) ? body.jids : []), ...(body.jid ? [body.jid] : [])]);
+      if (targets.length) {
+        const key = ROLE[String(body.role || "sales")];
+        if (!key) return json(res, 400, { error: `Unknown role "${body.role}". Use sales, receiving, lab or learn.` });
+        const on = body.on !== false;
+        const set = new Set(lists[key]);
+        for (const j of targets) (on ? set.add(j) : set.delete(j));
+        lists[key] = [...set];
+        // Picking chats one by one means "these chats", not "every chat".
+        if (key !== "learnChats" && body.watchAllChats === undefined) watchAll = false;
+      }
+      for (const key of ["allowedChats", "receivingChats", "labChats", "learnChats"]) {
+        if (Array.isArray(body[key])) lists[key] = clean(body[key]);
+      }
+      if (typeof body.watchAllChats === "boolean") watchAll = body.watchAllChats;
+
+      try {
+        writeChatSettings({ ...lists, watchAllChats: watchAll });
+      } catch (err) {
+        return json(res, 500, { error: `Could not save the chat selection: ${err.message}` });
+      }
+      const watching = new Set([...lists.allowedChats, ...lists.receivingChats, ...lists.labChats]);
+      log(
+        watchAll
+          ? "now watching all chats"
+          : watching.size
+            ? `now watching ${watching.size} chat(s): ${[...watching].map((j) => knownChats.get(j)?.name || j).join(", ")}`
+            : "watching no chats until a scope is selected"
       );
-      log(watchAll ? "now watching all chats" : allowed.length ? `now watching ${allowed.length} chat(s)` : "watching no chats until a scope is selected");
       ignoredChatsLogged.clear();
       replayUnscoped();
-      // Newly selected chats: read their last 7 days once (WhatsApp Web).
-      if (web) {
-        web.fetchHistory([...new Set([...allowed, ...receivingChats, ...labChats])], Math.floor(Date.now() / 1000) - 7 * 86400, 0, 200)
-          .then((n) => log(`selection changed: checked ${n} recent message(s) in the selected chats`))
+      // Newly selected chats only: read their last 7 days once (WhatsApp
+      // Web). Re-reading every selected chat on every click was wasted work.
+      const added = [...watching].filter((j) => !before.has(j));
+      if (web && added.length) {
+        web.fetchHistory(added, Math.floor(Date.now() / 1000) - 7 * 86400, 0, 200)
+          .then((n) => log(`selection changed: checked ${n} recent message(s) in ${added.length} newly selected chat(s)`))
           .catch(() => {});
       }
-      return json(res, 200, { ok: true, allowedChats: allowed, trackingAll: watchAll, receivingChats, labChats, learnChats });
+      return json(res, 200, { ok: true, ...chatsPayload() });
     }
 
     if (route === "/ingest" && req.method === "POST") {

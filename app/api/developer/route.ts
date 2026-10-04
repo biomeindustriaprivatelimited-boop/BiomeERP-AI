@@ -102,7 +102,7 @@ export async function GET(req: NextRequest) {
   });
 }
 
-/** Change one user's access — role, or individual grants and revokes. */
+/** Change one user's access — role, or individual features activated / deactivated. */
 export async function PUT(req: NextRequest) {
   const auth = await requirePermission(req, "access.grant");
   if ("response" in auth) return auth.response;
@@ -163,8 +163,8 @@ export async function PUT(req: NextRequest) {
 
   const summary = [
     role !== before.role ? `role ${before.role} → ${role}` : "",
-    (access?.granted || []).length ? `granted ${access!.granted.join(", ")}` : "",
-    (access?.revoked || []).length ? `revoked ${access!.revoked.join(", ")}` : "",
+    (access?.granted || []).length ? `activated ${access!.granted.join(", ")}` : "",
+    (access?.revoked || []).length ? `deactivated ${access!.revoked.join(", ")}` : "",
   ].filter(Boolean).join("; ") || "no change";
 
   recordDeveloper({
@@ -199,7 +199,7 @@ export async function PUT(req: NextRequest) {
       list.unshift(makeAnnouncement({
         kind: lost.length ? "warning" : "info",
         title: "Your access was changed",
-        body: `${lost.length ? `Removed: ${lost.map(name).join(", ")}. Those features no longer appear in your menu.` : ""}${gained.length ? ` Added: ${gained.map(name).join(", ")}.` : ""} Changed by ${me.name}. Sign in again to apply.`,
+        body: `${lost.length ? `Deactivated: ${lost.map(name).join(", ")}. Those features no longer appear in your menu.` : ""}${gained.length ? ` Activated: ${gained.map(name).join(", ")}.` : ""} Changed by ${me.name}. Sign in again to apply.`,
         audience: { roles: "all", plants: [], userIds: [before.id] },
         by: { id: me.id, name: me.name },
       }));

@@ -5,6 +5,7 @@ import { useLiveRefresh } from "@/lib/useLiveRefresh";
 import {
   Wallet, Plus, Paperclip, Check, X, Loader2, AlertCircle, Users, Receipt,
   ArrowDownLeft, RotateCcw, Clock, Filter, Trash2, Pencil, Target, TrendingUp,
+  ShieldAlert, Power,
 } from "lucide-react";
 import { usePlants } from "@/lib/usePlants";
 import SetupGuide, { EmptyState } from "@/components/SetupGuide";
@@ -31,9 +32,14 @@ interface Attachment { id: string; name: string; size: number; type: string; }
 interface Entry {
   id: string; personId: string; kind: "advance" | "expense" | "return";
   date: string; category: string; amount: number; description: string; reference: string;
-  plant: string; attachments: Attachment[]; status: "submitted" | "approved" | "rejected";
-  createdByName: string; createdAt: string; updatedAt: string;
+  plant: string; attachments: Attachment[]; status: "submitted" | "approved" | "rejected" | "pending_budget_approval";
+  createdBy?: string; createdByName: string; createdAt: string; updatedAt: string;
   decidedByName: string | null; decidedAt: string | null; decisionNote: string | null;
+  budgetHold?: {
+    breaches: { budgetId: string; label: string; periodLabel: string; amount: number; remainingBefore: number; overBy: number }[];
+    overBy: number; decision: "pending" | "approved" | "rejected";
+    decidedByName: string | null; decidedAt: string | null; note: string | null;
+  } | null;
 }
 
 const money = (n: number) =>
@@ -55,10 +61,11 @@ export default function ImprestPage() {
     budgetUsage?: BudgetUsage[];
     budgetImpacts?: Record<string, BudgetImpact[]>;
     revision: string; pendingCount: number; needsSetup: boolean; myPlant: string | null;
+    canFileForPlant?: boolean; canBudgetApprove?: boolean; budgetHeldCount?: number; myUserId?: string;
   } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<"mine" | "approvals" | "budgets" | "people">("mine");
+  const [tab, setTab] = useState<"mine" | "approvals" | "overbudget" | "budgets" | "people">("mine");
   const [statusFilter, setStatusFilter] = useState("all");
   const [personFilter, setPersonFilter] = useState("");
   const revision = useRef("");
@@ -117,7 +124,11 @@ export default function ImprestPage() {
     }
     // Over-budget heads carry a count, because a budget nobody looks at is
     // a budget nobody keeps.
-    if (canApprove) {
+    // Over-budget entries are the admin's / developer's call alone.
+    if (data?.canBudgetApprove) {
+      list.push({ id: "overbudget", label: "Over budget", badge: data.budgetHeldCount || 0 });
+    }
+    if (canApprove || data?.canBudgetApprove) {
       list.push({
         id: "budgets",
         label: "Budgets",
@@ -214,6 +225,8 @@ export default function ImprestPage() {
         <p className="text-[11.5px] text-biome-muted">Loading…</p>
       ) : !data ? null : tab === "budgets" ? (
         <BudgetPanel onChanged={() => load()} />
+      ) : tab === "overbudget" ? (
+        <OverBudgetPanel onChanged={() => load()} />
       ) : tab === "people" ? (
         <PeoplePanel onChanged={() => load()} />
       ) : (
@@ -229,12 +242,27 @@ export default function ImprestPage() {
             </div>
           )}
 
+          {/* Where this person's budgets stand — before they file. */}
+          {tab === "mine" && !canApprove && (data.budgetUsage || []).length > 0 && (
+            <MyBudgets usage={data.budgetUsage || []} />
+          )}
+
           {/* File a new entry */}
-          {(data.me || canApprove) && (
+          {(data.me || canApprove || data.canFileForPlant) && (
             <NewEntry
-              people={canApprove ? data.people.filter((p) => p.active) : data.me ? [data.me] : []}
+              people={
+                canApprove
+                  ? data.people.filter((p) => p.active)
+                  : data.canFileForPlant
+                  ? [
+                      ...(data.me ? [data.me] : []),
+                      ...data.people.filter((p) => p.active && p.id !== data.me?.id && p.plant === data.myPlant),
+                    ]
+                  : data.me ? [data.me] : []
+              }
               me={data.me}
               canApprove={canApprove}
+              canChooseHolder={canApprove || !!data.canFileForPlant}
               categories={data.categories}
               onFiled={() => load()}
             />
@@ -272,6 +300,8 @@ export default function ImprestPage() {
             entries={data.entries}
             people={data.people}
             canApprove={canApprove}
+            canFileForPlant={!!data.canFileForPlant}
+            myUserId={data.myUserId || ""}
             myPersonId={data.me?.id ?? null}
             categories={data.categories}
             budgetImpacts={data.budgetImpacts || {}}
@@ -351,14 +381,16 @@ function Stat({ label, value }: { label: string; value: string }) {
 /* ------------------------------------------------------------------ */
 
 function NewEntry({
-  people, me, canApprove, categories, onFiled,
+  people, me, canApprove, canChooseHolder, categories, onFiled,
 }: {
-  people: Person[]; me: Person | null; canApprove: boolean;
+  people: Person[]; me: Person | null; canApprove: boolean; canChooseHolder: boolean;
   categories: string[]; onFiled: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [held, setHeld] = useState<string | null>(null);
+  const [preview, setPreview] = useState<{ impacts: BudgetImpact[]; blocked: boolean } | null>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [form, setForm] = useState({
     personId: me?.id || people[0]?.id || "",
@@ -372,10 +404,40 @@ function NewEntry({
     transactionRef: "",
   });
 
+  /**
+   * Live budget check while the form is open: the server works out what
+   * this amount does to every budget it touches, nothing is saved. The
+   * person sees "₹2,400 left, this goes ₹600 over" before pressing File.
+   */
+  useEffect(() => {
+    if (!open || form.kind !== "expense") { setPreview(null); return; }
+    const amount = Number(form.amount);
+    const timer = window.setTimeout(async () => {
+      try {
+        const res = await fetch("/api/imprest/entries", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...form,
+            amount: amount > 0 ? amount : 0.01,
+            description: form.description || "preview",
+            preview: true,
+          }),
+        });
+        const json = await res.json().catch(() => ({}));
+        if (res.ok && json.preview) {
+          setPreview({ impacts: amount > 0 ? json.impacts : json.impacts.map((i: BudgetImpact) => ({ ...i, remainingAfter: i.remainingBefore, overBy: 0 })), blocked: amount > 0 && json.blocked });
+        }
+      } catch { /* preview is a convenience */ }
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [open, form.kind, form.amount, form.category, form.date, form.personId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   async function submit() {
     if (busy) return;
     setBusy(true);
     setError(null);
+    setHeld(null);
     try {
       const res = await fetch("/api/imprest/entries", {
         method: "POST",
@@ -400,7 +462,11 @@ function NewEntry({
 
       setForm({ ...form, amount: "", description: "", reference: "" });
       setFiles([]);
-      if (!json.overLimit) setOpen(false);
+      if (json.budgetBlocked) {
+        // Not a normal entry — say so plainly, outside the closed card.
+        setHeld(json.message || "Over budget — waiting for admin approval.");
+        setOpen(false);
+      } else if (!json.overLimit) setOpen(false);
       else setError(`Filed. Note: this month's spend (${money(json.monthSpend)}) is over the ${money(json.limit)} limit, so accounts will see it flagged.`);
       onFiled();
     } catch (err) {
@@ -416,6 +482,16 @@ function NewEntry({
 
   return (
     <>
+      {held && (
+        <div className="bmx-msg-in flex items-start gap-2 rounded-2xl border border-rose-500/30 bg-rose-500/[.07] px-4 py-3">
+          <ShieldAlert size={15} className="mt-px shrink-0 text-rose-500" />
+          <div className="flex-1">
+            <p className="text-[12px] font-semibold text-rose-500">Blocked — over budget, sent to admin for approval</p>
+            <p className="mt-0.5 text-[11px] leading-relaxed text-biome-text">{held}</p>
+          </div>
+          <button onClick={() => setHeld(null)} className="text-biome-muted" aria-label="Dismiss"><X size={13} /></button>
+        </div>
+      )}
       <button
         onClick={() => setOpen(true)}
         className="bmx-btn flex w-full items-center justify-between rounded-2xl border border-biome-line bg-biome-bgSoft px-5 py-4 text-left"
@@ -448,7 +524,7 @@ function NewEntry({
         }
       >
         <FormSection title="What happened" columns={3}>
-          {canApprove && people.length > 1 && (
+          {canChooseHolder && people.length > 1 && (
             <Field label="Holder">
               <select value={form.personId} onChange={(e) => setForm({ ...form, personId: e.target.value })} className={inputCls}>
                 {people.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.code})</option>)}
@@ -482,6 +558,9 @@ function NewEntry({
             </Field>
           )}
         </FormSection>
+
+        {/* Right under the amount, so the effect is seen while typing it. */}
+        {preview && preview.impacts.length > 0 && <BudgetPreview impacts={preview.impacts} blocked={preview.blocked} />}
 
         <FormSection title="How the money moved" hint="Some people are paid in cash and some by transfer — recording which is what lets accounts tie this back to the bank statement." columns={3}>
           <Field label="Payment mode">
@@ -548,9 +627,10 @@ function NewEntry({
 /* ------------------------------------------------------------------ */
 
 function EntryList({
-  entries, people, canApprove, myPersonId, categories, budgetImpacts, onChanged,
+  entries, people, canApprove, canFileForPlant, myUserId, myPersonId, categories, budgetImpacts, onChanged,
 }: {
-  entries: Entry[]; people: Person[]; canApprove: boolean; myPersonId: string | null;
+  entries: Entry[]; people: Person[]; canApprove: boolean; canFileForPlant: boolean; myUserId: string;
+  myPersonId: string | null;
   categories: string[]; budgetImpacts: Record<string, BudgetImpact[]>; onChanged: () => void;
 }) {
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -607,7 +687,9 @@ function EntryList({
         const meta = KIND_META[entry.kind];
         const Icon = meta.icon;
         const isMine = myPersonId === entry.personId;
-        const canEdit = entry.status === "submitted" && (isMine || canApprove);
+        const filedByMe = canFileForPlant && !!myUserId && entry.createdBy === myUserId;
+        const undecided = entry.status === "submitted" || entry.status === "pending_budget_approval";
+        const canEdit = undecided && (isMine || canApprove || filedByMe);
         // Nobody signs off their own claim — the API refuses it, so the
         // buttons don't appear either.
         const canDecide = canApprove && entry.status === "submitted" && !isMine;
@@ -630,7 +712,7 @@ function EntryList({
                 </div>
                 <p className="mt-1 text-[10.5px] text-biome-muted">
                   {new Date(entry.date + "T00:00:00").toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}
-                  {canApprove && ` · ${nameOf(entry.personId)}`}
+                  {(canApprove || canFileForPlant) && !isMine && ` · ${nameOf(entry.personId)}`}
                   {entry.category && ` · ${entry.category}`}
                   {entry.reference && ` · ${entry.reference}`}
                   {entry.plant && ` · ${entry.plant}`}
@@ -650,6 +732,24 @@ function EntryList({
                       </a>
                     ))}
                   </div>
+                )}
+
+                {entry.status === "pending_budget_approval" && entry.budgetHold && (
+                  <div className="mt-2 rounded-lg border border-rose-500/25 bg-rose-500/[.06] px-2.5 py-1.5">
+                    <p className="flex items-center gap-1.5 text-[10.5px] font-semibold text-rose-500">
+                      <ShieldAlert size={11} /> Blocked — over budget. Only the admin or developer can pass it.
+                    </p>
+                    {entry.budgetHold.breaches.map((b) => (
+                      <p key={b.budgetId} className="mt-0.5 text-[10px] text-biome-muted">
+                        {b.label} · {b.periodLabel}: budget {rupees(b.amount)}, {rupees(Math.max(0, b.remainingBefore))} was left, over by {rupees(b.overBy)}
+                      </p>
+                    ))}
+                  </div>
+                )}
+                {entry.budgetHold?.decision === "approved" && entry.status !== "pending_budget_approval" && (
+                  <p className="mt-2 text-[10px] text-biome-muted">
+                    Over-budget amount passed by {entry.budgetHold.decidedByName}{entry.budgetHold.note ? `: ${entry.budgetHold.note}` : ""}
+                  </p>
                 )}
 
                 {entry.decisionNote && (
@@ -762,6 +862,7 @@ function EditRow({
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json.error || `Failed (${res.status}).`);
       onDone();
+      if (json.budgetBlocked && json.message) onError(json.message);
     } catch (err) {
       onError((err as Error).message);
     } finally {
@@ -806,8 +907,9 @@ function StatusPill({ status }: { status: Entry["status"] }) {
     submitted: ["Waiting", "border-amber-500/30 bg-amber-500/10 text-amber-600"],
     approved: ["Approved", "border-emerald-500/30 bg-emerald-500/10 text-emerald-600"],
     rejected: ["Rejected", "border-rose-500/30 bg-rose-500/10 text-rose-500"],
+    pending_budget_approval: ["Over budget · needs admin", "border-rose-500/35 bg-rose-500/10 text-rose-500"],
   } as const;
-  const [label, cls] = map[status];
+  const [label, cls] = map[status] || map.submitted;
   return <span className={`rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase tracking-[.1em] ${cls}`}>{label}</span>;
 }
 
@@ -820,15 +922,25 @@ function StatusPill({ status }: { status: Entry["status"] }) {
 
 interface BudgetImpact {
   budgetId: string; label: string; scope: string; amount: number;
+  period?: string; periodLabel?: string; enforce?: boolean;
   remainingBefore: number; remainingAfter: number; overBy: number;
 }
+interface BudgetDef {
+  id: string; scope: string; key: string; label: string; amount: number; note: string; active: boolean;
+  period: "monthly" | "quarterly" | "yearly" | "custom"; enforce: boolean;
+  fromMonth: string; toMonth: string; startDate: string; endDate: string;
+  match: Record<string, string>;
+}
 interface BudgetUsage {
-  budget: { id: string; scope: string; key: string; label: string; amount: number; note: string; active: boolean };
-  month: string; spent: number; committed: number; remaining: number;
+  budget: BudgetDef;
+  month: string; window?: { start: string; end: string; label: string };
+  spent: number; committed: number; held?: number; heldCount?: number; remaining: number;
   pct: number; state: "clear" | "watch" | "tight" | "over"; entries: number;
 }
 
 const rupees = (n: number) => `₹${Math.round(n).toLocaleString("en-IN")}`;
+
+const PERIOD_SHORT: Record<string, string> = { monthly: "month", quarterly: "quarter", yearly: "year", custom: "period" };
 
 const BUDGET_TONE: Record<string, { bar: string; text: string; chip: string }> = {
   clear: { bar: "bg-emerald-500", text: "text-emerald-600", chip: "border-emerald-500/30 bg-emerald-500/10 text-emerald-600" },
@@ -848,18 +960,118 @@ function BudgetWarning({ impacts }: { impacts: BudgetImpact[] }) {
       {breached.map((i) => (
         <p key={i.budgetId} className="flex items-start gap-1.5 text-[11px] font-semibold leading-relaxed text-rose-500">
           <AlertCircle size={12} className="mt-px shrink-0" />
-          Approving this takes {i.label} {rupees(i.overBy)} past its {rupees(i.amount)} monthly budget.
+          Approving this takes {i.label} {rupees(i.overBy)} past its {rupees(i.amount)} budget{i.periodLabel ? ` for ${i.periodLabel}` : ""}.
         </p>
       ))}
       {tight.map((i) => (
         <p key={i.budgetId} className="flex items-start gap-1.5 text-[11px] leading-relaxed text-amber-600">
           <Target size={12} className="mt-px shrink-0" />
-          {i.label} would have {rupees(i.remainingAfter)} left for the month.
+          {i.label} would have {rupees(i.remainingAfter)} left{i.periodLabel ? ` for ${i.periodLabel}` : ""}.
         </p>
       ))}
     </div>
   );
 }
+
+/** Live check inside the entry form: what this amount does to each budget. */
+function BudgetPreview({ impacts, blocked }: { impacts: BudgetImpact[]; blocked: boolean }) {
+  return (
+    <div className={`bmx-msg-in rounded-xl border px-4 py-3 ${blocked ? "border-rose-500/30 bg-rose-500/[.07]" : "border-biome-line bg-biome-bg/50"}`}>
+      <p className={`flex items-center gap-1.5 text-[11px] font-bold ${blocked ? "text-rose-500" : "text-biome-text"}`}>
+        {blocked ? <ShieldAlert size={13} /> : <Target size={13} className="text-biome-leaf" />}
+        {blocked
+          ? "Over budget — this will be blocked and sent to the admin for approval"
+          : "Budget check"}
+      </p>
+      <div className="mt-2 space-y-2">
+        {impacts.map((i) => {
+          const used = i.amount - i.remainingBefore;
+          const pctBefore = i.amount ? Math.min(100, Math.max(0, (used / i.amount) * 100)) : 0;
+          const pctThis = i.amount ? Math.min(100 - pctBefore, Math.max(0, ((i.remainingBefore - i.remainingAfter) / i.amount) * 100)) : 0;
+          const bad = i.overBy > 0;
+          return (
+            <div key={i.budgetId}>
+              <div className="flex flex-wrap items-baseline justify-between gap-2 text-[10.5px]">
+                <span className="font-semibold text-biome-text">
+                  {i.label} <span className="font-normal text-biome-muted">· {i.periodLabel}{i.enforce === false ? " · warn only" : ""}</span>
+                </span>
+                <span className={bad ? "font-semibold text-rose-500" : "text-biome-muted"}>
+                  {rupees(i.amount)} budget · {rupees(Math.max(0, i.remainingBefore))} left
+                  {bad ? ` · over by ${rupees(i.overBy)}` : ` · ${rupees(i.remainingAfter)} after this`}
+                </span>
+              </div>
+              <div className="mt-1 flex h-1.5 overflow-hidden rounded-full bg-biome-line">
+                <span className={`h-full ${i.remainingBefore <= 0 ? "bg-rose-500" : pctBefore >= 90 ? "bg-amber-500" : "bg-emerald-500"}`} style={{ width: `${pctBefore}%` }} />
+                <span className={`h-full ${bad ? "bg-rose-500" : "bg-sky-500"}`} style={{ width: `${pctThis}%` }} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/** One usage bar — shared by the holder's strip and the budgets screen. */
+function UsageBar({ u }: { u: BudgetUsage }) {
+  const tone = BUDGET_TONE[u.state];
+  const spentPct = u.budget.amount ? Math.min(100, (u.spent / u.budget.amount) * 100) : 0;
+  const commitPct = u.budget.amount ? Math.min(100 - spentPct, (u.committed / u.budget.amount) * 100) : 0;
+  return (
+    <div className="mt-3 flex h-2 overflow-hidden rounded-full bg-biome-line">
+      <span className={`h-full ${tone.bar}`} style={{ width: `${spentPct}%`, transition: "width .5s cubic-bezier(.22,1,.36,1)" }} />
+      <span className={`h-full ${tone.bar} opacity-40`} style={{ width: `${commitPct}%`, transition: "width .5s cubic-bezier(.22,1,.36,1)" }} />
+    </div>
+  );
+}
+
+/** The budgets that apply to the person filing, shown above the form. */
+function MyBudgets({ usage }: { usage: BudgetUsage[] }) {
+  return (
+    <section className="rounded-2xl border border-biome-line bg-biome-bgSoft p-4">
+      <p className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[.14em] text-biome-muted">
+        <Target size={12} className="text-biome-leaf" /> Your budgets
+      </p>
+      <div className="mt-2 grid gap-3 md:grid-cols-2">
+        {usage.map((u) => {
+          const tone = BUDGET_TONE[u.state];
+          return (
+            <div key={u.budget.id}>
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <p className="text-[11.5px] font-semibold text-biome-text">
+                  {u.budget.label} <span className="font-normal text-biome-muted">· {u.window?.label || u.month}</span>
+                </p>
+                <p className={`text-[10.5px] font-semibold ${tone.text}`}>
+                  {u.state === "over" ? `over by ${rupees(Math.abs(u.remaining))}` : `${rupees(u.remaining)} left`} · {Math.min(u.pct, 999)}%
+                </p>
+              </div>
+              <UsageBar u={u} />
+              <p className="mt-1 text-[9.5px] text-biome-muted">
+                {rupees(u.budget.amount)} a {PERIOD_SHORT[u.budget.period] || "month"} · {rupees(u.spent)} approved
+                {u.committed > 0 && ` · ${rupees(u.committed)} waiting`}
+                {(u.held || 0) > 0 && ` · ${rupees(u.held || 0)} held over budget`}
+                {u.budget.enforce === false ? " · warn only" : " · hard limit"}
+              </p>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+const SCOPE_FIELD_LABEL: Record<string, string> = {
+  personId: "Employee", plant: "Plant", category: "Expense head", designation: "Designation", department: "Department",
+};
+
+const emptyDraft = (month: string) => ({
+  scope: "person", amount: "", note: "", period: "monthly", enforce: true,
+  match: {} as Record<string, string>,
+  // Which month it starts from. Defaults to the one being looked at, so a
+  // budget set in October does not silently backdate itself over
+  // September's approved spend and report a breach that never happened.
+  fromMonth: month, toMonth: "", startDate: "", endDate: "",
+});
 
 /**
  * The budget screen.
@@ -875,14 +1087,7 @@ function BudgetPanel({ onChanged }: { onChanged: () => void }) {
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState("");
   const [open, setOpen] = useState(false);
-  const [draft, setDraft] = useState({
-    scope: "head", key: "", amount: "", note: "",
-    // Which month it starts from. Defaults to the one being looked at, so
-    // setting a budget in August does not silently backdate itself over
-    // July's approved spend and report a breach that never happened.
-    fromMonth: new Date().toISOString().slice(0, 7),
-    toMonth: "",
-  });
+  const [draft, setDraft] = useState(emptyDraft(new Date().toISOString().slice(0, 7)));
 
   const load = useCallback(async () => {
     const res = await fetch(`/api/imprest/budget?month=${month}`, { cache: "no-store" });
@@ -893,25 +1098,28 @@ function BudgetPanel({ onChanged }: { onChanged: () => void }) {
   }, [month]);
   useEffect(() => { load(); }, [load]);
 
-  const keyOptions: { value: string; label: string }[] = useMemo(() => {
+  const fields: string[] = data?.scopeFields?.[draft.scope] || [];
+  const optionsFor = (field: string): { value: string; label: string }[] => {
     if (!data) return [];
-    if (draft.scope === "head") return (data.categories || []).map((c: string) => ({ value: c, label: c }));
-    if (draft.scope === "plant") return (data.plants || []).map((p: any) => ({ value: p.code, label: p.label }));
-    return (data.people || []).map((p: any) => ({ value: p.id, label: p.name }));
-  }, [data, draft.scope]);
+    if (field === "category") return (data.categories || []).map((c: string) => ({ value: c, label: c }));
+    if (field === "plant") return (data.plants || []).map((p: any) => ({ value: p.code, label: p.label }));
+    if (field === "personId") return (data.people || []).map((p: any) => ({ value: p.id, label: `${p.name} (${p.code})${p.plant ? ` · ${p.plant}` : ""}` }));
+    if (field === "designation") return (data.designations || []).map((d: string) => ({ value: d, label: d }));
+    if (field === "department") return (data.departments || []).map((d: string) => ({ value: d, label: d }));
+    return [];
+  };
 
   async function add() {
     setBusy("new"); setErr(null);
     try {
-      const label = keyOptions.find((o) => o.value === draft.key)?.label || draft.key;
       const res = await fetch("/api/imprest/budget", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...draft, label, amount: Number(draft.amount) }),
+        body: JSON.stringify({ ...draft, amount: Number(draft.amount) }),
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json.error || "Could not save that budget.");
       setOpen(false);
-      setDraft({ scope: "head", key: "", amount: "", note: "", fromMonth: month, toMonth: "" });
+      setDraft(emptyDraft(month));
       await load();
       onChanged();
     } catch (e) { setErr((e as Error).message); } finally { setBusy(""); }
@@ -932,6 +1140,7 @@ function BudgetPanel({ onChanged }: { onChanged: () => void }) {
   }
 
   async function remove(id: string) {
+    if (!window.confirm("Remove this budget? Entries already held by it stay in the over-budget list.")) return;
     setBusy(id); setErr(null);
     try {
       const res = await fetch(`/api/imprest/budget?id=${encodeURIComponent(id)}`, { method: "DELETE" });
@@ -943,10 +1152,14 @@ function BudgetPanel({ onChanged }: { onChanged: () => void }) {
   }
 
   const usage: BudgetUsage[] = data?.usage || [];
+  const inForce = new Set(usage.map((u) => u.budget.id));
+  const others: BudgetDef[] = (data?.budgets || []).filter((b: BudgetDef) => !inForce.has(b.id));
   const totals = usage.reduce(
     (t, u) => ({ amount: t.amount + u.budget.amount, spent: t.spent + u.spent, committed: t.committed + u.committed }),
     { amount: 0, spent: 0, committed: 0 }
   );
+  const lbl = "mb-1.5 block text-[10px] font-bold uppercase tracking-[.13em] text-biome-muted";
+  const inp = "bmx-input w-full rounded-xl border border-biome-line bg-biome-bg px-3 py-2.5 text-[12px] text-biome-text";
 
   return (
     <div className="space-y-4">
@@ -959,7 +1172,7 @@ function BudgetPanel({ onChanged }: { onChanged: () => void }) {
           </p>
         )}
         {data?.canManage && (
-          <button onClick={() => setOpen(true)}
+          <button onClick={() => { setDraft(emptyDraft(month)); setOpen(true); }}
             className="bmx-btn ml-auto flex items-center gap-1.5 rounded-xl bg-biome-leaf px-4 py-2 text-[11.5px] font-bold text-white">
             <Plus size={13} /> Set a budget
           </button>
@@ -975,16 +1188,14 @@ function BudgetPanel({ onChanged }: { onChanged: () => void }) {
 
       {data && usage.length === 0 ? (
         <EmptyState
-          title="No budgets set for this month"
-          detail="A budget is a monthly ceiling on an expense head, a plant, or one holder. Nothing is blocked when it is crossed — the approver is told before they pass the entry, and it shows here in red."
+          title="No budgets in force for this month"
+          detail="A budget is a ceiling on imprest spend — for an employee, a plant, an expense head, a designation, a department, or a combination — monthly, quarterly, yearly or for custom dates. With a hard limit, an entry that would cross it is blocked and waits for admin approval."
           action={data.canManage ? { label: "Set the first budget", onClick: () => setOpen(true) } : undefined}
         />
       ) : (
         <div className="space-y-2">
           {usage.map((u) => {
             const tone = BUDGET_TONE[u.state];
-            const spentPct = u.budget.amount ? Math.min(100, (u.spent / u.budget.amount) * 100) : 0;
-            const commitPct = u.budget.amount ? Math.min(100 - spentPct, (u.committed / u.budget.amount) * 100) : 0;
             return (
               <article key={u.budget.id} className="bmx-card rounded-2xl border border-biome-line bg-biome-bgSoft p-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
@@ -992,15 +1203,22 @@ function BudgetPanel({ onChanged }: { onChanged: () => void }) {
                     <div className="flex flex-wrap items-center gap-2">
                       <p className="text-[12.5px] font-semibold text-biome-text">{u.budget.label}</p>
                       <span className="rounded-full border border-biome-line px-2 py-0.5 text-[9px] font-bold uppercase tracking-[.1em] text-biome-muted">
-                        {u.budget.scope}
+                        {(data.scopes || []).find((s: any) => s.id === u.budget.scope)?.label || u.budget.scope}
+                      </span>
+                      <span className="rounded-full border border-biome-line px-2 py-0.5 text-[9px] font-bold uppercase tracking-[.1em] text-biome-muted">
+                        {u.window?.label || u.budget.period}
+                      </span>
+                      <span className={`rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase tracking-[.1em] ${u.budget.enforce ? "border-rose-500/30 text-rose-500" : "border-biome-line text-biome-muted"}`}>
+                        {u.budget.enforce ? "hard limit" : "warn only"}
                       </span>
                       <span className={`rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase tracking-[.1em] ${tone.chip}`}>
-                        {u.state === "over" ? `over by ${rupees(Math.abs(u.remaining))}` : `${rupees(u.remaining)} left`}
+                        {u.state === "over" ? `over by ${rupees(Math.abs(u.remaining))}` : `${rupees(u.remaining)} left`} · {u.pct}%
                       </span>
                     </div>
                     <p className="mt-1 text-[10.5px] text-biome-muted">
-                      {rupees(u.budget.amount)} a month · {rupees(u.spent)} approved
-                      {u.committed > 0 && ` · ${rupees(u.committed)} waiting for a decision`}
+                      {rupees(u.budget.amount)} a {PERIOD_SHORT[u.budget.period] || "month"} · {rupees(u.spent)} approved
+                      {u.committed > 0 && ` · ${rupees(u.committed)} waiting for accounts`}
+                      {(u.held || 0) > 0 && ` · ${rupees(u.held || 0)} held for admin (${u.heldCount})`}
                       {u.entries > 0 && ` · ${u.entries} entries`}
                     </p>
                   </div>
@@ -1009,12 +1227,23 @@ function BudgetPanel({ onChanged }: { onChanged: () => void }) {
                       <input
                         type="number"
                         defaultValue={u.budget.amount}
+                        title="Budget amount"
                         onBlur={(e) => {
                           const v = Number(e.target.value);
                           if (v > 0 && v !== u.budget.amount) change(u.budget.id, { amount: v });
                         }}
                         className="bmx-input w-[110px] rounded-lg border border-biome-line bg-biome-bg px-2.5 py-1.5 text-[11px] text-biome-text"
                       />
+                      <button onClick={() => change(u.budget.id, { enforce: !u.budget.enforce })} disabled={busy === u.budget.id}
+                        title={u.budget.enforce ? "Switch to warn only" : "Make it a hard limit"}
+                        className="bmx-chip rounded-lg border border-biome-line px-2.5 py-1.5 text-biome-muted disabled:opacity-60">
+                        <ShieldAlert size={12} className={u.budget.enforce ? "text-rose-500" : ""} />
+                      </button>
+                      <button onClick={() => change(u.budget.id, { active: false })} disabled={busy === u.budget.id}
+                        title="Switch this budget off"
+                        className="bmx-chip rounded-lg border border-biome-line px-2.5 py-1.5 text-biome-muted disabled:opacity-60">
+                        <Power size={12} />
+                      </button>
                       <button onClick={() => remove(u.budget.id)} disabled={busy === u.budget.id}
                         title="Remove this budget"
                         className="bmx-chip rounded-lg border border-biome-line px-2.5 py-1.5 text-rose-500 disabled:opacity-60">
@@ -1024,10 +1253,7 @@ function BudgetPanel({ onChanged }: { onChanged: () => void }) {
                   )}
                 </div>
 
-                <div className="mt-3 flex h-2 overflow-hidden rounded-full bg-biome-line">
-                  <span className={`h-full ${tone.bar}`} style={{ width: `${spentPct}%`, transition: "width .5s cubic-bezier(.22,1,.36,1)" }} />
-                  <span className={`h-full ${tone.bar} opacity-40`} style={{ width: `${commitPct}%`, transition: "width .5s cubic-bezier(.22,1,.36,1)" }} />
-                </div>
+                <UsageBar u={u} />
                 <p className="mt-1 flex items-center gap-1 text-[9.5px] text-biome-muted">
                   <TrendingUp size={10} /> solid = approved · faded = filed and waiting
                   {u.budget.note && ` · ${u.budget.note}`}
@@ -1038,17 +1264,41 @@ function BudgetPanel({ onChanged }: { onChanged: () => void }) {
         </div>
       )}
 
+      {data?.canManage && others.length > 0 && (
+        <section className="rounded-2xl border border-dashed border-biome-line p-4">
+          <p className="text-[10px] font-bold uppercase tracking-[.14em] text-biome-muted">Switched off or not in force this month</p>
+          <div className="mt-2 space-y-1.5">
+            {others.map((b) => (
+              <div key={b.id} className="flex flex-wrap items-center gap-2 text-[11px]">
+                <span className="font-semibold text-biome-text">{b.label}</span>
+                <span className="text-biome-muted">
+                  {rupees(b.amount)} · {b.period}
+                  {b.period === "custom" ? ` · ${b.startDate} to ${b.endDate}` : b.fromMonth || b.toMonth ? ` · ${b.fromMonth || "start"} to ${b.toMonth || "open"}` : ""}
+                  {!b.active && " · off"}
+                </span>
+                {!b.active && (
+                  <button onClick={() => change(b.id, { active: true })} disabled={busy === b.id}
+                    className="bmx-chip rounded-lg border border-biome-line px-2 py-1 text-[10px] font-semibold text-biome-leaf">Switch on</button>
+                )}
+                <button onClick={() => remove(b.id)} disabled={busy === b.id}
+                  className="bmx-chip rounded-lg border border-biome-line px-2 py-1 text-[10px] font-semibold text-rose-500">Remove</button>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       <FormPanel
         open={open}
         onClose={() => setOpen(false)}
         icon={<Target size={20} />}
         eyebrow="Imprest"
-        title="Set a monthly budget"
-        subtitle="Nothing is blocked when a budget is crossed — the approver is warned before they pass the entry. A hard block would only push the spend under a different head."
+        title="Set a budget"
+        subtitle="With a hard limit, an entry that would cross the budget is blocked and waits for the admin or developer to approve it. Warn-only budgets just flag it to the approver."
         footer={
           <>
             <button onClick={() => setOpen(false)} className="bmx-chip rounded-xl border border-biome-line px-4 py-2.5 text-[11.5px] font-semibold text-biome-muted">Cancel</button>
-            <button onClick={add} disabled={busy === "new" || !draft.key || !Number(draft.amount)}
+            <button onClick={add} disabled={busy === "new" || !Number(draft.amount) || fields.some((f) => !draft.match[f])}
               className="bmx-btn flex items-center gap-2 rounded-xl bg-biome-leaf px-5 py-2.5 text-[11.5px] font-bold text-white disabled:opacity-60">
               {busy === "new" ? <Loader2 size={14} className="bmx-spin" /> : <Check size={14} />} Save budget
             </button>
@@ -1057,48 +1307,211 @@ function BudgetPanel({ onChanged }: { onChanged: () => void }) {
       >
         <FormSection title="What it covers" sectionIcon={<Target size={14} />} columns={3}>
           <label className="block">
-            <span className="mb-1.5 block text-[10px] font-bold uppercase tracking-[.13em] text-biome-muted">Scope</span>
-            <select value={draft.scope} onChange={(e) => setDraft({ ...draft, scope: e.target.value, key: "" })}
-              className="bmx-input w-full rounded-xl border border-biome-line bg-biome-bg px-3 py-2.5 text-[12px] text-biome-text">
+            <span className={lbl}>Budget on</span>
+            <select value={draft.scope} onChange={(e) => setDraft({ ...draft, scope: e.target.value, match: {} })} className={inp}>
               {(data?.scopes || []).map((s: any) => <option key={s.id} value={s.id}>{s.label}</option>)}
             </select>
+            <span className="mt-1 block text-[10px] text-biome-muted">
+              {(data?.scopes || []).find((s: any) => s.id === draft.scope)?.help}
+            </span>
+          </label>
+          {fields.map((f) => {
+            const opts = optionsFor(f);
+            return (
+              <label key={f} className="block">
+                <span className={lbl}>{SCOPE_FIELD_LABEL[f] || f}</span>
+                {opts.length > 0 || (f !== "designation" && f !== "department") ? (
+                  <select value={draft.match[f] || ""} onChange={(e) => setDraft({ ...draft, match: { ...draft.match, [f]: e.target.value } })} className={inp}>
+                    <option value="">Select…</option>
+                    {opts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                ) : (
+                  <input value={draft.match[f] || ""} onChange={(e) => setDraft({ ...draft, match: { ...draft.match, [f]: e.target.value } })}
+                    placeholder={`Type the ${SCOPE_FIELD_LABEL[f].toLowerCase()}`} className={inp} />
+                )}
+              </label>
+            );
+          })}
+        </FormSection>
+
+        <FormSection title="How much, for which period" sectionIcon={<TrendingUp size={14} />} columns={3}>
+          <label className="block">
+            <span className={lbl}>Period</span>
+            <select value={draft.period} onChange={(e) => setDraft({ ...draft, period: e.target.value })} className={inp}>
+              {(data?.periods || []).map((p: any) => <option key={p.id} value={p.id}>{p.label}</option>)}
+            </select>
+            <span className="mt-1 block text-[10px] text-biome-muted">
+              {(data?.periods || []).find((p: any) => p.id === draft.period)?.help}
+            </span>
           </label>
           <label className="block">
-            <span className="mb-1.5 block text-[10px] font-bold uppercase tracking-[.13em] text-biome-muted">Which one</span>
-            <select value={draft.key} onChange={(e) => setDraft({ ...draft, key: e.target.value })}
-              className="bmx-input w-full rounded-xl border border-biome-line bg-biome-bg px-3 py-2.5 text-[12px] text-biome-text">
-              <option value="">Select…</option>
-              {keyOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            <span className={lbl}>Rupees per {PERIOD_SHORT[draft.period]}</span>
+            <input type="number" min="0" value={draft.amount} onChange={(e) => setDraft({ ...draft, amount: e.target.value })} className={inp} />
+          </label>
+          <label className="block">
+            <span className={lbl}>When crossed</span>
+            <select value={draft.enforce ? "block" : "warn"} onChange={(e) => setDraft({ ...draft, enforce: e.target.value === "block" })} className={inp}>
+              <option value="block">Block — needs admin approval</option>
+              <option value="warn">Warn only — flag to the approver</option>
             </select>
           </label>
-          <label className="block">
-            <span className="mb-1.5 block text-[10px] font-bold uppercase tracking-[.13em] text-biome-muted">Rupees per month</span>
-            <input type="number" value={draft.amount} onChange={(e) => setDraft({ ...draft, amount: e.target.value })}
-              className="bmx-input w-full rounded-xl border border-biome-line bg-biome-bg px-3 py-2.5 text-[12px] text-biome-text" />
-          </label>
-          <label className="block">
-            <span className="mb-1.5 block text-[10px] font-bold uppercase tracking-[.13em] text-biome-muted">Runs from</span>
-            <input type="month" value={draft.fromMonth} onChange={(e) => setDraft({ ...draft, fromMonth: e.target.value })}
-              className="bmx-input w-full rounded-xl border border-biome-line bg-biome-bg px-3 py-2.5 text-[12px] text-biome-text" />
-          </label>
-          <label className="block">
-            <span className="mb-1.5 block text-[10px] font-bold uppercase tracking-[.13em] text-biome-muted">Until (optional)</span>
-            <input type="month" value={draft.toMonth} onChange={(e) => setDraft({ ...draft, toMonth: e.target.value })}
-              className="bmx-input w-full rounded-xl border border-biome-line bg-biome-bg px-3 py-2.5 text-[12px] text-biome-text" />
-          </label>
-          <div className="self-end text-[10px] leading-relaxed text-biome-muted">
-            Leave &ldquo;until&rdquo; blank and it keeps running every month.
-          </div>
+          {draft.period === "custom" ? (
+            <>
+              <label className="block">
+                <span className={lbl}>From date</span>
+                <input type="date" value={draft.startDate} onChange={(e) => setDraft({ ...draft, startDate: e.target.value })} className={inp} />
+              </label>
+              <label className="block">
+                <span className={lbl}>To date</span>
+                <input type="date" value={draft.endDate} onChange={(e) => setDraft({ ...draft, endDate: e.target.value })} className={inp} />
+              </label>
+            </>
+          ) : (
+            <>
+              <label className="block">
+                <span className={lbl}>Runs from</span>
+                <input type="month" value={draft.fromMonth} onChange={(e) => setDraft({ ...draft, fromMonth: e.target.value })} className={inp} />
+              </label>
+              <label className="block">
+                <span className={lbl}>Until (optional)</span>
+                <input type="month" value={draft.toMonth} onChange={(e) => setDraft({ ...draft, toMonth: e.target.value })} className={inp} />
+              </label>
+            </>
+          )}
           <div className="md:col-span-2 lg:col-span-3">
             <label className="block">
-              <span className="mb-1.5 block text-[10px] font-bold uppercase tracking-[.13em] text-biome-muted">Note</span>
+              <span className={lbl}>Note</span>
               <input value={draft.note} onChange={(e) => setDraft({ ...draft, note: e.target.value })}
-                placeholder="Who agreed it, and when it should be looked at again"
-                className="bmx-input w-full rounded-xl border border-biome-line bg-biome-bg px-3 py-2.5 text-[12px] text-biome-text" />
+                placeholder="Who agreed it, and when it should be looked at again" className={inp} />
             </label>
           </div>
         </FormSection>
       </FormPanel>
+    </div>
+  );
+}
+
+/**
+ * Over-budget approvals — admin and developer only.
+ *
+ * Each held entry shows where its budgets stand NOW (another entry may
+ * have been withdrawn since), so the decision is made on today's figures.
+ * Approving turns it into an ordinary claim for accounts; rejecting needs
+ * a reason, which the holder sees.
+ */
+function OverBudgetPanel({ onChanged }: { onChanged: () => void }) {
+  const [data, setData] = useState<{ pending: any[]; decided: any[] } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState("");
+  const [note, setNote] = useState<Record<string, string>>({});
+  const [rowErr, setRowErr] = useState<Record<string, string>>({});
+
+  const load = useCallback(async () => {
+    const res = await fetch("/api/imprest/budget/approval", { cache: "no-store" });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) { setErr(json.error || "Could not load."); return; }
+    setData(json);
+    setErr(null);
+  }, []);
+  useEffect(() => { load(); }, [load]);
+  useLiveRefresh(() => load());
+
+  async function decide(id: string, decision: "approved" | "rejected") {
+    setBusy(id); setRowErr((r) => ({ ...r, [id]: "" }));
+    try {
+      const res = await fetch("/api/imprest/budget/approval", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, decision, note: note[id] || "" }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Could not save the decision.");
+      if (json.failed?.length) throw new Error(json.failed[0].reason);
+      await load();
+      onChanged();
+    } catch (e) {
+      setRowErr((r) => ({ ...r, [id]: (e as Error).message }));
+    } finally { setBusy(""); }
+  }
+
+  if (err) return <p className="text-[11.5px] text-rose-500">{err}</p>;
+  if (!data) return <p className="text-[11.5px] text-biome-muted">Loading…</p>;
+
+  return (
+    <div className="space-y-4">
+      {data.pending.length === 0 ? (
+        <EmptyState
+          title="Nothing over budget"
+          detail="When someone files an expense that would cross a hard budget, it is blocked and lands here. You approve it (it then goes to accounts as a normal entry) or reject it with a reason."
+        />
+      ) : (
+        <div className="space-y-2">
+          {data.pending.map((e) => (
+            <article key={e.id} className="bmx-card overflow-hidden rounded-2xl border border-rose-500/25 bg-biome-bgSoft">
+              <div className="flex flex-wrap items-start gap-3 p-4">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-rose-500/12 text-rose-500">
+                  <ShieldAlert size={16} />
+                </span>
+                <div className="min-w-[200px] flex-1">
+                  <p className="text-[12.5px] font-semibold text-biome-text">{e.description}</p>
+                  <p className="mt-1 text-[10.5px] text-biome-muted">
+                    {e.date} · {e.holder}{e.holderCode && ` (${e.holderCode})`} · {e.category}{e.plant && ` · ${e.plant}`} · filed by {e.createdByName}
+                  </p>
+                  {e.attachments?.length > 0 && (
+                    <div className="mt-1.5 flex flex-wrap gap-1.5">
+                      {e.attachments.map((a: any) => (
+                        <a key={a.id} href={`/api/imprest/attachment?entryId=${e.id}&attachmentId=${a.id}`} target="_blank" rel="noreferrer"
+                          className="bmx-chip inline-flex items-center gap-1 rounded-lg border border-biome-line px-2 py-0.5 text-[10px] text-biome-muted">
+                          <Paperclip size={10} /> {a.name}
+                        </a>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <p className="font-mono text-[16px] font-semibold text-biome-text">{money(e.amount)}</p>
+              </div>
+              <BudgetWarning impacts={e.impacts} />
+              {(e.impacts || []).every((i: BudgetImpact) => i.overBy === 0) && (
+                <p className="border-t border-biome-line px-4 py-2 text-[10.5px] text-emerald-600">
+                  The budget now has room for this entry (something else was withdrawn or rejected).
+                </p>
+              )}
+              <div className="flex flex-wrap items-center gap-2 border-t border-biome-line px-4 py-2.5">
+                <input value={note[e.id] || ""} onChange={(ev) => setNote({ ...note, [e.id]: ev.target.value })}
+                  placeholder="Note (required to reject)"
+                  className="bmx-input min-w-[200px] flex-1 rounded-lg border border-biome-line bg-biome-bg px-2.5 py-1.5 text-[11px] text-biome-text" />
+                <button onClick={() => decide(e.id, "approved")} disabled={busy === e.id || e.own}
+                  title={e.own ? "You can't pass your own entry" : "Allow the extra spend — it goes to accounts as a normal entry"}
+                  className="bmx-btn flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-[11px] font-bold text-white disabled:opacity-60">
+                  {busy === e.id ? <Loader2 size={12} className="bmx-spin" /> : <Check size={12} />} Approve over budget
+                </button>
+                <button onClick={() => decide(e.id, "rejected")} disabled={busy === e.id || e.own}
+                  className="bmx-btn flex items-center gap-1.5 rounded-lg border border-rose-500/40 px-3 py-1.5 text-[11px] font-bold text-rose-500 disabled:opacity-60">
+                  <X size={12} /> Reject
+                </button>
+                {rowErr[e.id] && <p className="w-full text-[10.5px] text-rose-500">{rowErr[e.id]}</p>}
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
+
+      {data.decided.length > 0 && (
+        <section className="rounded-2xl border border-biome-line bg-biome-bgSoft p-4">
+          <p className="text-[10px] font-bold uppercase tracking-[.14em] text-biome-muted">Recent over-budget decisions</p>
+          <div className="mt-2 divide-y divide-biome-line">
+            {data.decided.map((e) => (
+              <div key={e.id} className="flex flex-wrap items-center gap-2 py-1.5 text-[11px]">
+                <span className={`rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase ${e.budgetHold.decision === "approved" ? "border-emerald-500/30 text-emerald-600" : "border-rose-500/30 text-rose-500"}`}>
+                  {e.budgetHold.decision}
+                </span>
+                <span className="text-biome-text">{e.holder} · {e.description}</span>
+                <span className="text-biome-muted">{money(e.amount)} · over by {rupees(e.budgetHold.overBy)} · {e.budgetHold.decidedByName}</span>
+                {e.budgetHold.note && <span className="text-biome-muted">“{e.budgetHold.note}”</span>}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
     </div>
   );
 }

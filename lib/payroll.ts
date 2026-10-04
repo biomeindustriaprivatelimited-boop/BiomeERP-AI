@@ -223,8 +223,34 @@ export interface PayrollEmployee {
   /** Work email, used for payslips. */
   email: string;
 
+  /**
+   * Set when a PLANT MANAGER put this person on the rolls: the record
+   * stays inactive and out of every normal list until an admin or the
+   * developer approves it. Absent on records added by the office (and on
+   * everything created before this existed) — those count as approved.
+   */
+  approval?: EmployeeApproval;
+
   createdAt: string;
   updatedAt: string;
+}
+
+export type EmployeeApprovalStatus = "pending_approval" | "approved" | "rejected" | "withdrawn";
+
+export interface EmployeeApproval {
+  status: EmployeeApprovalStatus;
+  requestedBy: { uid: string; name: string; plant: string };
+  requestedAt: string;
+  decidedBy: string | null;
+  decidedByName: string | null;
+  decidedAt: string | null;
+  /** Why it was rejected (required) or withdrawn. */
+  reason: string | null;
+}
+
+/** On the rolls for real — not a pending, rejected or withdrawn request. */
+export function isApprovedEmployee(e: Pick<PayrollEmployee, "approval">): boolean {
+  return !e.approval || e.approval.status === "approved";
 }
 
 /* ------------------------------------------------------------------ */
@@ -542,14 +568,35 @@ export function saveSettings(settings: PayrollSettings): void {
   writeJsonAtomic(settingsFile(), { ...settings, updatedAt: new Date().toISOString() });
 }
 
-export function loadEmployees(): PayrollEmployee[] {
+function readEmployeeFile(): PayrollEmployee[] {
   const f = readJson<{ employees: PayrollEmployee[] }>(employeesFile(), { employees: [] });
   return Array.isArray(f.employees) ? f.employees.map(normaliseEmployee) : [];
 }
 
+/**
+ * The employee master.
+ *
+ * By default ONLY approved people — a plant manager's pending (or
+ * rejected / withdrawn) request is invisible to attendance, leave,
+ * imprest, payroll, letters and every other reader, so nothing can be
+ * filed against someone the office has not accepted. The Employees
+ * screen and its approval flow pass `includeRequests: true`.
+ */
+export function loadEmployees(opts?: { includeRequests?: boolean }): PayrollEmployee[] {
+  const all = readEmployeeFile();
+  return opts?.includeRequests ? all : all.filter(isApprovedEmployee);
+}
+
+/**
+ * Most callers load the default (approved-only) list, change one person
+ * and save the list back. Unapproved requests they never saw are carried
+ * over from disk so such a save cannot silently delete them.
+ */
 export function saveEmployees(employees: PayrollEmployee[]): void {
   ensureDir(payrollDir());
-  writeJsonAtomic(employeesFile(), { employees, updatedAt: new Date().toISOString() });
+  const ids = new Set(employees.map((e) => e.id));
+  const carried = readEmployeeFile().filter((e) => !isApprovedEmployee(e) && !ids.has(e.id));
+  writeJsonAtomic(employeesFile(), { employees: [...employees, ...carried], updatedAt: new Date().toISOString() });
 }
 
 export function loadRuns(): PayrollRun[] {

@@ -25,3 +25,4 @@ Thumbs.db
 *.tsbuildinfo
 # Electron-builder output
 /release/
+.next-*/

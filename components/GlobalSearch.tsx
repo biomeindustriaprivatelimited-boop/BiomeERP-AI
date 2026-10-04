@@ -3,6 +3,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Portal from "@/components/Portal";
 import { useRouter } from "next/navigation";
+import { useSession } from "@/lib/session";
+import { flatFeatures } from "@/lib/featureMap";
+import { ICONS } from "@/components/hub/icons";
+import { homePathFor } from "@/lib/permissions";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Search,
@@ -69,8 +73,40 @@ const TARGETS: Target[] = [
   { label: "Settings", href: "/settings", hint: "Tally, AI keys, theme", icon: Settings, keywords: ["setting", "tally", "api key", "theme", "dark", "light", "connect", "port"] },
 ];
 
+/**
+ * Everything searchable for THIS person: the hand-written entries above
+ * (for their keywords) plus every page in the feature map, kept only when
+ * the session's visible() allows it — permission held, and not frozen or
+ * switched off by the developer. Before this, Ctrl K listed Ledgers, GST
+ * and Settings to a plant manager.
+ */
+function useTargets(): Target[] {
+  const { user, permissions, visible } = useSession();
+  return useMemo(() => {
+    const byHref = new Map<string, Target>();
+    const home = homePathFor(user?.role, permissions);
+    for (const t of TARGETS) {
+      const href = t.href === "/" ? home : t.href;
+      if (!visible(href)) continue;
+      byHref.set(href, href === "/plant-home" ? { ...t, href, label: "Plant home", hint: "Shortcuts and today's plant figures" } : { ...t, href });
+    }
+    for (const { node, category } of flatFeatures()) {
+      if (!visible(node.href, node.perm)) continue;
+      const prev = byHref.get(node.href);
+      const keywords = [category.label.toLowerCase(), node.id.replace(/-/g, " ")];
+      if (prev) byHref.set(node.href, { ...prev, keywords: [...prev.keywords, ...keywords] });
+      else byHref.set(node.href, { label: node.label, href: node.href, hint: node.what, icon: (ICONS[node.icon] || FileText) as typeof Search, keywords });
+    }
+    if (home === "/plant-home" && !byHref.has(home)) {
+      byHref.set(home, { label: "Plant home", href: home, hint: "Shortcuts and today's plant figures", icon: Factory, keywords: ["home", "dashboard", "plant"] });
+    }
+    return [...byHref.values()];
+  }, [user?.role, permissions, visible]);
+}
+
 export default function GlobalSearch() {
   const router = useRouter();
+  const TARGETS = useTargets();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
@@ -115,7 +151,7 @@ export default function GlobalSearch() {
       .filter((r) => r.score > 0)
       .sort((a, b) => b.score - a.score)
       .map((r) => r.t);
-  }, [query]);
+  }, [query, TARGETS]);
 
   useEffect(() => setActive(0), [query]);
 

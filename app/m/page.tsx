@@ -22,7 +22,7 @@ import BiomeLogo from "@/components/brand/BiomeLogo";
  * it is the one thing a plant manager does at the gate with one hand.
  */
 export default function MobileHome() {
-  const { user, signOut, can } = useSession();
+  const { user, signOut, can, visible } = useSession();
   const [rx, setRx] = useState({ vehicle: "", qty: "", date: new Date().toISOString().slice(0, 10) });
   const [rxMsg, setRxMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -83,7 +83,7 @@ export default function MobileHome() {
     { href: "/ocr", label: "Scan a document", icon: <ScanLine size={20} />, sub: "Photograph it, read it, export it", show: can("ocr") },
     { href: "/documents", label: "Documents", sub: "Search what has been filed", icon: <FileText size={20} />, show: can("documents") },
     { href: "/po", label: "PO balances", sub: "What is left on each order", icon: <ListChecks size={20} />, show: can("operations") },
-  ].filter((t) => t.show);
+  ].filter((t) => t.show && visible(t.href));
 
   // Receiving is written into the supply register, which only people with
   // the coordination permission may change. Showing the form to anyone else
@@ -190,7 +190,7 @@ export default function MobileHome() {
         ))}
         {tiles.length === 0 && (
           <p className="rounded-2xl border border-biome-line bg-biome-bgSoft px-4 py-5 text-center text-[11.5px] text-biome-muted">
-            Nothing is assigned to this account yet. Ask the admin to grant what you need.
+            Nothing is assigned to this account yet. Ask the admin to activate what you need.
           </p>
         )}
       </section>

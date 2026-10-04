@@ -224,7 +224,7 @@ export default function HistoricalScan({
 
               <div className="flex flex-wrap gap-2">
                 {running ? (
-                  <PremiumButton onClick={stop} disabled={busy} className="border-rose-400/40 text-rose-300">
+                  <PremiumButton onClick={stop} disabled={busy} className="border-rose-400/40 text-rose-600 dark:text-rose-300">
                     <Square size={13} /> Stop scanning
                   </PremiumButton>
                 ) : (

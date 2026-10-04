@@ -19,6 +19,7 @@ import crypto from "crypto";
 import path from "path";
 import { paths, readJson, writeJsonAtomic, ensureDir } from "@/lib/dataRoot";
 import type { BusinessType, DocType } from "@/lib/numberSeries";
+import { toKg } from "@/lib/units";
 
 export type TripStatus =
   | "planned"      // vehicle assigned, not yet loaded
@@ -169,10 +170,32 @@ export interface Trip {
     requestId: string;
   };
 
+  /** The client's lab report on this supply (GCV, moisture…), when known. */
+  lab?: TripLab;
+
+  /**
+   * Set when the row came in through the historical data import rather
+   * than being typed — so a figure can always be traced back to the
+   * spreadsheet and row it came from.
+   */
+  importSource?: { kind: "data-import"; file: string; sheet: string; row: number; at: string; by: string; byName: string };
+
   createdBy: string;
   createdByName: string;
   createdAt: string;
   updatedAt: string;
+}
+
+/** Lab / test report figures for one supply. Zero = not reported. */
+export interface TripLab {
+  reportNo: string;
+  reportDate: string;
+  /** Gross calorific value, kcal/kg. */
+  gcv: number;
+  moisturePct: number;
+  ashPct: number;
+  volatilePct: number;
+  finesPct: number;
 }
 
 interface TripFile { trips: Trip[]; updatedAt?: string; }
@@ -636,4 +659,80 @@ export function saveEditRequests(requests: EditRequest[]): void {
 
 export function pendingRequestFor(tripId: string): EditRequest | undefined {
   return loadEditRequests().find((r) => r.tripId === tripId && r.status === "pending");
+}
+
+/* ------------------------------------------------------------------ */
+/* Reading a trip from a request body                                  */
+/* ------------------------------------------------------------------ */
+
+function inStr(v: unknown, max = 120): string {
+  return String(v ?? "").trim().slice(0, max);
+}
+function inKg(v: unknown): number {
+  const kg = toKg(v, { vehicle: true });
+  return kg !== null && kg > 0 ? kg : 0;
+}
+function inNum(v: unknown): number {
+  const n = Number(String(v ?? "").replace(/[,\s]/g, ""));
+  return Number.isFinite(n) && n >= 0 ? n : 0;
+}
+
+/**
+ * The editable fields of a trip, read and cleaned from a request body.
+ *
+ * Shared by the add/edit API and the historical data import, so an
+ * imported row is normalised exactly like one typed into the form —
+ * vehicle numbers squeezed, weights in kg ("28.4 MT" → 28,400), no vendor
+ * on a manufacturing row.
+ */
+export function readTripInput(body: any, reg: BusinessType): Partial<Trip> {
+  const statuses = TRIP_STATUS.map((s) => s.id) as string[];
+  const status = statuses.includes(body.status) ? (body.status as TripStatus) : undefined;
+  const docType: DocType = body.docType === "tax_invoice" ? "tax_invoice" : "delivery_challan";
+  const out: Partial<Trip> = {
+    business: reg,
+    docType,
+    seriesId: inStr(body.seriesId, 60),
+    ourDocDate: inStr(body.ourDocDate, 10),
+    client: inStr(body.client), location: inStr(body.location, 60),
+    poNumber: inStr(body.poNumber, 60), poDate: inStr(body.poDate, 10),
+    vendorPoId: body.vendorPoId ? inStr(body.vendorPoId, 60) : null,
+    clientPoId: body.clientPoId ? inStr(body.clientPoId, 60) : null,
+    vehicleNumber: inStr(body.vehicleNumber, 20).toUpperCase().replace(/[^A-Z0-9]/g, ""),
+    vehicleEntryDate: inStr(body.vehicleEntryDate, 10),
+    vendorChallanDate: inStr(body.vendorChallanDate, 10),
+    // Weights in kg: "28.4 MT" / "284 qtl" / a bare 28.4 are converted.
+    vendorChallanWeight: inKg(body.vendorChallanWeight),
+    vendorChallanAmount: inNum(body.vendorChallanAmount),
+    referenceNo: inStr(body.referenceNo, 40).toUpperCase().replace(/\s+/g, ""),
+    receivingDate: inStr(body.receivingDate, 10),
+    receivingQty: inKg(body.receivingQty),
+    ccWeight: inKg(body.ccWeight),
+    debitNoteNo: inStr(body.debitNoteNo, 40),
+    creditNoteNo: inStr(body.creditNoteNo, 40),
+    cancellationReason: inStr(body.cancellationReason, 300),
+    remarks: inStr(body.remarks, 400),
+    checklistRemarks: inStr(body.checklistRemarks, 400),
+  };
+
+  // Manufacturing is our own material. Carrying a vendor here would put a
+  // supplier's name on a supply they had nothing to do with — and it would
+  // land in the per-supplier shortfall table, which is read as blame.
+  if (reg === "manufacturing") {
+    out.plant = inStr(body.plant, 10).toUpperCase().replace(/[^A-Z0-9]/g, "");
+    out.supplier = "";
+    out.supplierCode = "";
+    out.vendorDocType = "";
+    out.vendorChallanNo = "";
+    out.vendorInvoiceNo = "";
+  } else {
+    out.supplier = inStr(body.supplier);
+    out.supplierCode = inStr(body.supplierCode, 20).toUpperCase();
+    out.vendorDocType = body.vendorDocType === "tax_invoice" || body.vendorDocType === "delivery_challan" ? body.vendorDocType : "";
+    out.vendorChallanNo = inStr(body.vendorChallanNo, 40);
+    out.vendorInvoiceNo = inStr(body.vendorInvoiceNo, 40);
+  }
+
+  if (status) out.status = status;
+  return out;
 }

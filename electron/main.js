@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell, ipcMain, session } = require("electron");
+const { app, BrowserWindow, shell, ipcMain, session, Tray, Menu, dialog, Notification } = require("electron");
 const path = require("path");
 const { spawn } = require("child_process");
 const http = require("http");
@@ -122,7 +122,7 @@ function readSyncConfig() {
     const raw = JSON.parse(fs.readFileSync(syncConfigFile(), "utf8"));
     if (raw && raw.mode === "client") {
       const url = typeof raw.serverUrl === "string" && /^https?:\/\//.test(raw.serverUrl) ? raw.serverUrl.replace(/\/+$/, "") : "";
-      return { mode: "client", serverUrl: url };
+      return { mode: "client", serverUrl: url, manual: raw.manual === true };
     }
     if (raw && raw.mode === "server") return { mode: "server", serverUrl: "" };
   } catch (_) {
@@ -473,11 +473,19 @@ async function connectClient(onFound) {
   clientSearching = true;
   let attempt = 0;
   while (!quitting) {
-    const r = await net.findServer({ saved: SYNC.serverUrl }).catch(() => null);
+    // A server address someone set by hand is tried first; only if it does
+    // not answer is the office network / built-in address used.
+    let r = null;
+    if (SYNC.manual && SYNC.serverUrl) {
+      const p = await net.probe(SYNC.serverUrl).catch(() => null);
+      if (p && p.ok) r = p;
+    }
+    if (!r) r = await net.findServer({ saved: SYNC.serverUrl }).catch(() => null);
     if (r) {
       if (r.url !== SYNC.serverUrl) {
         SYNC.serverUrl = r.url;
-        try { writeSyncConfig({ mode: "client", serverUrl: r.url, auto: true }); } catch (_) {}
+        // Remembered from now on; a hand-set address stays the first choice.
+        try { writeSyncConfig({ mode: "client", serverUrl: r.url, auto: true, manual: SYNC.manual === true }); } catch (_) {}
       }
       clientSearching = false;
       onFound();
@@ -654,7 +662,9 @@ ipcMain.handle("biome:setup:connect", async (evt, input) => {
   const r = await probeServer(url);
   if (!r.ok) return { ...r, url };
   try {
-    writeSyncConfig({ mode: "client", serverUrl: url });
+    // Typed by a person: kept and tried FIRST from now on, until someone
+    // changes it again with "Connect to server".
+    writeSyncConfig({ mode: "client", serverUrl: url, manual: true });
   } catch (err) {
     return { ok: false, error: `Could not save the setting: ${err.message}` };
   }
@@ -748,7 +758,29 @@ function createMainWindow() {
 
   mainWindow.once("ready-to-show", () => {
     if (loadingWindow && !loadingWindow.isDestroyed()) loadingWindow.close();
-    mainWindow.show();
+    // Started with Windows: the server runs in the tray, no window pops up.
+    if (!START_HIDDEN) mainWindow.show();
+  });
+
+  // SERVER PC: the X hides the window — the server keeps running in the
+  // tray for every client PC and phone. Only "Stop server & quit" (tray)
+  // stops it.
+  // Windows is shutting down or signing out: let the window close.
+  mainWindow.on("session-end", () => { quitting = true; });
+  mainWindow.on("close", (e) => {
+    if (SYNC.mode !== "server" || quitting) return;
+    e.preventDefault();
+    mainWindow.hide();
+    if (!trayHintShown) {
+      trayHintShown = true;
+      try {
+        if (tray && tray.displayBalloon) {
+          tray.displayBalloon({ title: "Biome server is still running", content: "Client PCs and phones keep working. Right-click the Biome icon near the clock to open or stop it." });
+        } else if (Notification.isSupported()) {
+          new Notification({ title: "Biome server is still running", body: "Client PCs and phones keep working. Use the Biome tray icon to open or stop it." }).show();
+        }
+      } catch (_) {}
+    }
   });
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -892,11 +924,117 @@ function wipeClientCache() {
   ]);
 }
 
+/* ------------------------------------------------------------------ */
+/* Server PC: one instance, tray icon, start with Windows              */
+/* ------------------------------------------------------------------ */
+
+/** Launched by Windows at sign-in (see setLoginItemSettings below). */
+const START_HIDDEN = process.argv.includes("--background");
+let tray = null;
+let trayHintShown = false;
+
+// Two copies would fight over the server port. A second launch (double-
+// clicking the shortcut while the server runs in the tray) just shows the
+// window of the one already running.
+const GOT_LOCK = app.requestSingleInstanceLock();
+if (!GOT_LOCK) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+}
+
+function autoStartFile() {
+  return path.join(app.getPath("userData"), "autostart.json");
+}
+
+/** Server PCs start with Windows by default; the tray checkbox turns it off. */
+function autoStartWanted() {
+  try {
+    return JSON.parse(fs.readFileSync(autoStartFile(), "utf8")).on !== false;
+  } catch (_) {
+    return true;
+  }
+}
+
+function applyAutoStart(on) {
+  try { fs.writeFileSync(autoStartFile(), JSON.stringify({ on, at: new Date().toISOString() })); } catch (_) {}
+  if (!app.isPackaged) return;
+  try {
+    app.setLoginItemSettings({ openAtLogin: on, path: process.execPath, args: ["--background"] });
+  } catch (err) {
+    console.error("Auto-start:", err.message);
+  }
+}
+
+function showMainWindow() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.show();
+    mainWindow.focus();
+  } else {
+    createMainWindow();
+  }
+}
+
+function stopServerAndQuit() {
+  const choice = dialog.showMessageBoxSync({
+    type: "warning",
+    buttons: ["Stop server", "Cancel"],
+    defaultId: 1,
+    cancelId: 1,
+    title: "Stop the Biome server?",
+    message: "Stop the Biome server and quit?",
+    detail: "Every client PC and phone will show “Server connection lost” until Biome is opened again on this PC.",
+  });
+  if (choice !== 0) return;
+  quitting = true;
+  app.quit();
+}
+
+function createTray() {
+  if (tray) return;
+  try {
+    tray = new Tray(path.join(__dirname, "icon.png"));
+  } catch (err) {
+    console.error("Tray:", err.message);
+    return;
+  }
+  tray.setToolTip("Biome server — running");
+  const rebuild = () =>
+    tray.setContextMenu(
+      Menu.buildFromTemplate([
+        { label: "Open Biome", click: showMainWindow },
+        { type: "separator" },
+        { label: "Server is running — client PCs and phones are connected through this PC", enabled: false },
+        {
+          label: "Start the server with Windows",
+          type: "checkbox",
+          checked: autoStartWanted(),
+          click: (item) => { applyAutoStart(item.checked); rebuild(); },
+        },
+        { type: "separator" },
+        { label: "Stop server && quit", click: stopServerAndQuit },
+      ])
+    );
+  rebuild();
+  tray.on("click", showMainWindow);
+  tray.on("double-click", showMainWindow);
+}
+
 app.whenReady().then(() => {
-  // A brand-new PC with no Biome data: ask where the server is before
-  // anything starts. It must never quietly become a second, empty server.
+  if (!GOT_LOCK) return;
   wipeClientCache();
-  createLoadingWindow();
+  if (SYNC.mode === "server") {
+    createTray();
+    // Re-applied every start so a moved install keeps starting with Windows.
+    applyAutoStart(autoStartWanted());
+  }
+  if (!(SYNC.mode === "server" && START_HIDDEN)) createLoadingWindow();
   if (SYNC.mode === "server") {
     // Mark every request from THIS window to its own server, so the
     // developer's sign-in here is recognised as "on the server PC" and kept.
@@ -929,11 +1067,14 @@ app.whenReady().then(() => {
 });
 
 app.on("window-all-closed", () => {
+  // The server keeps running in the tray; only a client quits here.
+  if (SYNC.mode === "server" && !quitting) return;
   stopChildren();
   if (process.platform !== "darwin") app.quit();
 });
 
 app.on("before-quit", () => {
+  quitting = true;
   wipeClientCache();
   stopChildren();
 });

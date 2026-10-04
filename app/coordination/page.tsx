@@ -7,6 +7,7 @@ import {
   TrendingDown, PackageCheck, Clock, ShieldAlert, Building2, Users,
   Lock, Unlock, FileText, Receipt, Upload, Hash, ChevronRight, X,
   CircleDollarSign, Factory, Handshake, KeyRound, Link2, Paperclip, RefreshCw, Mail,
+  FileSpreadsheet, FlaskConical,
 } from "lucide-react";
 import FormPanel, { FormSection } from "@/components/FormPanel";
 import DevEditedChip from "@/components/DevEditedChip";
@@ -64,6 +65,8 @@ interface Trip {
   status: string; cancellationReason: string; remarks: string; checklistRemarks: string;
   shortage: Shortage; derived: string; gaps: string[]; lock: LockState;
   pendingRequest: { id: string; by: string; at: string } | null;
+  lab?: { reportNo: string; reportDate: string; gcv: number; moisturePct: number; ashPct: number; volatilePct: number; finesPct: number };
+  importSource?: { file: string; sheet: string; row: number; at: string; byName: string };
 }
 interface PoNumber {
   id: string; number: string; date: string; validTill: string;
@@ -112,6 +115,7 @@ export default function CoordinationPage() {
   const [filters, setFilters] = useState({ month: "", client: "", supplier: "", status: "all", docType: "all", search: "" });
   const [requestFor, setRequestFor] = useState<Trip | null>(null);
   const [showImport, setShowImport] = useState(false);
+  const [showDataImport, setShowDataImport] = useState(false);
   const [showApprovals, setShowApprovals] = useState(false);
   const [showSeries, setShowSeries] = useState(false);
 
@@ -291,6 +295,12 @@ export default function CoordinationPage() {
             <button onClick={() => setShowImport(true)}
               className="bmx-chip flex items-center gap-1.5 rounded-xl border border-biome-line px-3.5 py-2.5 text-[11.5px] font-semibold text-biome-muted">
               <Upload size={13} /> Import from Tally
+            </button>
+          )}
+          {data?.canEdit && (
+            <button onClick={() => setShowDataImport(true)} data-testid="coord-data-import"
+              className="bmx-chip flex items-center gap-1.5 rounded-xl border border-biome-line px-3.5 py-2.5 text-[11.5px] font-semibold text-biome-muted">
+              <FileSpreadsheet size={13} /> Import data
             </button>
           )}
           <a href={`/api/coordination/export?business=${business}${filters.month ? `&month=${filters.month}` : ""}`}
@@ -519,6 +529,16 @@ export default function CoordinationPage() {
                       <p className="mt-1 text-[10px] text-biome-muted">
                         Billed {money(t.billing.totalAmount)} ({money(t.billing.taxableAmount)} + {money(t.billing.taxAmount)} tax)
                         {t.billing.invoiceWeightKg ? ` on ${kg(t.billing.invoiceWeightKg)}` : ""}
+                      </p>
+                    )}
+                    {t.lab && (t.lab.gcv > 0 || t.lab.moisturePct > 0 || t.lab.reportNo) && (
+                      <p className="mt-1 text-[10px] text-biome-muted">
+                        Lab{t.lab.reportNo ? ` ${t.lab.reportNo}` : ""}: {labLine(t.lab)}
+                      </p>
+                    )}
+                    {t.importSource && (
+                      <p className="mt-1 text-[9.5px] text-biome-muted" title={`Imported by ${t.importSource.byName} on ${t.importSource.at.slice(0, 10)}`}>
+                        Imported from {t.importSource.file} · {t.importSource.sheet} row {t.importSource.row}
                       </p>
                     )}
                   </div>
@@ -839,6 +859,16 @@ export default function CoordinationPage() {
           </FormSection>
         ) : null}
 
+        {editing?.lab ? (
+          <FormSection title="Lab report" sectionIcon={<FlaskConical size={14} />} columns={4}
+            hint={editing.importSource ? `Imported from ${editing.importSource.file} (${editing.importSource.sheet} row ${editing.importSource.row}).` : undefined}>
+            <Read label="Report no" value={editing.lab.reportNo || "—"} />
+            <Read label="Report date" value={editing.lab.reportDate || "—"} />
+            <Read label="GCV (kcal/kg)" value={editing.lab.gcv ? String(editing.lab.gcv) : "—"} />
+            <Read label="Moisture / Ash / VM / Fines %" value={[editing.lab.moisturePct, editing.lab.ashPct, editing.lab.volatilePct, editing.lab.finesPct].map((n) => (n ? String(n) : "—")).join(" / ")} />
+          </FormSection>
+        ) : null}
+
         {editing && <TripDocuments tripId={editing.id} />}
 
         <FormSection title="Status and notes" columns={2}>
@@ -875,6 +905,9 @@ export default function CoordinationPage() {
       )}
       {showImport && (
         <ImportPanel business={business} onClose={() => setShowImport(false)} onDone={() => { setShowImport(false); load(); }} />
+      )}
+      {showDataImport && (
+        <DataImportPanel business={business} onClose={() => { setShowDataImport(false); load(); }} />
       )}
       {showApprovals && (
         <ApprovalsPanel onClose={() => setShowApprovals(false)} onDone={load} />
@@ -1641,6 +1674,206 @@ function ImportPanel({ business, onClose, onDone }: { business: Business; onClos
                 </div>
               </FormSection>
             </>
+          )}
+        </>
+      )}
+    </FormPanel>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Import previous working data                                        */
+/* ------------------------------------------------------------------ */
+
+function labLine(l: NonNullable<Trip["lab"]>): string {
+  const parts: string[] = [];
+  if (l.gcv) parts.push(`GCV ${l.gcv.toLocaleString("en-IN")}`);
+  if (l.moisturePct) parts.push(`moisture ${l.moisturePct}%`);
+  if (l.ashPct) parts.push(`ash ${l.ashPct}%`);
+  if (l.volatilePct) parts.push(`VM ${l.volatilePct}%`);
+  if (l.finesPct) parts.push(`fines ${l.finesPct}%`);
+  return parts.join(" · ") || "no figures";
+}
+
+interface ImportRow {
+  sheet: string; rowNumber: number; business: Business; label: string; vendor: string; client: string;
+  verdict: "ok" | "missing" | "error"; errors: string[]; missing: string[]; warnings: string[]; willFreeze: boolean;
+}
+
+const VERDICT_STYLE: Record<ImportRow["verdict"], [string, string, string]> = {
+  ok: ["Complete", "border-emerald-500/25 bg-emerald-500/[.05]", "border-emerald-500/35 bg-emerald-500/10 text-emerald-600"],
+  missing: ["Missing data", "border-amber-500/30 bg-amber-500/[.06]", "border-amber-500/40 bg-amber-500/10 text-amber-600"],
+  error: ["Error — not imported", "border-rose-500/30 bg-rose-500/[.05]", "border-rose-500/40 bg-rose-500/10 text-rose-500"],
+};
+
+/**
+ * Bring previous working sheets into the register from the app's own
+ * template. Nothing is written until the person has seen, consignment by
+ * consignment, what is missing and what is wrong — and chosen what to do.
+ */
+function DataImportPanel({ business, onClose }: { business: Business; onClose: () => void }) {
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState<"" | "check" | "all" | "complete">("");
+  const [err, setErr] = useState<string | null>(null);
+  const [check, setCheck] = useState<any>(null);
+  const [done, setDone] = useState<any>(null);
+  const [show, setShow] = useState<"all" | ImportRow["verdict"]>("all");
+
+  async function send(mode: "check" | "all" | "complete") {
+    if (!file) return;
+    setBusy(mode); setErr(null);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("business", business);
+      fd.append("mode", mode);
+      if (mode !== "check" && check?.fingerprint) fd.append("fingerprint", check.fingerprint);
+      const res = await fetch("/api/coordination/import/trips", { method: "POST", body: fd });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || `Failed (${res.status}).`);
+      if (mode === "check") { setCheck(json); setShow(json.summary?.error ? "error" : json.summary?.missing ? "missing" : "all"); }
+      else setDone(json);
+    } catch (e) { setErr((e as Error).message); } finally { setBusy(""); }
+  }
+
+  const rows: ImportRow[] = check?.rows || [];
+  const s = check?.summary || { rows: 0, ok: 0, missing: 0, error: 0, willFreeze: 0 };
+  const visible = show === "all" ? rows : rows.filter((r) => r.verdict === show);
+  const btn = "bmx-btn flex items-center gap-2 rounded-xl px-4 py-2.5 text-[11.5px] font-bold disabled:opacity-50";
+
+  return (
+    <FormPanel
+      open onClose={onClose}
+      icon={<FileSpreadsheet size={20} />}
+      eyebrow="Coordination · data import"
+      title="Import previous working data"
+      subtitle="Challan, tax invoice, receiving and lab report data, from the app's template. Every trading row must name a vendor registered in the app."
+      footer={
+        done ? (
+          <button onClick={onClose} data-testid="import-close"
+            className="bmx-btn rounded-xl bg-biome-leaf px-5 py-2.5 text-[11.5px] font-bold text-white">Back to the register</button>
+        ) : (
+          <>
+            <button onClick={onClose} data-testid="import-cancel"
+              className="bmx-chip rounded-xl border border-biome-line px-4 py-2.5 text-[11.5px] font-semibold text-biome-muted"
+              title="Nothing is saved. Correct the sheet and upload it again.">
+              Cancel
+            </button>
+            {check && (
+              <>
+                <button onClick={() => send("complete")} disabled={!!busy || s.ok === 0} data-testid="import-complete"
+                  className={`${btn} border border-biome-leaf text-biome-leaf`}>
+                  {busy === "complete" ? <Loader2 size={14} className="bmx-spin" /> : <Check size={14} />} Import only complete rows ({s.ok})
+                </button>
+                <button onClick={() => send("all")} disabled={!!busy || s.ok + s.missing === 0} data-testid="import-all"
+                  className={`${btn} bg-biome-leaf text-white`}>
+                  {busy === "all" ? <Loader2 size={14} className="bmx-spin" /> : <Check size={14} />} Import all valid rows — with missing data ({s.ok + s.missing})
+                </button>
+              </>
+            )}
+          </>
+        )
+      }
+    >
+      {done ? (
+        <FormSection title="Imported" sectionIcon={<Check size={14} />} columns={1}>
+          <p className="text-[12.5px] font-semibold text-biome-text" data-testid="import-result">
+            {done.imported} trip{done.imported === 1 ? "" : "s"} imported{done.withMissing ? ` (${done.withMissing} with missing data — they show in the register with their gaps)` : ""}.
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {(done.trips || []).slice(0, 60).map((t: any) => (
+              <span key={`${t.sheet}-${t.row}`} className="rounded-full border border-biome-line px-2 py-0.5 text-[9.5px] text-biome-muted">
+                {t.business === "manufacturing" ? "Mfg" : "Trd"} #{t.serial} ← {t.sheet} row {t.row}
+              </span>
+            ))}
+          </div>
+          {done.skipped?.length > 0 && (
+            <div className="rounded-xl border border-amber-500/30 bg-amber-500/[.07] px-4 py-3">
+              <p className="text-[11.5px] font-semibold text-amber-600">{done.skipped.length} row{done.skipped.length === 1 ? "" : "s"} not imported</p>
+              <ul className="mt-1 space-y-0.5">
+                {done.skipped.slice(0, 100).map((x: any, i: number) => (
+                  <li key={i} className="text-[10.5px] text-biome-muted">{x.sheet} row {x.row} ({x.label}): {x.why}</li>
+                ))}
+              </ul>
+              <p className="mt-1.5 text-[10.5px] text-biome-muted">Correct these rows in the sheet and import it again — rows already imported are recognised as duplicates and are not added twice.</p>
+            </div>
+          )}
+        </FormSection>
+      ) : (
+        <>
+          <FormSection title="1. Template" sectionIcon={<Download size={14} />} columns={1}
+            hint="Trading and Manufacturing sheets, an Instructions sheet, and the registered vendors, plants and clients your rows must match. Dates DD-MM-YYYY, weights in kg (MT allowed).">
+            <a href="/api/coordination/import/template" data-testid="import-template"
+              className="bmx-chip inline-flex w-fit items-center gap-1.5 rounded-xl border border-biome-line px-3.5 py-2.5 text-[11.5px] font-semibold text-biome-text">
+              <Download size={13} /> Download the Excel template
+            </a>
+          </FormSection>
+
+          <FormSection title="2. Upload the filled template" sectionIcon={<Upload size={14} />} columns={2}
+            hint="Nothing is saved at this step. The app lists, per consignment, what is missing and what is wrong.">
+            <F label="Spreadsheet (.xlsx or .csv)">
+              <input type="file" accept=".xlsx,.xlsm,.xls,.csv" data-testid="import-file"
+                onChange={(e) => { setFile(e.target.files?.[0] || null); setCheck(null); setDone(null); setErr(null); }}
+                className="block w-full text-[11.5px] text-biome-muted file:mr-3 file:rounded-xl file:border-0 file:bg-biome-leaf file:px-4 file:py-2 file:text-[11px] file:font-bold file:text-white" />
+            </F>
+            <div className="self-end">
+              <button onClick={() => send("check")} disabled={!file || !!busy} data-testid="import-check"
+                className={`${btn} bg-biome-leaf text-white`}>
+                {busy === "check" ? <Loader2 size={14} className="bmx-spin" /> : <ChevronRight size={14} />} {check ? "Check again" : "Check the file"}
+              </button>
+            </div>
+            {err && <p className="text-[11px] text-rose-500 md:col-span-2" data-testid="import-error">{err}</p>}
+          </FormSection>
+
+          {check && (
+            <FormSection title="3. Review before importing" sectionIcon={<PackageCheck size={14} />} columns={1}
+              hint={`Read ${check.sheetsRead.join(", ")}${check.exampleRowsSkipped ? ` · ${check.exampleRowsSkipped} example row(s) skipped` : ""}${check.ignoredColumns?.length ? ` · columns ignored (not in the template): ${check.ignoredColumns.join(", ")}` : ""}.`}>
+              <div className="grid gap-2 sm:grid-cols-4" data-testid="import-summary">
+                <Stat label="Consignments" value={s.rows} tone="text-biome-text" />
+                <Stat label="Complete" value={s.ok} tone="text-emerald-600" />
+                <Stat label="Missing data" value={s.missing} tone="text-amber-600" />
+                <Stat label="Errors (not imported)" value={s.error} tone="text-rose-500" />
+              </div>
+              {s.error > 0 && (
+                <p className="text-[11px] leading-relaxed text-rose-500">
+                  {s.error} row{s.error === 1 ? " has" : "s have"} errors and will not be imported with either button. Cancel, correct the sheet and upload it again — or import the valid rows now and the corrected ones later.
+                </p>
+              )}
+              {s.willFreeze > 0 && (
+                <p className="text-[10.5px] leading-relaxed text-biome-muted">
+                  {s.willFreeze} row{s.willFreeze === 1 ? " was" : "s were"} received more than a week ago and will be frozen on import, like any other trip — later corrections need an admin&rsquo;s approval.
+                </p>
+              )}
+              <div className="flex flex-wrap gap-1.5">
+                {(["all", "error", "missing", "ok"] as const).map((k) => (
+                  <button key={k} onClick={() => setShow(k)}
+                    className={`rounded-full border px-2.5 py-1 text-[10.5px] font-semibold ${show === k ? "border-biome-leaf bg-biome-leaf/10 text-biome-leaf" : "border-biome-line text-biome-muted"}`}>
+                    {k === "all" ? `All (${s.rows})` : k === "error" ? `Errors (${s.error})` : k === "missing" ? `Missing data (${s.missing})` : `Complete (${s.ok})`}
+                  </button>
+                ))}
+              </div>
+              <div className="space-y-1.5" data-testid="import-rows">
+                {visible.slice(0, 500).map((r) => {
+                  const [label, card, badge] = VERDICT_STYLE[r.verdict];
+                  return (
+                    <div key={`${r.sheet}-${r.rowNumber}`} data-verdict={r.verdict} className={`rounded-xl border px-3 py-2 ${card}`}>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-mono text-[10px] text-biome-muted">{r.sheet} · row {r.rowNumber}</span>
+                        <span className="text-[11.5px] font-semibold text-biome-text">{r.label}</span>
+                        <span className="text-[10.5px] text-biome-muted">{r.vendor || "—"} → {r.client || "—"}</span>
+                        <span className={`rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase tracking-[.08em] ${badge}`}>{label}</span>
+                      </div>
+                      {r.errors.map((e, i) => <p key={i} className="mt-0.5 text-[10.5px] font-semibold text-rose-500">✕ {e}</p>)}
+                      {r.missing.length > 0 && (
+                        <p className="mt-0.5 text-[10.5px] text-amber-700">Missing: {r.missing.join(", ")}</p>
+                      )}
+                      {r.warnings.map((w, i) => <p key={i} className="mt-0.5 text-[10px] text-biome-muted">⚠ {w}</p>)}
+                    </div>
+                  );
+                })}
+                {visible.length > 500 && <p className="text-[10.5px] text-biome-muted">…and {visible.length - 500} more.</p>}
+              </div>
+            </FormSection>
           )}
         </>
       )}

@@ -293,6 +293,51 @@ export interface AgentState {
   };
 }
 
+// ==================== chats to watch ====================
+
+/** One chat as the agent's GET /chats lists it. */
+export interface WaChat {
+  jid: string;
+  name: string | null;
+  isGroup: boolean;
+  lastSeen: string | null;
+  documentCount: number;
+  messageCount: number;
+  participants: number | null;
+  /** Watched in any role (or "watch everything" is on). */
+  watched: boolean;
+  /** Sales / supply paperwork — the main "Watch" switch. */
+  selected: boolean;
+  receivingSelected: boolean;
+  labSelected: boolean;
+  learnFrom: boolean;
+  /** A group whose name looks like the supply/sales group. */
+  suggested: boolean;
+}
+
+export type WaChatRole = "sales" | "receiving" | "lab" | "learn";
+
+export interface WaChatsResponse {
+  chats: WaChat[];
+  watchingAll: boolean;
+  allowedChats: string[];
+  receivingChats: string[];
+  labChats: string[];
+  learnChats: string[];
+  listState?: {
+    status: AgentStatus | string;
+    engine: string | null;
+    linked: boolean;
+    loading: boolean;
+    refreshedAt: string | null;
+    lastError: string | null;
+    groups: number;
+    people: number;
+  };
+  refreshed?: number;
+  note?: string;
+}
+
 // ==================== vendor registry ====================
 
 export interface VendorKycFile {

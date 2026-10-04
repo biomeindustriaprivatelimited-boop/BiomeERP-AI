@@ -3,7 +3,8 @@
 import { useState } from "react";
 import Link from "next/link";
 import BiomeLogo from "@/components/brand/BiomeLogo";
-import { FEATURE_MAP } from "@/lib/featureMap";
+import { FEATURE_MAP, visibleFeatures } from "@/lib/featureMap";
+import { homePathFor } from "@/lib/permissions";
 import { ICONS } from "@/components/hub/icons";
 
 /** next/link wrapped for framer-motion so nav items can stagger in. */
@@ -116,7 +117,8 @@ const NAV_SECTIONS: NavSection[] = [
 
 export default function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
   const pathname = usePathname();
-  const { can, user } = useSession();
+  const { can, user, permissions, visible } = useSession();
+  const homeHref = homePathFor(user?.role, permissions);
   const [openBranches, setOpenBranches] = useState<Record<string, boolean>>({});
   const [collapsed, setCollapsed] = useState(false);
   /**
@@ -136,11 +138,18 @@ export default function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
    */
   const allowed = (item: NavItem): NavItem | null => {
     if (item.categoryId) {
+      // Visible only when something inside it is: permission held AND the
+      // module not frozen/off (developer excepted). Never drawn greyed out.
       const cat = FEATURE_MAP.find((c) => c.id === item.categoryId);
-      const any = cat?.features.some((f) => !f.perm || can(f.perm as any));
+      const any = cat ? visibleFeatures(cat.features, visible).length > 0 : false;
       return any ? { ...item, children: [] } : null;
     }
-    if (item.perm && !can(item.perm)) {
+    if (item.href === "/") {
+      // Home goes where this person's home actually is — the plant
+      // dashboard for a plant manager rather than a redirect bounce.
+      return { ...item, href: homeHref, label: homeHref === "/plant-home" ? "Plant home" : item.label };
+    }
+    if ((item.perm && !can(item.perm)) || !visible(item.href)) {
       // A parent the person may not open can still hold sub-features they may.
       const kids = (item.children || []).map(allowed).filter(Boolean) as NavItem[];
       return kids.length ? { ...kids[0], children: kids.slice(1) } : null;
@@ -342,18 +351,19 @@ export default function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
               className="overflow-visible"
             >
               <div className="mt-2 space-y-1 rounded-xl border border-[#9fe870]/12 bg-white/[0.03] p-2">
-                <Link
-                  href="/company"
-                  className="block rounded-lg px-2.5 py-1.5 text-[11px] text-[#e2f6d5]/70 transition-colors hover:bg-white/5 hover:text-white"
-                >
-                  Company profile
-                </Link>
-                <Link
-                  href="/settings"
-                  className="block rounded-lg px-2.5 py-1.5 text-[11px] text-[#e2f6d5]/70 transition-colors hover:bg-white/5 hover:text-white"
-                >
-                  Settings &amp; appearance
-                </Link>
+                {/* Only links this person can open — a plant manager has
+                    neither the company profile nor settings. */}
+                {([["/company", "Company profile"], ["/settings", "Settings & appearance"], ["/support", "Help & support"]] as const)
+                  .filter(([href]) => visible(href))
+                  .map(([href, label]) => (
+                    <Link
+                      key={href}
+                      href={href}
+                      className="block rounded-lg px-2.5 py-1.5 text-[11px] text-[#e2f6d5]/70 transition-colors hover:bg-white/5 hover:text-white"
+                    >
+                      {label}
+                    </Link>
+                  ))}
               </div>
             </motion.div>
           )}

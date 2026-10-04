@@ -83,7 +83,7 @@ const QUICK_ACTIONS = [
 ];
 
 export default function DashboardPage() {
-  const { can } = useSession();
+  const { can, visible } = useSession();
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [tallyError, setTallyError] = useState<string | null>(null);
@@ -310,11 +310,11 @@ export default function DashboardPage() {
       <section>
         <section className="mb-6">
         <div className="mb-3 flex items-end justify-between"><h2 className="biome-shout text-[22px] leading-none text-biome-text">Open the OS<span className="text-biome-leafBright">.</span></h2><p className="text-[11px] text-biome-muted">Click a category → its features → their options.</p></div>
-        <CategoryGrid categories={FEATURE_MAP} can={(p) => can(p as any)} />
+        <CategoryGrid categories={FEATURE_MAP} />
       </section>
       <h2 className="mb-3 font-display text-[15px] font-semibold text-biome-text">Quick Actions</h2>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
-          {QUICK_ACTIONS.map((a, i) => (
+          {QUICK_ACTIONS.filter((a) => visible(a.href)).map((a, i) => (
             <motion.div key={a.href} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.08 + i * 0.04 }}>
               <Link
                 href={a.href}

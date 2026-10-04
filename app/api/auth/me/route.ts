@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSession, findById, publicUser } from "@/lib/authServer";
 import { permissionsFor } from "@/lib/permissions";
-import { effectivePermissions } from "@/lib/access";
+import { effectivePermissions, inactiveSwitches } from "@/lib/access";
 import { SERVER_PC_HEADER, isServerPcRequest } from "@/lib/authToken";
 import { serverReady, setServerOwner } from "@/lib/serverOwner";
 
@@ -39,5 +39,8 @@ export async function GET(req: NextRequest) {
     // the developer made would work on the server and stay invisible in
     // the menu, and a revoke would leave a link that 403s when clicked.
     permissions: effectivePermissions(user.role, user.access),
+    // Modules the developer has frozen or switched off. The menu, hubs,
+    // search and home tiles hide them for everyone but the developer.
+    switches: (() => { try { return inactiveSwitches(); } catch { return []; } })(),
   });
 }

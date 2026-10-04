@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import FormPanel, { FormSection } from "@/components/FormPanel";
 import { EmptyState } from "@/components/SetupGuide";
+import HolidayAnnounce from "@/components/attendance/HolidayAnnounce";
 
 /**
  * Leave.
@@ -44,7 +45,7 @@ export default function LeavePage() {
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<Record<string, string>>({});
   const today = new Date().toISOString().slice(0, 10);
-  const [form, setForm] = useState({ type: "sick", fromDate: today, toDate: today, reason: "" });
+  const [form, setForm] = useState({ type: "sick", fromDate: today, toDate: today, reason: "", employeeId: "" });
 
   const load = useCallback(async () => {
     try {
@@ -67,7 +68,7 @@ export default function LeavePage() {
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json.error || `Failed (${res.status}).`);
-      setForm({ ...form, reason: "" });
+      setForm({ ...form, reason: "", employeeId: "" });
       setOpen(false);
       await load();
     } catch (err) { setError((err as Error).message); } finally { setBusy(false); }
@@ -103,7 +104,7 @@ export default function LeavePage() {
               : "Apply here when you cannot come in. A request covering the day also stops the attendance reminders."}
           </p>
         </div>
-        {data?.me && (
+        {(data?.me || data?.canApplyFor) && (
           <button onClick={() => setOpen(true)}
             className="bmx-btn flex items-center gap-2 rounded-xl bg-biome-leaf px-4 py-2.5 text-[11.5px] font-bold text-white">
             <Plus size={14} /> Apply for leave
@@ -142,7 +143,7 @@ export default function LeavePage() {
         </div>
       )}
 
-      {!data?.me && data && !data.canDecide && (
+      {!data?.me && data && !data.canDecide && !data.canApplyFor && (
         <EmptyState
           title="No employee record is linked to your login"
           detail="Leave is applied against an employee record. Ask the admin to link yours, then this page will work."
@@ -243,6 +244,18 @@ export default function LeavePage() {
           </>
         }
       >
+        {data?.canApplyFor && (data?.staff || []).length > 0 && (
+          <FormSection title="For whom" sectionIcon={<Info size={14} />} columns={1}>
+            <select value={form.employeeId} onChange={(e) => setForm({ ...form, employeeId: e.target.value })}
+              className={inputCls} aria-label="Employee">
+              <option value="">{data?.me ? `Myself (${data.me.name})` : "Choose an employee…"}</option>
+              {(data.staff as any[]).filter((e) => e.id !== data?.me?.id).map((e) => (
+                <option key={e.id} value={e.id}>{e.name} ({e.code}){e.plant ? ` · ${e.plant}` : ""}</option>
+              ))}
+            </select>
+          </FormSection>
+        )}
+
         <FormSection title="What kind of leave" sectionIcon={<Plane size={14} />} columns={1}>
           <div className="flex flex-wrap gap-2">
             {(data?.types || []).map((t: any) => (
@@ -375,10 +388,13 @@ function HolidayPanel() {
           <Sun size={15} className="text-biome-leaf" /> Public holidays
         </h2>
         {canEdit && (
-          <button onClick={() => setAdding((v) => !v)}
-            className="bmx-chip flex items-center gap-1.5 rounded-xl border border-biome-line px-3.5 py-2 text-[11.5px] font-semibold text-biome-muted">
-            <Plus size={13} /> {adding ? "Close" : "Add a holiday or shutdown"}
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <HolidayAnnounce onDone={load} />
+            <button onClick={() => setAdding((v) => !v)}
+              className="bmx-chip flex items-center gap-1.5 rounded-xl border border-biome-line px-3.5 py-2 text-[11.5px] font-semibold text-biome-muted">
+              <Plus size={13} /> {adding ? "Close" : "Add to calendar (by state)"}
+            </button>
+          </div>
         )}
       </div>
 

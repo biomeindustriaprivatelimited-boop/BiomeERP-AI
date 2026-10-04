@@ -3,7 +3,7 @@ import path from "path";
 import { requirePermission, findById } from "@/lib/authServer";
 import { paths, readJson, writeJsonAtomic, ensureDir } from "@/lib/dataRoot";
 import { loadEmployees } from "@/lib/payroll";
-import { loadMonth, totalsFor } from "@/lib/attendance";
+import { loadAllRegisters, totalsFor } from "@/lib/attendance";
 import {
   loadLeave, loadRules, loadHolidays, regionForEmployee, chaseStageFor,
 } from "@/lib/leave";
@@ -51,7 +51,7 @@ function buildList(dateArg: string | null) {
   const employees = loadEmployees().filter((e) => e.active);
 
   // The register is stored per plant, so all three files are read.
-  const registers = [loadMonth(month, ""), loadMonth(month, "REW"), loadMonth(month, "GKD")];
+  const registers = loadAllRegisters(month);
   const marked = new Set<string>();
   for (const reg of registers) {
     for (const row of reg.rows) {

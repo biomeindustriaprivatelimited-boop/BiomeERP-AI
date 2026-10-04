@@ -3,6 +3,7 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { requirePermission, findById, getSession } from "@/lib/authServer";
+import { effectivePermissions } from "@/lib/access";
 import { hasPermission } from "@/lib/permissions";
 import { paths, ensureDir } from "@/lib/dataRoot";
 import { loadEmployees, saveEmployees, DOCUMENT_CATEGORIES, LETTER_KINDS } from "@/lib/payroll";
@@ -36,6 +37,13 @@ export async function GET(req: NextRequest) {
 
   const employee = loadEmployees().find((e) => e.id === employeeId);
   if (!employee) return NextResponse.json({ error: "Not found." }, { status: 404 });
+  // KYC files are plant-scoped exactly like the employee list: a plant
+  // manager reads their own plant's people's papers and nobody else's.
+  const viewer = findById(auth.session.uid)!;
+  if (!effectivePermissions(viewer.role, viewer.access).includes("payroll") &&
+      !(auth.session.plant && employee.plant === auth.session.plant)) {
+    return NextResponse.json({ error: "Not found." }, { status: 404 });
+  }
 
   const doc = employee.documents.find((d) => d.id === documentId);
   if (!doc) return NextResponse.json({ error: "Not found." }, { status: 404 });
@@ -64,11 +72,11 @@ export async function POST(req: NextRequest) {
   const auth = await requirePermission(req, "employee.docs");
   if ("response" in auth) return auth.response;
   const user = findById(auth.session.uid)!;
-  const canSeeAll = hasPermission(user.role, "payroll");
+  const canSeeAll = effectivePermissions(user.role, user.access).includes("payroll");
 
   /** A plant manager may only touch their own plant's people. */
   const inScope = (employeePlant: string) =>
-    canSeeAll || !auth.session.plant || employeePlant === auth.session.plant;
+    canSeeAll || (Boolean(auth.session.plant) && employeePlant === auth.session.plant);
 
   const contentType = req.headers.get("content-type") || "";
 

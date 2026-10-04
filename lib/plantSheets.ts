@@ -15,6 +15,8 @@
  * the plant manager already works in.
  */
 
+export type SuggestKind = "vendor" | "transporter" | "client";
+
 /** Sheet folder of a plant: "rewari" (Mayan), "gangakhed", or a new plant's code. */
 export type PlantId = string;
 
@@ -34,6 +36,15 @@ export interface SheetColumn {
   hint?: string;
   /** Weight entry: typed in kg, qtl or MT, stored in kg. */
   unit?: "kg";
+  /**
+   * Typeahead fed by the partners register — only this plant's registered
+   * vendors / transporters / clients (see /api/partners/suggest).
+   */
+  suggest?: SuggestKind | SuggestKind[];
+  /** What the typeahead matches and fills: the partner's name or its code. */
+  suggestField?: "name" | "code";
+  /** Sibling column filled with the other half (code ↔ name) on pick. */
+  pairKey?: string;
 }
 
 const num = (v: any) => {
@@ -54,8 +65,8 @@ export const REWARI_COLUMNS: SheetColumn[] = [
   // always carries a vehicle number, and it is the field that tells a typo
   // apart from the wrong slip being attached.
   { cell: "EA", key: "vehicleNo", label: "Vehicle No.", kind: "entry", width: 120, hint: "Checked against the weight slip" },
-  { cell: "F", key: "vendorCode", label: "Vendor Code", kind: "entry", width: 110 },
-  { cell: "G", key: "name", label: "Name", kind: "entry", width: 150 },
+  { cell: "F", key: "vendorCode", label: "Vendor Code", kind: "entry", width: 110, suggest: "vendor", suggestField: "code", pairKey: "name" },
+  { cell: "G", key: "name", label: "Name", kind: "entry", width: 150, suggest: "vendor", suggestField: "name", pairKey: "vendorCode" },
   { cell: "H", key: "village", label: "Village Location", kind: "entry", width: 140 },
   { cell: "I", key: "fs", label: "F/S", kind: "entry", width: 60, hint: "Farmer or Supplier" },
   { cell: "J", key: "grossWeight", label: "Gross Weight (kg)", kind: "entry", type: "number", unit: "kg", width: 110 },
@@ -129,8 +140,8 @@ export const REWARI_COLUMNS: SheetColumn[] = [
 
   // ---- Shifting: paid to a second party who moves the material ----
   { cell: "AC", key: "shiftingApplicable", label: "Shifting Applicable", kind: "entry", type: "yesno", width: 130 },
-  { cell: "AD", key: "shifterName", label: "Name of Shifter", kind: "entry", width: 150 },
-  { cell: "AE", key: "shifterVendorCode", label: "Shifter Vendor Code", kind: "entry", width: 140 },
+  { cell: "AD", key: "shifterName", label: "Name of Shifter", kind: "entry", width: 150, suggest: ["transporter", "vendor"], suggestField: "name", pairKey: "shifterVendorCode" },
+  { cell: "AE", key: "shifterVendorCode", label: "Shifter Vendor Code", kind: "entry", width: 140, suggest: ["transporter", "vendor"], suggestField: "code", pairKey: "shifterName" },
   {
     cell: "AF", key: "shiftPayableWeight", label: "Payble Weight", kind: "derived", type: "number", width: 120,
     formula: '=IF(AC{row}="YES",L{row},"0")',
@@ -184,8 +195,8 @@ export const GANGAKHED_COLUMNS: SheetColumn[] = [
   // always carries a vehicle number, and it is the field that tells a typo
   // apart from the wrong slip being attached.
   { cell: "EA", key: "vehicleNo", label: "Vehicle No.", kind: "entry", width: 120, hint: "Checked against the weight slip" },
-  { cell: "F", key: "vendorCode", label: "Vendor Code", kind: "entry", width: 110 },
-  { cell: "G", key: "vendorName", label: "Vendor Name", kind: "entry", width: 170 },
+  { cell: "F", key: "vendorCode", label: "Vendor Code", kind: "entry", width: 110, suggest: "vendor", suggestField: "code", pairKey: "vendorName" },
+  { cell: "G", key: "vendorName", label: "Vendor Name", kind: "entry", width: 170, suggest: "vendor", suggestField: "name", pairKey: "vendorCode" },
   { cell: "H", key: "grossWeight", label: "Gross Weight (kg)", kind: "entry", type: "number", unit: "kg", width: 110 },
   { cell: "I", key: "tareWeight", label: "Tare Weight (kg)", kind: "entry", type: "number", unit: "kg", width: 110 },
   {
@@ -225,7 +236,7 @@ export const TRANSPORT_COLUMNS: SheetColumn[] = [
   { cell: "A", key: "srNo", label: "S/No.", kind: "entry", type: "number", width: 60 },
   { cell: "B", key: "date", label: "Date", kind: "entry", type: "date", width: 110 },
   { cell: "C", key: "kantaParchi", label: "Kanta Parchi", kind: "entry", width: 120 },
-  { cell: "D", key: "partyName", label: "Party Name", kind: "entry", width: 140 },
+  { cell: "D", key: "partyName", label: "Party Name", kind: "entry", width: 140, suggest: "client", suggestField: "name" },
   { cell: "E", key: "to", label: "To", kind: "entry", width: 130 },
   { cell: "F", key: "inTime", label: "In Time", kind: "entry", width: 100 },
   { cell: "G", key: "weight", label: "Weight (kg)", kind: "entry", type: "number", unit: "kg", width: 100, hint: "Dispatch weight" },
@@ -253,7 +264,7 @@ export const TRANSPORT_COLUMNS: SheetColumn[] = [
   // Added at the company's request: a driver without a number is a driver
   // nobody can reach when a truck is late at the gate.
   { cell: "M", key: "driverMobile", label: "Driver Mobile", kind: "entry", width: 130, hint: "10-digit mobile" },
-  { cell: "N", key: "transporter", label: "Transporter", kind: "entry", width: 150 },
+  { cell: "N", key: "transporter", label: "Transporter", kind: "entry", width: 150, suggest: "transporter", suggestField: "name" },
   { cell: "O", key: "rate", label: "Rate", kind: "entry", type: "number", width: 90 },
   { cell: "P", key: "daala", label: "Daala", kind: "entry", type: "number", width: 90 },
   {

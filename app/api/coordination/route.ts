@@ -1,4 +1,3 @@
-import { toKg } from "@/lib/units";
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission, findById } from "@/lib/authServer";
 import { hasPermission } from "@/lib/permissions";
@@ -8,7 +7,7 @@ import { checkConsumption, loadPoFile, savePoFile, vendorQtyOf, clientQtyOf } fr
 import {
   loadTrips, saveTrips, blankTrip, shortageFor, derivedStatus, summarise,
   byParty, gapsFor, lockStateFor, pendingRequestFor, loadEditRequests,
-  TRIP_STATUS, DEFAULT_SHORTAGE_RULES, FREEZE_DAYS, Trip, TripStatus,
+  TRIP_STATUS, DEFAULT_SHORTAGE_RULES, FREEZE_DAYS, Trip, readTripInput,
 } from "@/lib/coordination";
 import {
   issueNumber, voidNumber, numberClash, registerManualNumber, seriesById, methodOf,
@@ -32,25 +31,11 @@ function pokeAgentSweep() {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const STATUSES = TRIP_STATUS.map((s) => s.id);
-
-function kgOf(v: unknown): number {
-  const kg = toKg(v, { vehicle: true });
-  return kg !== null && kg > 0 ? kg : 0;
-}
-
-function num(v: unknown): number {
-  const n = Number(String(v ?? "").replace(/[,\s]/g, ""));
-  return Number.isFinite(n) && n >= 0 ? n : 0;
-}
 function str(v: unknown, max = 120): string {
   return String(v ?? "").trim().slice(0, max);
 }
 function business(v: unknown): BusinessType {
   return v === "manufacturing" ? "manufacturing" : "trading";
-}
-function docTypeOf(v: unknown, fallback: DocType = "delivery_challan"): DocType {
-  return v === "tax_invoice" ? "tax_invoice" : v === "delivery_challan" ? "delivery_challan" : fallback;
 }
 
 function loadClients(): Client[] {
@@ -450,52 +435,7 @@ function poGuard(trip: Trip, existing: Trip | null, override: boolean): { error:
   }
   return null;
 }
+/** One reader for the form and the data import — see readTripInput. */
 function readTrip(body: any, reg: BusinessType): Partial<Trip> {
-  const status = STATUSES.includes(body.status) ? (body.status as TripStatus) : undefined;
-  const out: Partial<Trip> = {
-    business: reg,
-    docType: docTypeOf(body.docType),
-    seriesId: str(body.seriesId, 60),
-    ourDocDate: str(body.ourDocDate, 10),
-    client: str(body.client), location: str(body.location, 60),
-    poNumber: str(body.poNumber, 60), poDate: str(body.poDate, 10),
-    vendorPoId: body.vendorPoId ? str(body.vendorPoId, 60) : null,
-    clientPoId: body.clientPoId ? str(body.clientPoId, 60) : null,
-    vehicleNumber: str(body.vehicleNumber, 20).toUpperCase().replace(/[^A-Z0-9]/g, ""),
-    vehicleEntryDate: str(body.vehicleEntryDate, 10),
-    vendorChallanDate: str(body.vendorChallanDate, 10),
-    // Weights in kg: "28.4 MT" / "284 qtl" / a bare 28.4 are converted.
-    vendorChallanWeight: kgOf(body.vendorChallanWeight),
-    vendorChallanAmount: num(body.vendorChallanAmount),
-    referenceNo: str(body.referenceNo, 40).toUpperCase().replace(/\s+/g, ""),
-    receivingDate: str(body.receivingDate, 10),
-    receivingQty: kgOf(body.receivingQty),
-    ccWeight: kgOf(body.ccWeight),
-    debitNoteNo: str(body.debitNoteNo, 40),
-    creditNoteNo: str(body.creditNoteNo, 40),
-    cancellationReason: str(body.cancellationReason, 300),
-    remarks: str(body.remarks, 400),
-    checklistRemarks: str(body.checklistRemarks, 400),
-  };
-
-  // Manufacturing is our own material. Carrying a vendor here would put a
-  // supplier's name on a supply they had nothing to do with — and it would
-  // land in the per-supplier shortfall table, which is read as blame.
-  if (reg === "manufacturing") {
-    out.plant = str(body.plant, 10).toUpperCase().replace(/[^A-Z0-9]/g, "");
-    out.supplier = "";
-    out.supplierCode = "";
-    out.vendorDocType = "";
-    out.vendorChallanNo = "";
-    out.vendorInvoiceNo = "";
-  } else {
-    out.supplier = str(body.supplier);
-    out.supplierCode = str(body.supplierCode, 20).toUpperCase();
-    out.vendorDocType = body.vendorDocType === "tax_invoice" || body.vendorDocType === "delivery_challan" ? body.vendorDocType : "";
-    out.vendorChallanNo = str(body.vendorChallanNo, 40);
-    out.vendorInvoiceNo = str(body.vendorInvoiceNo, 40);
-  }
-
-  if (status) out.status = status;
-  return out;
+  return readTripInput(body, reg);
 }

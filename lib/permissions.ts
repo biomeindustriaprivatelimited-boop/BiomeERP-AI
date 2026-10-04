@@ -355,6 +355,11 @@ export const ROUTE_PERMISSIONS: { prefix: string; permission: Permission }[] = [
   { prefix: "/api/audit", permission: "users" },
   { prefix: "/api/letters", permission: "employee.view" },
   { prefix: "/api/attendance/chase", permission: "attendance.approve" },
+  // Holiday / shutdown announcements are developer + admin only (the same
+  // key /api/holidays already uses for add/edit/delete). Without this line
+  // the longer /api/attendance prefix let anyone with attendance.entry —
+  // a plant manager — mail a holiday notice to everyone.
+  { prefix: "/api/attendance/holiday-email", permission: "users" },
   { prefix: "/api/attendance", permission: "attendance.entry" },
   { prefix: "/api/leave", permission: "attendance.entry" },
   { prefix: "/api/holidays", permission: "attendance.entry" },
@@ -515,7 +520,10 @@ export const PLANTS: { code: string; label: string }[] = [
 export function landingPathFor(role: Role | null | undefined): string {
   switch (role) {
     case "plant_manager":
-      return "/plants";
+      // The plant dashboard: shortcut tiles to everything the plant
+      // manager may use, plus the plant's own counts. Needs no permission
+      // of its own (only sign-in) and draws only tiles the person can open.
+      return "/plant-home";
     case "coordinator":
       return "/documents";
     case "procurement":
@@ -525,10 +533,18 @@ export function landingPathFor(role: Role | null | undefined): string {
   }
 }
 
+/**
+ * Where a "Home" link should point for this person. "/" is the finance
+ * dashboard; without `finance` it would only bounce through a redirect.
+ */
+export function homePathFor(role: Role | null | undefined, perms: string[]): string {
+  return perms.includes("finance") ? "/" : landingPathFor(role);
+}
+
 
 /**
  * What each permission opens and why a person would need it — shown in
- * Users & Access so a grant is a considered decision, not a guess.
+ * Users & Access so activating a feature is a considered decision, not a guess.
  */
 export const PERMISSION_INFO: Record<string, { label: string; what: string; why: string; risk: "low" | "medium" | "high" }> = {
   "imprest.entry": { label: "Imprest — file entries", what: "File expenses, cash returns and see own float.", why: "Anyone who spends company cash in the field.", risk: "low" },
@@ -546,7 +562,7 @@ export const PERMISSION_INFO: Record<string, { label: string; what: string; why:
   customers: { label: "Clients", what: "Client master and document requirements.", why: "Coordinators and accounts.", risk: "medium" },
   partners: { label: "Registration", what: "Register vendors/transporters with KYC (plant managers: own site, raw material; coordinators: trading).", why: "Whoever onboards suppliers.", risk: "medium" },
   "employee.view": { label: "Employees", what: "Employee master and KYC files.", why: "HR/accounts and plant managers.", risk: "high" },
-  "attendance.entry": { label: "Attendance & Leave", what: "Mark attendance, decide leave, send holiday notices.", why: "Plant managers and accounts.", risk: "medium" },
+  "attendance.entry": { label: "Attendance & Leave", what: "Mark attendance and apply/decide leave. (Holiday announcements are admin/developer only.)", why: "Plant managers and accounts.", risk: "medium" },
   payroll: { label: "Payroll", what: "Salary runs, payslips, PF/ESIC, organisation lists.", why: "Accounts only.", risk: "high" },
   reports: { label: "Reports & Report Builder", what: "Module reports (imprest, coordination, transport, biomass, stock, vendors…) as PDF and Excel — only over data the person can already see.", why: "Management, accounts, and each team for its own data.", risk: "medium" },
   stock: { label: "Plant stock", what: "See spare-part stock, receive parts (GRN), issue parts to machines. Plant managers: own plant.", why: "Plant managers, stores, procurement.", risk: "medium" },
@@ -558,7 +574,23 @@ export const PERMISSION_INFO: Record<string, { label: string; what: string; why:
   work: { label: "Command Center & Work", what: "Command Center, forms, entity search, PO alerts.", why: "Management and coordinators.", risk: "medium" },
   "release.read": { label: "Release notes", what: "See what changed in each update.", why: "Everyone.", risk: "low" },
   announce: { label: "Announcements", what: "Post announcements to staff.", why: "Developer/admin.", risk: "medium" },
-  "access.grant": { label: "Access control", what: "Grant or revoke permissions for others.", why: "Developer only.", risk: "high" },
+  "access.grant": { label: "Access control", what: "Activate or deactivate features for each person.", why: "Developer only.", risk: "high" },
   "feature.switch": { label: "Feature switches", what: "Freeze or switch off a module.", why: "Developer only.", risk: "high" },
   developer: { label: "Developer", what: "Developer screen, Server & Sync, developer-preview features, override edits.", why: "The developer only.", risk: "high" },
+  // Friendly names for the remaining keys, so the access editor never
+  // shows a bare key like "operations.entry" to the person deciding.
+  tally: { label: "Tally (live data)", what: "Read the Tally company — Tally reports, analytics, live ledgers.", why: "Accounts only.", risk: "high" },
+  assistant: { label: "AI Assistant", what: "The BIOME AI business assistant.", why: "Office roles.", risk: "medium" },
+  "operations.entry": { label: "Plant & transport entry", what: "Create and edit plant and transport entries.", why: "Plant managers.", risk: "medium" },
+  "imprest.approve": { label: "Imprest — approve", what: "Accept or reject imprest entries put in front of you.", why: "Accounts and managers.", risk: "medium" },
+  "imprest.viewAll": { label: "Imprest — every holder", what: "Read every imprest holder's full ledger.", why: "Admin.", risk: "high" },
+  "imprest.manage": { label: "Imprest — manage holders", what: "Add and edit imprest holders and their floats.", why: "Accounts.", risk: "medium" },
+  "payroll.approve": { label: "Payroll — lock & pay", what: "Lock a salary month and mark it paid.", why: "Accounts head.", risk: "high" },
+  "employee.add": { label: "Employees — add", what: "Put a new person on the rolls.", why: "HR/accounts and plant managers.", risk: "medium" },
+  "employee.docs": { label: "Employees — documents", what: "Upload supporting documents for a person.", why: "HR/accounts and plant managers.", risk: "medium" },
+  "employee.edit": { label: "Employees — edit", what: "Change an existing employee record.", why: "Admin.", risk: "high" },
+  "employee.freeze": { label: "Employees — freeze/remove", what: "Freeze or remove a person from the rolls.", why: "Admin.", risk: "high" },
+  "attendance.approve": { label: "Attendance — approve", what: "Approve attendance, correct older days, chase missing marks.", why: "Accounts.", risk: "medium" },
+  "support.manage": { label: "Support — answer tickets", what: "See and answer everyone's support tickets.", why: "Admin/accounts.", risk: "low" },
+  "release.publish": { label: "Release notes — publish", what: "Announce a new version to everyone.", why: "Admin.", risk: "medium" },
 };

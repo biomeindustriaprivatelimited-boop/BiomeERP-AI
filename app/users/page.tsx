@@ -174,6 +174,11 @@ export default function UsersPage() {
           Roles decide what each person can open. Plant managers see only plant work — no Tally, no
           WhatsApp.
         </p>
+        {isDeveloper && (
+          <a href="/developer" className="mt-2 inline-flex items-center gap-1.5 rounded-xl border border-biome-leaf/35 bg-biome-leaf/10 px-3 py-1.5 text-[11px] font-semibold text-biome-leaf">
+            <ShieldCheck size={12} /> Feature access per person — see Active / Inactive, Activate or Deactivate
+          </a>
+        )}
       </header>
 
       {error && (

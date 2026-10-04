@@ -8,6 +8,28 @@ import {
   checkLeaveRequest, regionForEmployee, loadHolidays, LeaveRequest, LeaveType,
 } from "@/lib/leave";
 import { recordAudit } from "@/lib/audit";
+import { effectivePermissions } from "@/lib/access";
+import { loadRules } from "@/lib/leave";
+import type { User } from "@/lib/authServer";
+
+/**
+ * Who decides, and whose leave a person may raise.
+ *
+ * Approvers (attendance.approve) decide and may raise for anyone. A plant
+ * manager (attendance.entry + employee.view, signed in for a plant) may
+ * RAISE leave for their own plant's people when the developer's rule
+ * `plantManagerLeave` is on — most of them are labour with no login.
+ * They never decide it.
+ */
+function leaveContext(user: User, sessionPlant: string | null) {
+  const perms = effectivePermissions(user.role, user.access);
+  const canDecide = perms.includes("attendance.approve");
+  const staff = !canDecide && sessionPlant && perms.includes("employee.view") &&
+    perms.includes("attendance.entry") && loadRules().plantManagerLeave
+    ? loadEmployees().filter((e) => e.active && e.plant === sessionPlant)
+    : [];
+  return { canDecide, staff };
+}
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,15 +46,16 @@ export async function GET(req: NextRequest) {
   const user = findById(session.uid);
   if (!user || !user.active) return NextResponse.json({ error: "Not found." }, { status: 404 });
 
-  const canDecide = hasPermission(user.role, "attendance.approve");
+  const { canDecide, staff } = leaveContext(user, session.plant || null);
   const me = employeeFor(user);
   const all = loadLeave();
+  const staffIds = new Set(staff.map((e) => e.id));
 
-  // An employee sees their own requests; whoever approves sees the queue.
-  // Nobody browses a colleague's medical leave.
+  // An employee sees their own requests; whoever approves sees the queue;
+  // a plant manager sees their plant's. Nobody browses another plant's.
   const requests = canDecide
     ? all
-    : all.filter((r) => r.employeeId === me?.id || r.raisedBy === user.id);
+    : all.filter((r) => r.employeeId === me?.id || r.raisedBy === user.id || staffIds.has(r.employeeId));
 
   const month = req.nextUrl.searchParams.get("month") || new Date().toISOString().slice(0, 7);
 
@@ -40,6 +63,10 @@ export async function GET(req: NextRequest) {
     requests: [...requests].sort((a, b) => b.raisedAt.localeCompare(a.raisedAt)),
     types: LEAVE_TYPES,
     canDecide,
+    canApplyFor: canDecide || staff.length > 0,
+    // The people this person may raise leave for (approvers: everyone active).
+    staff: (canDecide ? loadEmployees().filter((e) => e.active) : staff)
+      .map((e) => ({ id: e.id, name: e.name, code: e.code, plant: e.plant })),
     me: me ? { id: me.id, name: me.name, code: me.code, plant: me.plant } : null,
     balances: me ? balancesFor(me.id, month, all) : [],
     holidays: loadHolidays(),
@@ -57,13 +84,16 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null);
   if (!body) return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
 
-  const canDecide = hasPermission(user.role, "attendance.approve");
+  const { canDecide, staff } = leaveContext(user, session.plant || null);
   const employees = loadEmployees().filter((e) => e.active);
   // Accounts and the admin may apply on someone's behalf — a labourer with
-  // no login still needs their leave on record.
-  const target = canDecide && body.employeeId
+  // no login still needs their leave on record. A plant manager may, for
+  // their own plant's people only.
+  const target = body.employeeId && canDecide
     ? employees.find((e) => e.id === body.employeeId)
-    : employeeFor(user);
+    : body.employeeId && staff.some((e) => e.id === body.employeeId)
+      ? staff.find((e) => e.id === body.employeeId)
+      : employeeFor(user);
 
   if (!target) {
     return NextResponse.json(
@@ -163,7 +193,7 @@ export async function PUT(req: NextRequest) {
   const request = all.find((r) => r.id === body.id);
   if (!request) return NextResponse.json({ error: "Not found." }, { status: 404 });
 
-  const canDecide = hasPermission(user.role, "attendance.approve");
+  const { canDecide } = leaveContext(user, session.plant || null);
   const me = employeeFor(user);
   const isOwn = me?.id === request.employeeId || request.raisedBy === user.id;
   const action = String(body.action || "");

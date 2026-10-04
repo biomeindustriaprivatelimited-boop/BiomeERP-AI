@@ -22,6 +22,8 @@ interface Props {
   onConnect: () => void;
   onDisconnect: (forget: boolean) => void;
   busy: boolean;
+  /** The Diagnostics tab shows the panel on its own. */
+  hideDiagnostics?: boolean;
 }
 
 const STATUS_META: Record<
@@ -52,11 +54,11 @@ const STATUS_META: Record<
 const TONE_CLASS = {
   good: "border-biome-leaf/30 bg-biome-leaf/10 text-biome-leafBright",
   warn: "border-biome-bolt/30 bg-biome-bolt/10 text-biome-bolt",
-  bad: "border-red-400/30 bg-red-400/10 text-red-300",
-  idle: "border-biome-line bg-white/5 text-biome-muted",
+  bad: "border-rose-500/30 bg-rose-500/10 text-rose-600 dark:text-rose-300",
+  idle: "border-biome-line bg-biome-hover text-biome-muted",
 };
 
-export default function ConnectionPanel({ state, loadError, onConnect, onDisconnect, busy }: Props) {
+export default function ConnectionPanel({ state, loadError, onConnect, onDisconnect, busy, hideDiagnostics }: Props) {
   const [confirmForget, setConfirmForget] = useState(false);
   const status = loadError ? "unavailable" : state?.status || "disconnected";
   const meta = STATUS_META[status] || STATUS_META.disconnected;
@@ -119,7 +121,7 @@ export default function ConnectionPanel({ state, loadError, onConnect, onDisconn
                 variant="ghost"
                 onClick={() => (confirmForget ? onDisconnect(true) : setConfirmForget(true))}
                 disabled={busy}
-                className={confirmForget ? "border-red-400/40 text-red-300" : ""}
+                className={confirmForget ? "border-rose-500/40 text-rose-600 dark:text-rose-300" : ""}
               >
                 {confirmForget ? "Confirm unlink" : "Unlink"}
               </PremiumButton>
@@ -129,7 +131,7 @@ export default function ConnectionPanel({ state, loadError, onConnect, onDisconn
       </div>
 
       {confirmForget && (
-        <p className="mt-3 rounded-xl border border-red-400/25 bg-red-400/5 px-3 py-2 text-[11px] text-red-200">
+        <p className="mt-3 rounded-xl border border-rose-500/25 bg-rose-500/5 px-3 py-2 text-[11px] text-rose-700 dark:text-rose-200">
           Unlinking signs this PC out of WhatsApp and deletes the saved session. Documents already filed
           stay on disk. You&apos;ll need to scan the QR code again to resume. Click &ldquo;Confirm
           unlink&rdquo; to go ahead.
@@ -185,9 +187,9 @@ export default function ConnectionPanel({ state, loadError, onConnect, onDisconn
 
       {/* ---- Problems ---- */}
       {(loadError || state?.lastError) && (
-        <div className="mt-4 flex items-start gap-2.5 rounded-xl border border-red-400/25 bg-red-400/5 px-3 py-2.5">
-          <AlertTriangle size={14} className="mt-0.5 shrink-0 text-red-300" />
-          <p className="text-[11.5px] leading-relaxed text-red-200">{loadError || state?.lastError}</p>
+        <div className="mt-4 flex items-start gap-2.5 rounded-xl border border-rose-500/25 bg-rose-500/5 px-3 py-2.5">
+          <AlertTriangle size={14} className="mt-0.5 shrink-0 text-rose-500 dark:text-rose-300" />
+          <p className="text-[11.5px] leading-relaxed text-rose-700 dark:text-rose-200">{loadError || state?.lastError}</p>
         </div>
       )}
 
@@ -205,7 +207,7 @@ export default function ConnectionPanel({ state, loadError, onConnect, onDisconn
       )}
 
       {/* ---- Diagnostics: where each message stopped ---- */}
-      {state?.diag && <Diagnostics d={state.diag} build={state.build} engine={state.engine === "web" ? `WhatsApp Web (${(state.browser || "").split(/[\\/]/).pop() || "browser"})` : state.engine === "baileys" ? "Baileys" : undefined} notADocument={state.stats?.notADocument ?? 0} />}
+      {!hideDiagnostics && state?.diag && <Diagnostics d={state.diag} build={state.build} engine={state.engine === "web" ? `WhatsApp Web (${(state.browser || "").split(/[\\/]/).pop() || "browser"})` : state.engine === "baileys" ? "Baileys" : undefined} notADocument={state.stats?.notADocument ?? 0} />}
 
       {/* ---- Where things are saved ---- */}
       {state?.inbox && (
@@ -230,8 +232,8 @@ export default function ConnectionPanel({ state, loadError, onConnect, onDisconn
  * first non-zero box after "Messages received" is where documents stop.
  * The most likely cause is spelled out in plain words above the numbers.
  */
-function Diagnostics({ d, build, engine, notADocument }: { d: NonNullable<AgentState["diag"]>; build?: string; engine?: string; notADocument: number }) {
-  const [open, setOpen] = useState(false);
+export function Diagnostics({ d, build, engine, notADocument, defaultOpen = false }: { d: NonNullable<AgentState["diag"]>; build?: string; engine?: string; notADocument: number; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
   let verdict: { tone: "ok" | "warn" | "bad"; text: string };
   if (!d.selectedChats.length) verdict = { tone: "bad", text: "No chat is selected. Open “Which chats to watch” below and select the supply group." };
   else if (d.messagesSeen === 0) verdict = { tone: "warn", text: "No message has arrived since the agent started. Send a test document in the selected group. If it still shows 0, press Unlink and link WhatsApp again." };
@@ -242,7 +244,7 @@ function Diagnostics({ d, build, engine, notADocument }: { d: NonNullable<AgentS
   else if (d.queued > 0) verdict = { tone: "ok", text: `${d.processed} of ${d.queued} document(s) processed${d.lastDocumentAt ? ` — last at ${new Date(d.lastDocumentAt).toLocaleTimeString()}` : ""}.` };
   else verdict = { tone: "warn", text: "Messages arrive, but none of them is a document or photo yet." };
 
-  const tone = verdict.tone === "ok" ? "border-emerald-500/30 bg-emerald-500/[.06] text-emerald-600" : verdict.tone === "warn" ? "border-amber-500/30 bg-amber-500/[.06] text-amber-600" : "border-rose-500/30 bg-rose-500/[.06] text-rose-500";
+  const tone = verdict.tone === "ok" ? "border-emerald-500/30 bg-emerald-500/[.08] text-emerald-700 dark:text-emerald-300" : verdict.tone === "warn" ? "border-amber-500/30 bg-amber-500/[.08] text-amber-700 dark:text-amber-300" : "border-rose-500/30 bg-rose-500/[.08] text-rose-600 dark:text-rose-300";
   const boxes: [string, number][] = [
     ["Messages received", d.messagesSeen],
     ["Could not decrypt", d.undecryptable],
@@ -275,7 +277,7 @@ function Diagnostics({ d, build, engine, notADocument }: { d: NonNullable<AgentS
             {engine ? <> · Engine <span className="text-biome-text">{engine}</span></> : null}
             {build ? <> · Agent build <span className="font-mono">{build}</span></> : null}
           </p>
-          <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-lg bg-black/40 p-2.5 font-mono text-[10px] leading-relaxed text-emerald-100/80">
+          <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-xl bg-[#0f1a0a] p-3 font-mono text-[10px] leading-relaxed text-emerald-100/85">
             {d.log.length ? d.log.join("\n") : "No log lines yet."}
           </pre>
         </div>

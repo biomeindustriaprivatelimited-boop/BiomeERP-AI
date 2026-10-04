@@ -42,6 +42,7 @@ const STATUS_META: Record<string, { label: string; cls: string; icon: React.Reac
   submitted: { label: "Waiting", cls: "text-amber-600 bg-amber-500/10 border-amber-500/30", icon: <Clock size={11} /> },
   approved: { label: "Approved", cls: "text-emerald-600 bg-emerald-500/10 border-emerald-500/30", icon: <CheckCircle2 size={11} /> },
   rejected: { label: "Rejected", cls: "text-rose-500 bg-rose-500/10 border-rose-500/30", icon: <XCircle size={11} /> },
+  pending_budget_approval: { label: "Over budget · needs admin", cls: "text-rose-500 bg-rose-500/10 border-rose-500/30", icon: <AlertCircle size={11} /> },
 };
 
 function inr(n: number) {
@@ -55,6 +56,8 @@ export default function MobileImprestPage() {
   const [filing, setFiling] = useState(false);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
+  // Set when the server held the entry because it crossed a hard budget.
+  const [held, setHeld] = useState<string | null>(null);
   const revision = useRef("");
 
   const today = new Date().toISOString().slice(0, 10);
@@ -104,8 +107,13 @@ export default function MobileImprestPage() {
       if (!res.ok) throw new Error(json.error || "Could not file that.");
       setForm({ kind: "expense", date: today, amount: "", category: "", description: "", mode: "cash", reference: "" });
       setFiling(false);
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2400);
+      if (json.budgetBlocked) {
+        setHeld(json.message || "Over budget — waiting for admin approval.");
+      } else {
+        setHeld(null);
+        setSaved(true);
+        setTimeout(() => setSaved(false), 2400);
+      }
       await load(true);
     } catch (e) {
       setError((e as Error).message);
@@ -144,6 +152,14 @@ export default function MobileImprestPage() {
           <div className="bmx-msg-in flex items-start gap-2 rounded-2xl border border-rose-400/25 bg-rose-400/[.07] px-3.5 py-3">
             <AlertCircle size={14} className="mt-px shrink-0 text-rose-500" />
             <p className="text-[11.5px] leading-relaxed text-biome-text">{error}</p>
+          </div>
+        )}
+        {held && (
+          <div className="bmx-msg-in rounded-2xl border border-rose-500/30 bg-rose-500/[.07] px-3.5 py-3" onClick={() => setHeld(null)}>
+            <p className="flex items-center gap-1.5 text-[11.5px] font-semibold text-rose-500">
+              <AlertCircle size={13} /> Blocked — over budget, sent to admin for approval
+            </p>
+            <p className="mt-1 text-[11px] leading-relaxed text-biome-text">{held}</p>
           </div>
         )}
         {saved && (

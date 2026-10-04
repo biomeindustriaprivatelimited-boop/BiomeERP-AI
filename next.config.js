@@ -29,6 +29,9 @@ function nextMajor() {
 const major = nextMajor();
 
 const nextConfig = {
+  // Development only: lets several test builds run side by side
+  // (NEXT_DIST_DIR=.next-a npx next build). Releases always use ".next".
+  ...(process.env.NEXT_DIST_DIR ? { distDir: process.env.NEXT_DIST_DIR } : {}),
   // Lets the update banner compare the published version against this build.
   env: { NEXT_PUBLIC_APP_VERSION: pkg.version },
   ...(major >= 15

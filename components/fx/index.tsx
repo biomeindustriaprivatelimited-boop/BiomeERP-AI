@@ -6,8 +6,8 @@ import { useEffect, useRef, useState } from "react";
  * Game-grade ambience for a business app — restrained enough to work
  * eight hours a day, alive enough to feel premium:
  *
- *   CursorGlow   — a soft light and a lagging ring follow the pointer;
- *                  the ring grows over anything clickable (cursor UX)
+ *   (CursorGlow — the pointer-following circle — was removed; the OS
+ *    cursor is used everywhere.)
  *   Particles    — a slow field of pellets/embers on a canvas, theme-aware,
  *                  pointer-repelled, paused when the tab is hidden
  *   Ripples      — Material-style press ripple on every button
@@ -30,29 +30,13 @@ function themeAccent(): string {
   return t === "sunrise" ? "255,176,60" : t === "command" ? "103,232,249" : t === "midnight" ? "190,255,90" : t === "light" ? "121,200,60" : "159,232,112";
 }
 
+/**
+ * Removed. The business asked for the circle that followed the mouse to go
+ * and for the plain cursor to stay. Kept as a no-op export so any page that
+ * still imports it draws nothing rather than failing to build.
+ */
 export function CursorGlow() {
-  const ok = useMotionOk();
-  const dot = useRef<HTMLDivElement | null>(null); const ring = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!ok) return;
-    let mx = -100, my = -100, rx = -100, ry = -100, hot = false, raf = 0;
-    const move = (e: PointerEvent) => { mx = e.clientX; my = e.clientY; const t = e.target as HTMLElement | null; hot = Boolean(t?.closest?.("a, button, [role=button], input, select, textarea, label")); };
-    const tick = () => {
-      rx += (mx - rx) * 0.16; ry += (my - ry) * 0.16;
-      if (dot.current) dot.current.style.transform = `translate3d(${mx - 4}px, ${my - 4}px, 0)`;
-      if (ring.current) { ring.current.style.transform = `translate3d(${rx - 18}px, ${ry - 18}px, 0) scale(${hot ? 1.6 : 1})`; ring.current.style.opacity = hot ? "0.9" : "0.5"; }
-      raf = requestAnimationFrame(tick);
-    };
-    window.addEventListener("pointermove", move, { passive: true }); raf = requestAnimationFrame(tick);
-    return () => { window.removeEventListener("pointermove", move); cancelAnimationFrame(raf); };
-  }, [ok]);
-  if (!ok) return null;
-  return (
-    <>
-      <div ref={dot} className="pointer-events-none fixed left-0 top-0 z-[9998] h-2 w-2 rounded-full mix-blend-screen" style={{ background: "rgb(var(--c-volt))", boxShadow: "0 0 18px 6px rgb(var(--c-volt) / .55)" }} />
-      <div ref={ring} className="pointer-events-none fixed left-0 top-0 z-[9998] h-9 w-9 rounded-full border transition-[opacity] duration-200" style={{ borderColor: "rgb(var(--c-volt) / .75)", boxShadow: "inset 0 0 12px rgb(var(--c-volt) / .18)" }} />
-    </>
-  );
+  return null;
 }
 
 export function Particles({ density = 70, className = "" }: { density?: number; className?: string }) {

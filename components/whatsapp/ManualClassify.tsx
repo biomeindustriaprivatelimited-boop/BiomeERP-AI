@@ -133,7 +133,7 @@ export default function ManualClassify({
   }
 
   const input =
-    "w-full rounded-xl border border-biome-line bg-white/[0.03] px-3 py-2 text-[11.5px] text-biome-text outline-none transition-colors placeholder:text-biome-muted/50 focus:border-biome-leaf/40";
+    "w-full rounded-xl border border-biome-line bg-biome-bg px-3 py-2 text-[11.5px] text-biome-text outline-none transition-colors placeholder:text-biome-muted/50 focus:border-biome-leaf/40";
 
   return (
     <Portal><motion.div

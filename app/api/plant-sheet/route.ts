@@ -233,6 +233,7 @@ export async function GET(req: NextRequest) {
     columns: (kind === "transport" ? TRANSPORT_COLUMNS : plant.biomass).map((c) => ({
       cell: c.cell, key: c.key, label: c.label, kind: c.kind,
       type: c.type || "text", width: c.width, hint: c.hint,
+      suggest: c.suggest, suggestField: c.suggestField, pairKey: c.pairKey,
     })),
   });
 }

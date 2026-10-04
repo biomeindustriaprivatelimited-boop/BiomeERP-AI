@@ -95,7 +95,11 @@ function call(method, route, body) {
   report(Boolean(TOKEN), "agent starts from the packaged app", TOKEN ? `port ${PORT}` : "no handshake in 120 s");
   if (!TOKEN) return finish();
 
-  const selfTest = logLines.join("").match(/self-test: all (\d+) checks passed|SELF-TEST FAILED[^\n]*/);
+  let selfTest = null;
+  for (let i = 0; i < 30 && !selfTest; i++) {
+    selfTest = logLines.join("").match(/self-test: all (\d+) checks passed|SELF-TEST FAILED[^\n]*/);
+    if (!selfTest) await sleep(1000);
+  }
   report(Boolean(selfTest && /passed/.test(selfTest[0])), "startup self-test", selfTest ? selfTest[0] : "no self-test line");
 
   // ---- A. pipeline through the WhatsApp Web message path ----

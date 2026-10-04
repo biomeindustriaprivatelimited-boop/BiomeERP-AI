@@ -333,6 +333,73 @@ export function blankPartner(by: { id: string; name: string }, kind: PartnerKind
 }
 
 /* ------------------------------------------------------------------ */
+/* Name suggestions for the plant sheets                               */
+/* ------------------------------------------------------------------ */
+
+/** The sheet-facing names for the three kinds a sheet column can offer. */
+export type SuggestKind = "vendor" | "transporter" | "client";
+
+export const SUGGEST_KIND_TO_PARTNER: Record<SuggestKind, PartnerKind> = {
+  vendor: "biomass_vendor",
+  transporter: "transporter",
+  client: "client",
+};
+
+/**
+ * Just enough of a partner to fill a sheet cell. Deliberately thin: no
+ * bank, GST, rate or agreement — a dropdown is not the place to leak the
+ * commercial record, and nothing here is needed to type a name.
+ */
+export interface PartnerSuggestion {
+  id: string;
+  kind: SuggestKind;
+  code: string;
+  name: string;
+  legalName: string;
+  city: string;
+  status: PartnerStatus;
+}
+
+/**
+ * Which registered partners a sheet column may offer.
+ *
+ *   { trading: true }        — the coordinator's trading register only.
+ *   { plantCode: "REW" }     — manufacturing partners tagged with THAT plant
+ *                              only. Strict on purpose: a partner with no
+ *                              plant, or another plant's partner, never
+ *                              appears, so one site's names cannot leak into
+ *                              the other's sheet. Trading never appears.
+ *
+ * Blocked partners are left out — offering one invites a delivery that the
+ * business has already said must not happen.
+ */
+export function partnerSuggestions(
+  scope: { trading: true } | { plantCode: string },
+  kinds: SuggestKind[],
+  partners: Partner[] = loadPartners()
+): PartnerSuggestion[] {
+  const wanted = new Map<PartnerKind, SuggestKind>(kinds.map((k) => [SUGGEST_KIND_TO_PARTNER[k], k]));
+  const plantCode = "plantCode" in scope ? String(scope.plantCode || "").toUpperCase() : "";
+  return partners
+    .filter((p) => wanted.has(p.kind) && p.status !== "blocked" && p.name.trim())
+    .filter((p) =>
+      "trading" in scope
+        ? p.category === "trading"
+        : p.category !== "trading" && !!plantCode && p.plants.some((x) => String(x).toUpperCase() === plantCode)
+    )
+    .map((p) => ({
+      id: p.id,
+      kind: wanted.get(p.kind)!,
+      code: p.code || "",
+      name: p.name,
+      legalName: p.legalName || "",
+      city: p.city || "",
+      status: p.status,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/* ------------------------------------------------------------------ */
 /* What is missing, and what is about to expire                        */
 /* ------------------------------------------------------------------ */
 

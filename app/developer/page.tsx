@@ -9,7 +9,7 @@ import FormPanel, { FormSection } from "@/components/FormPanel";
 import DataTab from "@/components/developer/DataTab";
 import ServerTab from "@/components/developer/ServerTab";
 import PlantsTab from "@/components/developer/PlantsTab";
-import { PERMISSION_INFO } from "@/lib/permissions";
+import { PERMISSION_INFO, permissionsFor, type Role } from "@/lib/permissions";
 
 /**
  * The developer console.
@@ -143,7 +143,13 @@ function AccessTab({ data, onChanged }: { data: any; onChanged: () => void }) {
     try {
       const res = await fetch("/api/developer", {
         method: "PUT", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: editing.id, role, access: { granted, revoked, note } }),
+        // Only real exceptions are stored: an "activated" feature the role
+        // already gives, or a "deactivated" one it never gave, is dropped.
+        body: JSON.stringify({ id: editing.id, role, access: {
+          granted: granted.filter((p) => !roleGives.includes(p)),
+          revoked: revoked.filter((p) => roleGives.includes(p)),
+          note,
+        } }),
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json.error || "Could not save.");
@@ -152,15 +158,30 @@ function AccessTab({ data, onChanged }: { data: any; onChanged: () => void }) {
     } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
   }
 
-  // What the role already gives, so a grant that changes nothing is
-  // visibly pointless rather than quietly stored.
-  const roleGives = useMemo(() => {
-    const r = (data.roles || []).find((x: any) => x.id === role);
-    return r ? (users.find((u) => u.role === role)?.rolePermissions || []) : [];
-  }, [role, data.roles, users]);
+  // What the role gives by default — read from the role table itself, so
+  // it is right even when nobody else holds this role yet.
+  const roleGives = useMemo(() => permissionsFor(role as Role) as string[], [role]);
+  const [showOnly, setShowOnly] = useState<"all" | "active" | "inactive">("all");
 
-  function toggle(list: string[], set: (v: string[]) => void, p: string) {
-    set(list.includes(p) ? list.filter((x) => x !== p) : [...list, p]);
+  /** Active for this person = role default, plus activated, minus deactivated. */
+  const isActive = (p: string) => !revoked.includes(p) && (granted.includes(p) || roleGives.includes(p));
+  const activeCount = permissions.filter(isActive).length;
+  const changedCount = granted.filter((p) => !roleGives.includes(p)).length + revoked.filter((p) => roleGives.includes(p)).length;
+
+  /**
+   * Activate or Deactivate one feature for this person. Only the
+   * difference from the role is stored: deactivating a role default adds
+   * an exception; turning an exception back clears it.
+   */
+  function flip(p: string) {
+    const inRole = roleGives.includes(p);
+    if (isActive(p)) {
+      setGranted(granted.filter((x) => x !== p));
+      setRevoked(inRole ? [...revoked.filter((x) => x !== p), p] : revoked.filter((x) => x !== p));
+    } else {
+      setRevoked(revoked.filter((x) => x !== p));
+      setGranted(inRole ? granted.filter((x) => x !== p) : [...granted.filter((x) => x !== p), p]);
+    }
   }
 
   return (
@@ -174,6 +195,7 @@ function AccessTab({ data, onChanged }: { data: any; onChanged: () => void }) {
       <div className="space-y-2">
         {shown.map((u) => {
           const exceptions = (u.access?.granted.length || 0) + (u.access?.revoked.length || 0);
+          const activeNow = u.effective.length;
           return (
             <article key={u.id} onClick={() => open(u)}
               className="bmx-card cursor-pointer rounded-2xl border border-biome-line bg-biome-bgSoft p-4">
@@ -189,14 +211,14 @@ function AccessTab({ data, onChanged }: { data: any; onChanged: () => void }) {
                 )}
                 {exceptions > 0 && (
                   <span className="rounded-full border border-amber-500/35 bg-amber-500/10 px-2 py-0.5 text-[9px] font-bold text-amber-600">
-                    {exceptions} exception{exceptions === 1 ? "" : "s"}
+                    {exceptions} changed from role
                   </span>
                 )}
               </div>
               <p className="mt-1 text-[10.5px] text-biome-muted">
                 {u.username}
                 {u.plants.length ? ` · ${u.plants.join(", ")}` : ""}
-                {" · "}{u.effective.length} permissions
+                {" · "}{activeNow} of {permissions.length} features active
                 {u.access?.note ? ` · ${u.access.note}` : ""}
               </p>
             </article>
@@ -224,7 +246,7 @@ function AccessTab({ data, onChanged }: { data: any; onChanged: () => void }) {
         {err && <p className="mb-4 rounded-xl border border-rose-400/25 bg-rose-400/[.07] px-4 py-3 text-[11.5px] text-biome-text">{err}</p>}
 
         <FormSection title="Role" sectionIcon={<ShieldCheck size={14} />} columns={2}
-          hint="Changing the role changes everything the person can do. Saving forces them to sign in again — a revoked permission that kept working until their cookie expired would not be revoked.">
+          hint="Changing the role changes everything the person can do. Saving forces them to sign in again — a deactivated feature that kept working until their cookie expired would not really be deactivated.">
           <label className="block">
             <span className="mb-1.5 block text-[10px] font-bold uppercase tracking-[.13em] text-biome-muted">Role</span>
             <select value={role} onChange={(e) => setRole(e.target.value)}
@@ -240,45 +262,76 @@ function AccessTab({ data, onChanged }: { data: any; onChanged: () => void }) {
           </label>
         </FormSection>
 
-        <FormSection title="Exceptions" sectionIcon={<Unlock size={14} />} columns={1}
-          hint="Green adds something the role does not give. Red takes away something it does. Leave both empty and the role decides everything, which is how it should be for almost everyone.">
-          <div className="grid gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
-            {permissions.map((p) => {
+        <FormSection title="Feature access" sectionIcon={<Unlock size={14} />} columns={1}
+          hint="Every feature, and whether it is Active or Inactive for this person right now. The role decides the default; Activate or Deactivate makes an exception for this one person, and it stays marked as one. Inactive features are hidden from their menu, search and home tiles.">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <span className="rounded-full border border-emerald-500/35 bg-emerald-500/10 px-2.5 py-1 text-[10.5px] font-bold text-emerald-600">
+              {activeCount} active
+            </span>
+            <span className="rounded-full border border-biome-line px-2.5 py-1 text-[10.5px] font-bold text-biome-muted">
+              {permissions.length - activeCount} inactive
+            </span>
+            {changedCount > 0 && (
+              <span className="rounded-full border border-amber-500/35 bg-amber-500/10 px-2.5 py-1 text-[10.5px] font-bold text-amber-600">
+                {changedCount} changed from the role
+              </span>
+            )}
+            <div className="ml-auto flex flex-wrap items-center gap-1">
+              {(["all", "active", "inactive"] as const).map((f) => (
+                <button key={f} type="button" onClick={() => setShowOnly(f)}
+                  className={`rounded-full border px-2.5 py-1 text-[10px] font-bold capitalize ${showOnly === f ? "border-biome-leaf/40 bg-biome-leaf/12 text-biome-leaf" : "border-biome-line text-biome-muted"}`}>
+                  {f}
+                </button>
+              ))}
+              {changedCount > 0 && (
+                <button type="button" onClick={() => { setGranted([]); setRevoked([]); }}
+                  className="rounded-full border border-biome-line px-2.5 py-1 text-[10px] font-bold text-biome-muted hover:text-biome-text">
+                  Reset to role default
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            {permissions.filter((p) => showOnly === "all" || (showOnly === "active") === isActive(p)).map((p) => {
               const isDevOnly = developerOnly.includes(p);
               const inRole = roleGives.includes(p);
+              const active = isActive(p);
               const g = granted.includes(p);
               const r = revoked.includes(p);
+              const locked = isDevOnly && role !== "developer";
+              const source = locked ? "Developer only"
+                : g ? "Activated for this person"
+                : r ? "Deactivated for this person"
+                : inRole ? "Role default" : "Not in the role";
               return (
-                <div key={p}
-                  className={`rounded-xl border px-3 py-2 ${
-                    r ? "border-rose-500/35 bg-rose-500/[.07]"
-                    : g ? "border-emerald-500/35 bg-emerald-500/[.07]"
-                    : "border-biome-line"
+                <div key={p} data-perm={p} data-state={active ? "active" : "inactive"}
+                  className={`flex flex-wrap items-center gap-3 rounded-xl border px-3 py-2.5 ${
+                    active ? "border-emerald-500/30 bg-emerald-500/[.05]" : "border-biome-line bg-biome-bg/40"
                   }`}>
-                  <p className="text-[11.5px] font-semibold text-biome-text" title={p}>{PERMISSION_INFO[p]?.label || p}</p>
-                  <p className="text-[10px] leading-snug text-biome-text/85">{PERMISSION_INFO[p]?.what || "—"}</p>
-                  <p className="mt-0.5 text-[9.5px] leading-snug text-biome-muted">Why: {PERMISSION_INFO[p]?.why || "—"}</p>
-                  <p className="mt-0.5 flex items-center gap-1.5 text-[9px] text-biome-muted">
-                    <span className="font-mono">{p}</span>
-                    {PERMISSION_INFO[p]?.risk === "high" && <span className="rounded-full border border-rose-500/40 bg-rose-500/10 px-1.5 text-[8.5px] font-bold uppercase text-rose-500">High risk</span>}
-                    <span>· {isDevOnly ? "developer only" : inRole ? "given by the role" : "not in the role"}</span>
-                  </p>
-                  <div className="mt-1.5 flex gap-1">
-                    <button type="button" disabled={isDevOnly && role !== "developer"}
-                      onClick={() => { toggle(granted, setGranted, p); setRevoked(revoked.filter((x) => x !== p)); }}
-                      className={`flex-1 rounded-lg border px-2 py-1 text-[9.5px] font-bold disabled:opacity-40 ${
-                        g ? "border-emerald-500/40 text-emerald-600" : "border-biome-line text-biome-muted"
-                      }`}>
-                      grant
-                    </button>
-                    <button type="button"
-                      onClick={() => { toggle(revoked, setRevoked, p); setGranted(granted.filter((x) => x !== p)); }}
-                      className={`flex-1 rounded-lg border px-2 py-1 text-[9.5px] font-bold ${
-                        r ? "border-rose-500/40 text-rose-500" : "border-biome-line text-biome-muted"
-                      }`}>
-                      revoke
-                    </button>
+                  <div className="min-w-[200px] flex-1">
+                    <p className="flex flex-wrap items-center gap-1.5 text-[12px] font-semibold text-biome-text" title={p}>
+                      {PERMISSION_INFO[p]?.label || p}
+                      {PERMISSION_INFO[p]?.risk === "high" && <span className="rounded-full border border-rose-500/40 bg-rose-500/10 px-1.5 text-[8.5px] font-bold uppercase text-rose-500">High risk</span>}
+                    </p>
+                    <p className="text-[10.5px] leading-snug text-biome-muted">{PERMISSION_INFO[p]?.what || p}</p>
+                    <p className={`mt-0.5 text-[9.5px] font-semibold ${g ? "text-emerald-600" : r ? "text-rose-500" : "text-biome-muted"}`}>{source}</p>
                   </div>
+                  <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${
+                    active ? "bg-emerald-500/15 text-emerald-600" : "bg-biome-line/60 text-biome-muted"
+                  }`}>
+                    {active ? "Active" : "Inactive"}
+                  </span>
+                  <button type="button" role="switch" aria-checked={active} disabled={locked}
+                    aria-label={`${active ? "Deactivate" : "Activate"} ${PERMISSION_INFO[p]?.label || p}`}
+                    onClick={() => flip(p)}
+                    className={`flex min-w-[118px] items-center gap-2 rounded-full border px-2 py-1 text-[10.5px] font-bold transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                      active ? "border-rose-500/35 text-rose-500 hover:bg-rose-500/10" : "border-emerald-500/40 text-emerald-600 hover:bg-emerald-500/10"
+                    }`}>
+                    <span className={`relative h-4 w-7 shrink-0 rounded-full transition-colors ${active ? "bg-emerald-500" : "bg-biome-line"}`}>
+                      <span className={`absolute top-0.5 h-3 w-3 rounded-full bg-white shadow transition-all ${active ? "left-3.5" : "left-0.5"}`} />
+                    </span>
+                    {active ? "Deactivate" : "Activate"}
+                  </button>
                 </div>
               );
             })}
@@ -316,9 +369,9 @@ function FeaturesTab({ data, onChanged }: { data: any; onChanged: () => void }) 
   return (
     <div className="space-y-3">
       <p className="max-w-[720px] text-[11.5px] leading-relaxed text-biome-muted">
-        <strong className="text-biome-text">Frozen</strong> still opens and still shows the figures — only saving is
-        refused. <strong className="text-biome-text">Off</strong> disappears from the menu and is refused by the
-        server. Login, the audit log and Help &amp; Support are not on this list on purpose: switching off the way
+        <strong className="text-biome-text">Frozen</strong> and <strong className="text-biome-text">Off</strong> both
+        disappear from everyone&apos;s menu, search and home tiles (you still see them, marked). Frozen still answers
+        reads if someone opens a saved link — only saving is refused; Off is refused by the server outright. Login, the audit log and Help &amp; Support are not on this list on purpose: switching off the way
         people report a problem turns a small outage into one nobody can tell you about.
       </p>
 

@@ -32,7 +32,7 @@ const SIDE_STYLE: Record<string, string> = {
   biome: "border-biome-leaf/30 bg-biome-leaf/10 text-biome-leafBright",
   vendor: "border-biome-sky/30 bg-biome-sky/10 text-biome-skyBright",
   shared: "border-biome-bolt/30 bg-biome-bolt/10 text-biome-bolt",
-  other: "border-biome-line bg-white/5 text-biome-muted",
+  other: "border-biome-line bg-biome-hover text-biome-muted",
 };
 
 function formatWhen(iso: string) {
@@ -182,7 +182,7 @@ export default function SupplySetCard({
               </span>
             )}
             {set.dscMissing.length > 0 && (
-              <span className="flex items-center gap-1 rounded-full border border-red-400/30 bg-red-400/10 px-2 py-0.5 text-[10px] font-medium text-red-300">
+              <span className="flex items-center gap-1 rounded-full border border-red-400/30 bg-red-400/10 px-2 py-0.5 text-[10px] font-medium text-red-600 dark:text-red-300">
                 <ShieldAlert size={10} /> DSC missing
               </span>
             )}
@@ -259,8 +259,8 @@ export default function SupplySetCard({
 
               {set.dscMissing.length > 0 && (
                 <div className="mb-3 flex items-start gap-2 rounded-xl border border-red-400/25 bg-red-400/5 px-3 py-2">
-                  <ShieldAlert size={13} className="mt-0.5 shrink-0 text-red-300" />
-                  <p className="text-[11px] leading-relaxed text-red-200">
+                  <ShieldAlert size={13} className="mt-0.5 shrink-0 text-red-500 dark:text-red-300" />
+                  <p className="text-[11px] leading-relaxed text-red-700 dark:text-red-200">
                     No Digital Signature Certificate found on{" "}
                     <span className="font-medium">
                       {set.dscMissing.map((m) => m.label).join(" and ")}

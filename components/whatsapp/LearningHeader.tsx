@@ -53,12 +53,12 @@ export default function LearningHeader() {
   // that hasn't been made.
   const stage =
     learned < 10
-      ? { label: "Getting started", tone: "text-amber-600 bg-amber-100", pct: 15 }
+      ? { label: "Getting started", tone: "text-amber-700 bg-amber-500/15 dark:text-amber-300", pct: 15 }
       : learned < 50
-        ? { label: "Learning your patterns", tone: "text-blue-600 bg-blue-100", pct: 45 }
+        ? { label: "Learning your patterns", tone: "text-blue-700 bg-blue-500/15 dark:text-blue-300", pct: 45 }
         : learned < 150
-          ? { label: "Confident", tone: "text-emerald-600 bg-emerald-100", pct: 75 }
-          : { label: "Well trained", tone: "text-emerald-700 bg-emerald-100", pct: 95 };
+          ? { label: "Confident", tone: "text-emerald-700 bg-emerald-500/15 dark:text-emerald-300", pct: 75 }
+          : { label: "Well trained", tone: "text-emerald-700 bg-emerald-500/15 dark:text-emerald-300", pct: 95 };
 
   const tiles = [
     { icon: FileCheck2, label: "Documents studied", value: learned },

@@ -1,8 +1,10 @@
 "use client";
 
 import MismatchFlag from "@/components/plant/MismatchFlag";
+import PartnerCombo, { type ComboOption } from "@/components/plant/PartnerCombo";
+import { useLiveRefresh } from "@/lib/useLiveRefresh";
 import { toKg, conversionNote } from "@/lib/units";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Plus, Download, Trash2, Loader2, Upload, Calculator, Filter, ShieldCheck, ShieldAlert, ScanLine } from "lucide-react";
 import GlassCard from "@/components/GlassCard";
 import PremiumButton from "@/components/ui/PremiumButton";
@@ -29,7 +31,15 @@ interface Column {
   type: "text" | "number" | "date" | "yesno";
   width?: number;
   hint?: string;
+  /** Registered-name typeahead (lib/plantSheets.ts). */
+  suggest?: SuggestKind | SuggestKind[];
+  suggestField?: "name" | "code";
+  pairKey?: string;
 }
+
+type SuggestKind = "vendor" | "transporter" | "client";
+const kindsOf = (c: Column): SuggestKind[] => (!c.suggest ? [] : Array.isArray(c.suggest) ? c.suggest : [c.suggest]);
+const KIND_PLURAL: Record<SuggestKind, string> = { vendor: "vendors", transporter: "transporters", client: "clients" };
 
 interface Plant {
   id: string;
@@ -216,6 +226,56 @@ export default function SheetGrid({
   const [exporting, setExporting] = useState(false);
   const [vendorFilter, setVendorFilter] = useState("");
   const [vendors, setVendors] = useState<{ code: string; name: string }[]>([]);
+  /**
+   * Registered partners of THIS plant, for the name/code typeahead. The
+   * server decides the plant from the session (a plant manager only ever
+   * gets their own site's registrations, never trading or another plant's),
+   * so the grid does no filtering of its own here.
+   */
+  const [registered, setRegistered] = useState<ComboOption[]>([]);
+  const registeredAt = useRef(0);
+  const registeredFor = useRef("");
+  const loadRegistered = useCallback(async () => {
+    registeredAt.current = Date.now();
+    const wantPlant = plant;
+    try {
+      const res = await fetch(`/api/partners/suggest?kind=vendor,transporter,client&plant=${encodeURIComponent(wantPlant)}`, { cache: "no-store" });
+      if (!res.ok) { if (registeredFor.current !== wantPlant) setRegistered([]); registeredFor.current = wantPlant; return; }
+      const json = await res.json();
+      registeredFor.current = wantPlant;
+      setRegistered(
+        (json.partners || []).map((p: any) => ({
+          key: `r:${p.id}`, kind: p.kind, code: String(p.code || ""), name: String(p.name || ""),
+          legalName: String(p.legalName || ""), city: String(p.city || ""), status: String(p.status || ""),
+          source: "registered" as const,
+        }))
+      );
+    } catch { /* suggestions are a convenience; typing still works */ }
+  }, [plant]);
+  useEffect(() => { setRegistered([]); loadRegistered(); }, [loadRegistered]);
+  // A partner registered in another tab or on another PC shows up without a
+  // reload: on window focus, on the app-wide change signal, and whenever a
+  // cell's list opens on a list more than a few seconds old.
+  useLiveRefresh(loadRegistered, 15000);
+  const refreshIfStale = useCallback(() => {
+    if (Date.now() - registeredAt.current > 5000) loadRegistered();
+  }, [loadRegistered]);
+
+  const optionsFor = useCallback((c: Column): ComboOption[] => {
+    const kinds = kindsOf(c);
+    const reg = registered.filter((o) => kinds.includes(o.kind));
+    // The plant's own imported code list ("Import vendors") is offered too,
+    // after the registered names — it is this plant's list and nobody else's.
+    if (kind !== "biomass" || !kinds.includes("vendor") || (c.key !== "vendorCode" && c.key !== "name" && c.key !== "vendorName")) return reg;
+    const known = new Set(reg.map((o) => `${o.code.toUpperCase()}|${o.name.toLowerCase()}`));
+    const extra = vendors
+      .filter((v) => !known.has(`${String(v.code).toUpperCase()}|${String(v.name).toLowerCase()}`))
+      .map((v) => ({
+        key: `p:${v.code}`, kind: "vendor" as const, code: String(v.code || ""), name: String(v.name || ""),
+        legalName: "", city: "", status: "", source: "plant_list" as const,
+      }));
+    return [...reg, ...extra];
+  }, [registered, vendors, kind]);
   const [importOpen, setImportOpen] = useState(false);
   const [paste, setPaste] = useState("");
   const [saving, setSaving] = useState(false);
@@ -353,7 +413,10 @@ export default function SheetGrid({
     [kind, plant, plants]
   );
 
-  const computed = useMemo(() => rows.map(compute), [rows, compute]);
+  // `__ri` is the row's index in `rows`: the vendor filter shows a subset,
+  // and an edit must land on the row being edited, not on whatever row
+  // happens to sit at the same position in the full list.
+  const computed = useMemo(() => rows.map((r, idx): Record<string, any> => ({ ...compute(r), __ri: idx })), [rows, compute]);
 
   const visible = useMemo(() => {
     const q = vendorFilter.trim().toUpperCase();
@@ -668,7 +731,8 @@ export default function SheetGrid({
                 </tr>
               </thead>
               <tbody>
-                {visible.map((row, i) => {
+                {visible.map((row) => {
+                  const i: number = row.__ri;
                   const check = checks[i];
                   const bad = new Map<string, any>(
                     (check?.verification?.checks || [])
@@ -711,31 +775,26 @@ export default function SheetGrid({
                             <option value="Yes">Yes</option>
                             <option value="No">No</option>
                           </select>
-                        ) : c.key === "vendorCode" && vendors.length ? (
-                          <select
-                            value={row[c.key] ?? ""}
-                            onChange={(e) => {
-                              const code = e.target.value;
-                              setCell(i, "vendorCode", code);
-                              // Fill the name too — it is the same fact,
-                              // and typing it twice invites them to differ.
-                              const v = vendors.find((x) => x.code === code);
-                              if (v) {
-                                const nameKey = columns.some((c2) => c2.key === "vendorName")
-                                  ? "vendorName"
-                                  : "name";
-                                setCell(i, nameKey, v.name);
+                        ) : c.suggest ? (
+                          <PartnerCombo
+                            value={String(row[c.key] ?? "")}
+                            field={c.suggestField || "name"}
+                            options={optionsFor(c)}
+                            kindsLabel={kindsOf(c).map((k) => KIND_PLURAL[k]).join(" / ")}
+                            onOpen={refreshIfStale}
+                            onChange={(v) => setCell(i, c.key, v)}
+                            onPick={(o) => {
+                              const isCode = (c.suggestField || "name") === "code";
+                              setCell(i, c.key, isCode ? o.code : o.name);
+                              // Fill the other half too — it is the same fact,
+                              // and typing it twice invites the two to differ.
+                              if (c.pairKey && columns.some((c2) => c2.key === c.pairKey)) {
+                                const other = isCode ? o.name : o.code;
+                                if (other) setCell(i, c.pairKey, other);
                               }
                             }}
                             className={inputCls}
-                          >
-                            <option value="">—</option>
-                            {vendors.map((v) => (
-                              <option key={v.code} value={v.code}>
-                                {v.code} · {v.name}
-                              </option>
-                            ))}
-                          </select>
+                          />
                         ) : (c as any).unit === "kg" ? (
                           // Weight: type kg, "284 qtl" or "28.4 MT" — stored in kg on leaving the cell.
                           <input

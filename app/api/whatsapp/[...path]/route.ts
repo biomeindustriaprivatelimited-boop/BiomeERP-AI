@@ -23,6 +23,8 @@ const ALLOWED: Record<string, ("GET" | "POST")[]> = {
   backfill: ["GET", "POST"],
   "backfill/stop": ["POST"],
   chats: ["GET", "POST"],
+  // Re-reads the chat list (groups and people) from the linked WhatsApp.
+  "chats/refresh": ["POST"],
   reanchor: ["POST"],
   classify: ["POST"],
   test: ["POST"],
@@ -69,7 +71,7 @@ async function proxy(req: NextRequest, segments: string[], method: "GET" | "POST
       body,
       headers: body ? { "Content-Type": "application/json" } : undefined,
       // Re-scanning a document runs a fresh AI call, which can be slow.
-      timeoutMs: route === "reprocess" ? 120000 : 30000,
+      timeoutMs: route === "reprocess" ? 120000 : route === "chats/refresh" ? 60000 : 30000,
     });
 
     // /file streams the actual PDF or image back to the browser.

@@ -48,6 +48,10 @@ export async function POST(req: NextRequest) {
     if (idx === -1) { results.push({ id, ok: false, reason: "Not found." }); continue; }
     const entry = next[idx];
 
+    if (entry.status === "pending_budget_approval") {
+      results.push({ id, ok: false, reason: "This entry is over budget. The admin has to pass the overrun before accounts can decide it." });
+      continue;
+    }
     if (entry.status !== "submitted") {
       results.push({ id, ok: false, reason: `Already ${entry.status}.` });
       continue;

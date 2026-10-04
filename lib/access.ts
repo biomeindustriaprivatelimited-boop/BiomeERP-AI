@@ -4,8 +4,10 @@
  * Two things live here, because they answer the same question from
  * opposite ends:
  *
- *   ACCESS      — this person, on top of their role. Granted or revoked
- *                 one permission at a time, by the developer only.
+ *   ACCESS      — this person, on top of their role. Activated or
+ *                 deactivated one permission at a time, by the developer
+ *                 only. (Stored as `granted` / `revoked` — the field names
+ *                 stay so existing user files keep working.)
  *   FEATURES    — this module, for everybody. Live, read-only, or off,
  *                 with a sentence explaining why.
  *
@@ -93,7 +95,7 @@ export const FEATURE_STATES: { id: FeatureState; label: string; help: string }[]
   {
     id: "readonly",
     label: "Frozen",
-    help: "Can be read, nothing can be saved. Use while a month is being closed or figures are being checked.",
+    help: "Hidden from everyone's menu (the developer still sees it). A saved link can still be read; nothing can be saved. Use while a month is being closed or figures are being checked.",
   },
   {
     id: "off",
@@ -154,6 +156,22 @@ export function saveFeatures(features: FeatureSwitch[]): void {
 
 export function featureFor(id: string): FeatureSwitch | undefined {
   return loadFeatures().find((f) => f.id === id);
+}
+
+/**
+ * Every module that is NOT live right now, with the paths it covers.
+ *
+ * Sent to the browser with the session so the menu, hub cards, search and
+ * home tiles can HIDE a frozen or switched-off module for everyone but the
+ * developer. Showing it greyed out was the bug: a frozen tile tells people
+ * where to go looking, and the business asked for it not to be there.
+ */
+export function inactiveSwitches(): { id: string; label: string; state: FeatureState; prefixes: string[] }[] {
+  const features = loadFeatures();
+  return SWITCHABLE.flatMap((f) => {
+    const sw = features.find((x) => x.id === f.id);
+    return sw && sw.state !== "live" ? [{ id: f.id, label: f.label, state: sw.state, prefixes: f.prefixes }] : [];
+  });
 }
 
 /**

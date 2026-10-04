@@ -9,6 +9,8 @@ import { useNotifications } from "@/lib/notifications";
 interface Settings {
   companyCodes: string[];
   allowedChats: string[];
+  receivingChats?: string[];
+  labChats?: string[];
   watchAllChats: boolean;
   ignoreOwnMessages: boolean;
   autoProcess: boolean;
@@ -54,6 +56,8 @@ export default function AutomationSettings() {
     } finally { setSaving(false); }
   }
 
+  const watched = new Set([...(settings.allowedChats || []), ...(settings.receivingChats || []), ...(settings.labChats || [])]).size;
+
   return (
     <GlassCard className="p-5">
       <div className="mb-4 flex items-start gap-3">
@@ -71,8 +75,8 @@ export default function AutomationSettings() {
       <div className="mt-3 rounded-xl border border-biome-sky/20 bg-biome-sky/5 p-3">
         <div className="flex items-start gap-2"><ShieldCheck size={14} className="mt-0.5 shrink-0 text-biome-skyBright" /><div className="min-w-0">
           <p className="text-[11.5px] font-medium text-biome-text">Chat scope</p>
-          <p className="mt-0.5 text-[10.5px] leading-relaxed text-biome-muted">{settings.watchAllChats ? "All WhatsApp chats are enabled by explicit choice." : settings.allowedChats.length ? `Restricted to ${settings.allowedChats.length} selected chat${settings.allowedChats.length === 1 ? "" : "s"}.` : "No chat is selected. Automatic processing is paused until the Sales group(s) are chosen."}</p>
-          <Link href="/whatsapp" className="mt-2 inline-flex text-[10.5px] font-medium text-biome-skyBright hover:underline">Open WhatsApp group controls →</Link>
+          <p className="mt-0.5 text-[10.5px] leading-relaxed text-biome-muted">{settings.watchAllChats ? "All WhatsApp chats are enabled by explicit choice." : watched ? `Restricted to ${watched} selected chat${watched === 1 ? "" : "s"}.` : "No chat is selected. Automatic processing is paused until the Sales group(s) are chosen."}</p>
+          <Link href="/whatsapp#connect" className="mt-2 inline-flex text-[10.5px] font-medium text-biome-skyBright hover:underline">Choose chats to watch →</Link>
         </div></div>
       </div>
     </GlassCard>

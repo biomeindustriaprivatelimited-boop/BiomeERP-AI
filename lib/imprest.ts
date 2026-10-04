@@ -22,7 +22,30 @@ import fs from "fs";
 import { paths, readJson, writeJsonAtomic, ensureDir } from "@/lib/dataRoot";
 
 export type ImprestKind = "advance" | "expense" | "return";
-export type ImprestStatus = "submitted" | "approved" | "rejected";
+/**
+ * `pending_budget_approval` — the expense would take an enforced budget
+ * past its amount, so it is held for the admin/developer. Once they pass
+ * it, it becomes an ordinary `submitted` claim for accounts.
+ */
+export type ImprestStatus = "submitted" | "approved" | "rejected" | "pending_budget_approval";
+
+/** Why an entry was held for budget approval, and what was decided. */
+export interface BudgetHold {
+  at: string;
+  breaches: {
+    budgetId: string; label: string; periodLabel: string;
+    amount: number; remainingBefore: number; overBy: number;
+  }[];
+  /** Total excess across the worst breach — the figure people quote. */
+  overBy: number;
+  decision: "pending" | "approved" | "rejected";
+  decidedBy: string | null;
+  decidedByName: string | null;
+  decidedAt: string | null;
+  note: string | null;
+  /** The amount the admin agreed to. An edit above it is checked again. */
+  approvedAmount: number | null;
+}
 
 /**
  * How the money physically moved.
@@ -160,6 +183,8 @@ export interface ImprestEntry {
   decidedAt: string | null;
   decisionNote: string | null;
   history: ImprestEvent[];
+  /** Set when the entry crossed an enforced budget. Kept after the decision. */
+  budgetHold?: BudgetHold | null;
 }
 
 interface PeopleFile { people: ImprestPerson[]; }
@@ -270,12 +295,16 @@ export interface ImprestBalance {
   /** Filed but not yet decided — shown separately, never mixed into inHand. */
   pendingClaims: number;
   pendingCount: number;
+  /** Over-budget entries waiting for the admin. */
+  budgetHeldCount: number;
+  budgetHeldAmount: number;
   lastActivity: string | null;
 }
 
 export function balanceFor(personId: string, entries: ImprestEntry[]): ImprestBalance {
   const mine = entries.filter((e) => e.personId === personId);
   let advanced = 0, spent = 0, returned = 0, pendingClaims = 0, pendingCount = 0;
+  let budgetHeldCount = 0, budgetHeldAmount = 0;
   let advancedByBank = 0, advancedByCash = 0;
   let last: string | null = null;
 
@@ -295,6 +324,9 @@ export function balanceFor(personId: string, entries: ImprestEntry[]): ImprestBa
       // An advance awaiting approval is money not yet handed over, so it
       // is not "pending against the float" the way a claim is.
       if (e.kind !== "advance") pendingClaims += e.amount;
+    } else if (e.status === "pending_budget_approval") {
+      budgetHeldCount += 1;
+      budgetHeldAmount += e.amount;
     }
     if (!last || e.updatedAt > last) last = e.updatedAt;
   }
@@ -311,6 +343,8 @@ export function balanceFor(personId: string, entries: ImprestEntry[]): ImprestBa
     inHand: advanced - spent - returned,
     pendingClaims,
     pendingCount,
+    budgetHeldCount,
+    budgetHeldAmount,
     lastActivity: last,
   };
 }
@@ -336,7 +370,52 @@ export function spentInMonth(personId: string, month: string, entries: ImprestEn
  * entry instead.
  */
 export function isEditable(entry: ImprestEntry): boolean {
-  return entry.status === "submitted";
+  return entry.status === "submitted" || entry.status === "pending_budget_approval";
+}
+
+export const STATUS_LABELS: Record<ImprestStatus, string> = {
+  submitted: "Waiting for accounts",
+  approved: "Approved",
+  rejected: "Rejected",
+  pending_budget_approval: "Over budget — needs admin approval",
+};
+
+/**
+ * Opens a float for a login that may file imprest but has none yet.
+ *
+ * Plant managers, coordinators and procurement hold `imprest.entry`, but
+ * until now they could file only after accounts had opened a holder
+ * record linked to their login — and the register refuses anyone not on
+ * the employee master, so a plant manager often never got one and the
+ * "File an entry" button never appeared. The login itself is the
+ * authority here: it already carries the permission to file.
+ *
+ * Details are taken from the employee master when the person is on it.
+ */
+export function ensureSelfHolder(
+  user: { id: string; username: string; name: string; plants?: string[] },
+  sessionPlant: string | null,
+  employees: { code: string; name: string; designation?: string; plant?: string; active?: boolean }[] = []
+): ImprestPerson {
+  const people = loadPeople();
+  const existing = people.find((p) => p.userId === user.id);
+  // A holder switched off by accounts stays off — never re-opened here.
+  if (existing) return existing;
+  const emp = employees.find((e) => e.active !== false && e.name.trim().toLowerCase() === user.name.trim().toLowerCase());
+  const taken = new Set(people.map((p) => p.code));
+  const base = ((emp?.code || user.username || "USER").toUpperCase().replace(/[^A-Z0-9-]/g, "") || "USER").slice(0, 10).padEnd(2, "X");
+  let code = base;
+  for (let i = 2; taken.has(code) && i < 999; i++) code = `${base.slice(0, 12 - String(i).length - 1)}-${i}`;
+  const person = makePerson({
+    code,
+    name: user.name,
+    designation: emp?.designation || "",
+    plant: sessionPlant || emp?.plant || (user.plants && user.plants.length === 1 ? user.plants[0] : "") || "",
+    userId: user.id,
+    monthlyLimit: 0,
+  });
+  savePeople([...people, person]);
+  return person;
 }
 
 export function event(by: string, byName: string, action: string, note?: string): ImprestEvent {

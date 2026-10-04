@@ -7,6 +7,7 @@ import { ChevronRight, Home } from "lucide-react";
 import { locate, FEATURE_MAP } from "@/lib/featureMap";
 import { Icon } from "@/components/hub/icons";
 import { useSession } from "@/lib/session";
+import { homePathFor } from "@/lib/permissions";
 
 /**
  * The shell every feature page wears — without touching the page.
@@ -21,13 +22,15 @@ import { useSession } from "@/lib/session";
  */
 export default function FeatureShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const { can } = useSession();
-  const hit = locate(pathname);
+  const { user, permissions, visible } = useSession();
+  const hit = locate(pathname, visible);
   if (!hit || pathname === "/" || pathname.startsWith("/hub/")) return <>{children}</>;
 
   const { node, category, parent } = hit;
   const feature = parent || node;
-  const pills = [feature, ...(feature.children || [])].filter((n) => !n.perm || can(n.perm as any));
+  // Only what this person may open — a frozen/off module or a page they
+  // lack access to is not drawn as a pill at all (the developer sees all).
+  const pills = [feature, ...(feature.children || [])].filter((n) => n.href === node.href || visible(n.href, n.perm));
   const activeHref = node.href;
 
   return (
@@ -35,7 +38,7 @@ export default function FeatureShell({ children }: { children: React.ReactNode }
       <motion.div initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35 }}
         className="flex flex-wrap items-center gap-2 rounded-2xl border border-biome-line bg-biome-bgSoft px-3 py-2 backdrop-blur">
         <nav className="flex min-w-0 max-w-full items-center gap-1 overflow-hidden whitespace-nowrap text-[10.5px] font-semibold text-biome-muted" aria-label="Breadcrumb">
-          <Link href="/" className="flex items-center gap-1 rounded-lg px-1.5 py-1 hover:text-biome-text"><Home size={11} /> Home</Link>
+          <Link href={homePathFor(user?.role, permissions)} className="flex items-center gap-1 rounded-lg px-1.5 py-1 hover:text-biome-text"><Home size={11} /> Home</Link>
           <ChevronRight size={11} />
           <Link href={`/hub/${category.id}`} className="flex items-center gap-1 rounded-lg px-1.5 py-1 hover:text-biome-text"><Icon name={category.icon} size={11} /> {category.label}</Link>
           <ChevronRight size={11} />

@@ -45,6 +45,10 @@ export async function GET(req: NextRequest) {
     settings: {
       companyCodes: s.companyCodes && s.companyCodes.length ? s.companyCodes : ["BDC", "BIPL"],
       allowedChats: s.allowedChats ?? [],
+      // Shown in Settings so "how many chats are watched" counts every
+      // workflow scope, not only the sales one.
+      receivingChats: Array.isArray((s as any).receivingChats) ? (s as any).receivingChats : [],
+      labChats: Array.isArray((s as any).labChats) ? (s as any).labChats : [],
       watchAllChats: s.watchAllChats === true,
       // Same default as the agent (whatsapp-agent/agent.js → settings()).
       ignoreOwnMessages: s.ignoreOwnMessages === true,

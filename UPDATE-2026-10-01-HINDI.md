@@ -110,3 +110,19 @@ Aur:
 **Aapko ek baar karna hai:** naya .exe install → WhatsApp page → QR dikhega (naya engine = naya
 linked device) → phone se scan karein. Phone ke "Linked devices" me purana "Biome Platform"
 device ho to use hata dein. Diagnostics me "Engine: WhatsApp Web (msedge.exe)" dikhna chahiye.
+
+## 8. 04-10-2026 — 14 points
+1. **Plant manager home**: naya "Plant home" — aaj ki biomass/transport entries, vehicle mismatch, low stock + shortcut tiles (Biomass, Transport, Imprest, Stock, Registration, Follow-ups, Attendance, Employees, Leave, Reports, Documents, Help).
+2. **Naam suggestion**: plant manager jo vendor/transporter/client register karta hai, uska naam biomass sheet (vendor) aur transport sheet (transporter, party) me 2 akshar type karte hi suggest hota hai — sirf usi plant ka; trading aur doosre plant ka data kabhi nahi milta.
+3. **Client PC**: ek baar server mil gaya / "Connect to server" se address daala to wahi yaad rehta hai; login par sirf User ID + password.
+4. **WhatsApp**: chat select na hone ke 5 kaaran theek; ab har chat par ek click "Watch" switch (turant save, Undo), groups + people, search/filter, naya page — summary cards + 7 tabs.
+5. **Plant manager imprest**: "New imprest entry" ab dikhta hai (holder apne aap banta hai); apne plant ke holders ke liye bhi entry.
+6. **Budget**: admin/developer — employee / plant / category / designation / department / company, monthly/quarterly/yearly/custom; budget se zyada entry ruk jaati hai, admin/developer "Over budget" tab se approve/reject. Report Builder me "Budget vs actual" aur "Over-budget approvals".
+7. **Role access**: har feature ki line par Active/Inactive, buttons Activate / Deactivate.
+8. Jo option user ke liye nahi hai ya freeze/off hai, wo uske sidebar, search, hub, home me dikhta hi nahi.
+9. Mouse ke saath ghoomne wala circle hata diya.
+10. **Plant ke employee**: plant manager apne plant ka employee add kare → admin/developer approve karein tab active; phir uski attendance, leave, imprest plant manager sambhalta hai.
+11. **Attendance**: plant manager ko apne plant ki sheet; naya Cards + Register view, mark menu, "Mark all present", summary, Excel/PDF, month lock; rules (week-off, late, back-dated days…) sirf developer.
+12. **Holiday announce**: theek kiya (calendar + attendance me Holiday lagta hai, email optional); sirf developer/admin.
+13. **Coordination import**: "Import data" → Excel template (Trading/Manufacturing) → har row ka check: Complete / Missing data (kya missing) / Error (vendor registered nahi, duplicate…) → "sirf complete rows" ya "missing data ke saath" import, ya Cancel.
+14. **Server PC**: X dabane par app band nahi hota — server tray (ghadi ke paas Biome icon) me chalta rehta hai; Windows ke saath apne aap start; tray me "Stop server & quit" se hi band (clients ko "Server connection lost" dikhega).

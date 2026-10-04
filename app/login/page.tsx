@@ -265,7 +265,7 @@ export default function LoginPage() {
               </span>
               <button type="button" onClick={() => (window as any).biomeDesktop?.openSetup?.()}
                 className="rounded-full border border-white/15 px-2.5 py-1 font-semibold text-[#9fe870] hover:border-[#9fe870]/50">
-                {desk.mode === "client" ? "Change server" : "Connect to another server"}
+                {desk.mode === "client" ? "Connect to server" : "Connect to another server"}
               </button>
             </div>
           )}

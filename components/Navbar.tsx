@@ -22,7 +22,7 @@ import { usePlants } from "@/lib/usePlants";
  */
 export default function Navbar() {
   const PLANTS = usePlants();
-  const { user, plant, can, signOut } = useSession();
+  const { user, plant, visible, signOut } = useSession();
   const [mode, setMode] = useState<ColorMode>("light");
   const [menuOpen, setMenuOpen] = useState(false);
   // Where the menu opens, measured from the chip. The menu is portaled to
@@ -102,13 +102,13 @@ export default function Navbar() {
             <NotificationBell />
           </div>
 
-          <Link
+          {visible("/assistant") && <Link
             href="/assistant"
             title="BIOME AI Business Assistant"
             className="max-sm:hidden flex h-9 w-9 items-center justify-center rounded-xl border border-biome-line bg-gradient-to-br from-violet-500/15 to-indigo-500/15 text-violet-500 transition-transform hover:scale-105"
           >
             <Bot size={15} />
-          </Link>
+          </Link>}
 
           {/* User */}
           <div className="relative">
@@ -152,7 +152,7 @@ export default function Navbar() {
                     ["/settings", "Settings", "settings"],
                     ["/vendors", "Vendor registry", "vendors"],
                   ] as const)
-                    .filter(([, , perm]) => can(perm))
+                    .filter(([href, , perm]) => visible(href, perm))
                     .map(([href, label]) => (
                       <Link
                         key={href}

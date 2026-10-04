@@ -12,6 +12,11 @@
  * names resolved in components/hub/icons.tsx.
  */
 
+// Note: a node is shown only when BOTH its own `perm` and the route's
+// permission (lib/permissions ROUTE_PERMISSIONS) are held. "Plant vendors &
+// clients" uses perm "stock" on top of /partners' "partners", so it sits
+// under Plant only for plant-side roles (plant manager, procurement) — a
+// coordinator's trading register stays under Partners.
 export interface FeatureNode {
   id: string;
   label: string;
@@ -67,7 +72,7 @@ export const FEATURE_MAP: FeatureCategory[] = [
       { id: "plants", label: "Biomass entry", href: "/plants", icon: "Factory", perm: "plant", what: "Biomass purchase sheet per plant — weights, deductions, amount, weighbridge slip checked against the entry." },
       { id: "transport", label: "Transport entry", href: "/transport", icon: "Truck", perm: "plant", what: "Every vehicle out of the plant — dispatch/receiving weight, freight, driver; matched against coordination." },
       { id: "stock", label: "Stock · spare parts & stores", href: "/stock", icon: "Package", perm: "stock", what: "Purchases with invoice/parchi upload, stock on hand, parts issued to each machine, re-order alerts — Tally-style stock." },
-      { id: "plant-vendors", label: "Plant vendors & clients", href: "/partners", icon: "Handshake", perm: "partners", what: "Register manufacturing-side vendors (biomass, spare parts, services) and clients with KYC." },
+      { id: "plant-vendors", label: "Plant vendors & clients", href: "/partners", icon: "Handshake", perm: "stock", what: "Register manufacturing-side vendors (biomass, spare parts, services) and clients with KYC." },
     ],
   },
   {
@@ -96,7 +101,7 @@ export const FEATURE_MAP: FeatureCategory[] = [
     id: "people", label: "People", tagline: "Staff and labour — attendance to payslip.", icon: "Users", tone: "from-sky-500/25 to-blue-400/10",
     features: [
       { id: "employees", label: "Employees", href: "/employees", icon: "Users", perm: "employee.view", what: "The employee master with KYC files." },
-      { id: "attendance", label: "Attendance", href: "/attendance", icon: "CalendarDays", perm: "attendance.entry", what: "Month grid with a mark picker; holiday and shutdown notices." },
+      { id: "attendance", label: "Attendance", href: "/attendance", icon: "CalendarDays", perm: "attendance.entry", what: "Month grid with a mark picker for each person; holidays show on the grid." },
       { id: "leave", label: "Leave", href: "/leave", icon: "CalendarDays", perm: "attendance.entry", what: "Apply, approve, and see it land on the attendance grid." },
       { id: "payroll", label: "Payroll & Salary", href: "/payroll", icon: "Wallet", perm: "payroll", what: "Runs, payslips (download or email), PF/ESIC." },
       { id: "organisation", label: "Organisation", href: "/organisation", icon: "Building2", perm: "payroll", what: "Departments, designations, locations." },
@@ -156,7 +161,37 @@ export function flatFeatures() {
 }
 
 /** Which registry entry a pathname belongs to (longest href prefix wins). */
-export function locate(pathname: string) {
+export function locate(pathname: string, visible?: (href: string, perm?: string) => boolean) {
   const all = flatFeatures().filter((x) => pathname === x.node.href || pathname.startsWith(x.node.href + "/") || (x.node.href !== "/" && pathname.startsWith(x.node.href + "?")));
-  return all.sort((a, b) => b.node.href.length - a.node.href.length)[0] || null;
+  // When the same page sits in two categories (/partners: Plant and
+  // Partners), prefer the entry this person can actually see.
+  const seen = visible ? all.filter((x) => visible(x.node.href, x.node.perm)) : [];
+  return (seen.length ? seen : all).sort((a, b) => b.node.href.length - a.node.href.length)[0] || null;
+}
+
+/**
+ * The features of a category this person may actually open.
+ *
+ * `visible(href, perm)` is the session's check (permission + frozen/off
+ * switches). A feature that fails it is DROPPED — never drawn locked or
+ * greyed. If the feature itself is hidden but some of its sub-features are
+ * not, those sub-features are promoted to cards of their own, so access
+ * given to one sub-page is still reachable.
+ */
+export function visibleFeatures(
+  features: FeatureNode[],
+  visible: (href: string, perm?: string) => boolean
+): FeatureNode[] {
+  const out: FeatureNode[] = [];
+  for (const f of features) {
+    const kids = (f.children || []).filter((k) => visible(k.href, k.perm));
+    if (visible(f.href, f.perm)) out.push({ ...f, children: kids });
+    else out.push(...kids.map((k) => ({ ...k, children: [] })));
+  }
+  return out;
+}
+
+/** Categories with at least one visible feature, features already filtered. */
+export function visibleCategories(visible: (href: string, perm?: string) => boolean): FeatureCategory[] {
+  return FEATURE_MAP.map((c) => ({ ...c, features: visibleFeatures(c.features, visible) })).filter((c) => c.features.length > 0);
 }

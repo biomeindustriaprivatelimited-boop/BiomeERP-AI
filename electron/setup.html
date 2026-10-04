@@ -62,7 +62,7 @@
       <div class="head">
         <img src="icon.png" alt="" />
         <div>
-          <h1>Connect to the Biome server</h1>
+          <h1>Connect to server</h1>
           <p class="sub">This PC is a client — all data stays on the server PC.</p>
         </div>
       </div>
@@ -119,7 +119,7 @@
           }
           if (i && i.serverUrl) $("addr").value = i.serverUrl;
           if (i && i.mode === "client") {
-            document.querySelector(".sub").textContent = "Currently connected to " + i.serverUrl + ". Change it below.";
+            document.querySelector(".sub").textContent = "Connected to " + i.serverUrl + " — saved on this PC. Change it only if the server moved.";
           }
         }).catch(function () {});
       }

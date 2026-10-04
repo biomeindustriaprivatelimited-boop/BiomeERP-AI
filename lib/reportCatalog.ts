@@ -19,7 +19,12 @@
 import path from "path";
 import { paths, readJson } from "@/lib/dataRoot";
 import type { Permission, Role } from "@/lib/permissions";
-import { loadEntries as loadImprestEntries, loadPeople as loadImprestPeople } from "@/lib/imprest";
+import { loadEntries as loadImprestEntries, loadPeople as loadImprestPeople, STATUS_LABELS as IMPREST_STATUS } from "@/lib/imprest";
+import {
+  loadBudgets as loadImprestBudgets, makeLookup as budgetLookup, visibleBudgets, windowsBetween, usageIn,
+  BUDGET_SCOPES, BUDGET_PERIODS,
+} from "@/lib/imprestBudget";
+import { loadEmployees } from "@/lib/payroll";
 import { loadTrips, shortageFor, derivedStatus, TRIP_STATUS } from "@/lib/coordination";
 import { loadPartners, gapsFor, PARTNER_KINDS, SUPPLY_CATEGORIES } from "@/lib/partners";
 import { loadStock, stockRows, computeBalances, balanceOf, MOVEMENT_LABEL } from "@/lib/stock";
@@ -56,6 +61,12 @@ export interface DatasetDef {
   /** Any ONE of these opens the report. */
   perms: Permission[];
   dateField: string | null;
+  /**
+   * For rows that span a period (budgets): the end-date field. The date
+   * range then keeps every row whose period OVERLAPS it, so a yearly
+   * budget still shows when "This month" is picked.
+   */
+  dateEndField?: string;
   columns: ColumnDef[];
   /** The cuts that apply: row keys, with the label shown as "by …". */
   dimensions: { key: string; label: string }[];
@@ -129,6 +140,8 @@ export const DATASETS: DatasetDef[] = [
         const own = (e: any) => me && e.personId === me.id;
         entries = has(ctx, "imprest.approve")
           ? entries.filter((e) => own(e) || e.status === "submitted" || e.decidedBy === ctx.userId)
+          : has(ctx, "imprest.viewPlant") && ctx.plant
+          ? entries.filter((e) => own(e) || e.plant === ctx.plant)
           : entries.filter(own);
       }
       return entries.map((e) => {
@@ -137,10 +150,134 @@ export const DATASETS: DatasetDef[] = [
           date: e.date, holder: p?.name || "—", plant: e.plant || p?.plant || "", plantName: plantLabel(e.plant || p?.plant || ""),
           kindLabel: e.kind === "advance" ? "Advance" : e.kind === "return" ? "Cash returned" : "Expense",
           category: e.category || (e.kind === "advance" ? "Advance" : e.kind === "return" ? "Cash returned" : "—"),
-          description: e.description, reference: e.reference, mode: e.mode, status: e.status, filedBy: e.createdByName,
+          description: e.description, reference: e.reference, mode: e.mode, status: IMPREST_STATUS[e.status] || e.status, filedBy: e.createdByName,
           expense: e.kind === "expense" ? e.amount : 0, advance: e.kind === "advance" ? e.amount : 0,
         };
       });
+    },
+  },
+
+  /* ---------------- Imprest budgets ---------------- */
+  {
+    id: "imprest_budget", module: "Imprest", label: "Imprest — budget vs actual",
+    description: "Every imprest budget, period by period: allocation, approved spend, claims waiting, over-budget entries held for admin, what is left and % used. Cut by employee, plant, expense head, scope or period.",
+    perms: ["imprest.view"], dateField: "periodStart", dateEndField: "periodEnd",
+    columns: [
+      { key: "periodStart", label: "Period from", type: "date" },
+      { key: "periodEnd", label: "Period to", type: "date" },
+      { key: "periodLabel", label: "Period", type: "text" },
+      { key: "budget", label: "Budget", type: "text", width: 34 },
+      { key: "scopeLabel", label: "Budget on", type: "text" },
+      { key: "periodType", label: "Frequency", type: "text" },
+      { key: "holder", label: "Employee", type: "text" },
+      { key: "plantName", label: "Plant", type: "text" },
+      { key: "category", label: "Expense head", type: "text" },
+      { key: "limitType", label: "Limit", type: "text" },
+      { key: "allocated", label: "Budget ₹", type: "money", sum: true },
+      { key: "spent", label: "Approved ₹", type: "money", sum: true },
+      { key: "committed", label: "Waiting ₹", type: "money", sum: true },
+      { key: "actual", label: "Actual (approved + waiting) ₹", type: "money", sum: true },
+      { key: "held", label: "Held over budget ₹", type: "money", sum: true },
+      { key: "remaining", label: "Remaining ₹", type: "money", sum: true },
+      { key: "overBy", label: "Over by ₹", type: "money", sum: true },
+      { key: "usedPct", label: "Used %", type: "pct" },
+      { key: "state", label: "Status", type: "text" },
+    ],
+    dimensions: [
+      { key: "holder", label: "Employee" }, { key: "plantName", label: "Plant" }, { key: "category", label: "Expense head" },
+      { key: "budget", label: "Budget" }, { key: "scopeLabel", label: "Budget on" }, { key: "periodLabel", label: "Period" },
+      { key: "periodType", label: "Frequency" }, { key: "state", label: "Status" }, { key: "limitType", label: "Limit" },
+    ],
+    load: (ctx) => {
+      const people = loadImprestPeople();
+      const lookup = budgetLookup(people, loadEmployees());
+      const me = people.find((p) => p.userId === ctx.userId);
+      const budgets = visibleBudgets(loadImprestBudgets(), {
+        all: has(ctx, "imprest.viewAll") || has(ctx, "imprest.approve") || ctx.role === "admin" || ctx.role === "developer",
+        personId: me?.id ?? null,
+        plantView: has(ctx, "imprest.viewPlant") && ctx.plant ? ctx.plant : null,
+        sessionPlant: ctx.plant,
+        lookup,
+      });
+      const entries = loadImprestEntries();
+      const today = new Date().toISOString().slice(0, 10);
+      // Two financial years back is enough history and keeps monthly
+      // budgets from producing hundreds of empty rows.
+      const earliest = `${Number(today.slice(0, 4)) - 2}-04-01`;
+      const rows: Record<string, any>[] = [];
+      for (const b of budgets) {
+        // From when it first applied: its custom start, its "runs from"
+        // month, or else the month it was created.
+        const from = b.period === "custom" ? b.startDate : b.fromMonth ? `${b.fromMonth}-01` : `${b.createdAt.slice(0, 7)}-01`;
+        for (const w of windowsBetween(b, from < earliest ? earliest : from, today)) {
+          const u = usageIn(b, w, entries, lookup);
+          const holderName = b.match.personId ? people.find((p) => p.id === b.match.personId)?.name || "—" : b.match.designation ? `All ${b.match.designation}` : b.match.department ? `${b.match.department} dept.` : "All";
+          rows.push({
+            periodStart: w.start, periodEnd: w.end, periodLabel: w.label,
+            budget: b.label,
+            scopeLabel: BUDGET_SCOPES.find((x) => x.id === b.scope)?.label || b.scope,
+            periodType: BUDGET_PERIODS.find((x) => x.id === b.period)?.label || b.period,
+            holder: holderName,
+            plant: b.match.plant || (b.match.personId ? lookup(b.match.personId)?.plant || "" : ""),
+            plantName: b.match.plant ? plantLabel(b.match.plant) : b.match.personId ? plantLabel(lookup(b.match.personId)?.plant || "") : "All plants",
+            category: b.match.category || "All heads",
+            limitType: b.enforce ? "Hard (needs admin)" : "Warn only",
+            allocated: b.amount, spent: u.spent, committed: u.committed, actual: u.spent + u.committed,
+            held: u.held, remaining: Math.max(0, u.remaining), overBy: u.remaining < 0 ? -u.remaining : 0,
+            usedPct: b.amount > 0 ? Math.round(((u.spent + u.committed) / b.amount) * 1000) / 10 : 0,
+            state: u.state === "over" ? "Over budget" : u.state === "tight" ? "90%+ used" : u.state === "watch" ? "75%+ used" : "Within budget",
+            ...(b.active ? {} : { state: "Switched off" }),
+          });
+        }
+      }
+      return rows;
+    },
+  },
+
+  {
+    id: "imprest_budget_holds", module: "Imprest", label: "Imprest — over-budget approvals",
+    description: "Every expense that crossed a hard budget and was held for the admin: which budget, by how much, and whether it was passed or refused.",
+    perms: ["imprest.view"], dateField: "date",
+    columns: [
+      { key: "date", label: "Date", type: "date" },
+      { key: "holder", label: "Employee", type: "text" },
+      { key: "plantName", label: "Plant", type: "text" },
+      { key: "category", label: "Expense head", type: "text" },
+      { key: "description", label: "Description", type: "text", width: 40 },
+      { key: "budgets", label: "Budget crossed", type: "text", width: 40 },
+      { key: "decision", label: "Decision", type: "text" },
+      { key: "decidedBy", label: "Decided by", type: "text" },
+      { key: "decidedOn", label: "Decided on", type: "date" },
+      { key: "note", label: "Note", type: "text", width: 30 },
+      { key: "currentStatus", label: "Entry status now", type: "text" },
+      { key: "amount", label: "Amount ₹", type: "money", sum: true },
+      { key: "overBy", label: "Over by ₹", type: "money", sum: true },
+    ],
+    dimensions: [
+      { key: "holder", label: "Employee" }, { key: "plantName", label: "Plant" }, { key: "category", label: "Expense head" },
+      { key: "budgets", label: "Budget crossed" }, { key: "decision", label: "Decision" }, { key: "decidedBy", label: "Decided by" },
+    ],
+    load: (ctx) => {
+      const people = loadImprestPeople();
+      const me = people.find((p) => p.userId === ctx.userId);
+      const wide = has(ctx, "imprest.viewAll") || has(ctx, "imprest.approve") || ctx.role === "admin" || ctx.role === "developer";
+      const plantView = has(ctx, "imprest.viewPlant") && ctx.plant ? ctx.plant : null;
+      return loadImprestEntries()
+        .filter((e) => e.budgetHold)
+        .filter((e) => wide || (me && e.personId === me.id) || (plantView && e.plant === plantView))
+        .map((e) => {
+          const h = e.budgetHold!;
+          const p = people.find((x) => x.id === e.personId);
+          return {
+            date: e.date, holder: p?.name || "—", plant: e.plant || "", plantName: plantLabel(e.plant || p?.plant || ""),
+            category: e.category || "—", description: e.description,
+            budgets: h.breaches.map((b) => `${b.label} (${b.periodLabel})`).join("; ") || "—",
+            decision: h.decision === "approved" ? "Passed by admin" : h.decision === "rejected" ? "Refused by admin" : "Waiting for admin",
+            decidedBy: h.decidedByName || "—", decidedOn: h.decidedAt ? h.decidedAt.slice(0, 10) : "",
+            note: h.note || "", currentStatus: IMPREST_STATUS[e.status] || e.status,
+            amount: e.amount, overBy: h.overBy,
+          };
+        });
     },
   },
 
@@ -538,7 +675,8 @@ export function runDataset(ctx: ReportContext, spec: RunSpec) {
   if (!ds) throw new Error("That report is not available for your login.");
   let rows = ds.load(ctx);
   if (ds.dateField) {
-    if (spec.from) rows = rows.filter((r) => String(r[ds.dateField!] || "") >= spec.from!);
+    const endKey = ds.dateEndField || ds.dateField;
+    if (spec.from) rows = rows.filter((r) => String(r[endKey] || "") >= spec.from!);
     if (spec.to) rows = rows.filter((r) => String(r[ds.dateField!] || "") <= spec.to!);
   }
   if (spec.plant) rows = rows.filter((r) => !("plant" in r) || r.plant === spec.plant || String(r.plants || "").includes(spec.plant!));

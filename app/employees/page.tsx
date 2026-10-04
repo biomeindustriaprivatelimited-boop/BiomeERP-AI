@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   UserCog, Plus, Loader2, AlertCircle, Check, Paperclip, FileText, ShieldAlert,
-  Search, Snowflake, Contact, Landmark, Phone, ScrollText, Trash2,
+  Search, Snowflake, Contact, Landmark, Phone, ScrollText, Trash2, Hourglass, X, Undo2,
 } from "lucide-react";
 import { usePlants } from "@/lib/usePlants";
 import FormPanel, { FormSection } from "@/components/FormPanel";
@@ -48,6 +48,7 @@ export default function EmployeesPage() {
   const [query, setQuery] = useState("");
   const [addOpen, setAddOpen] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -93,6 +94,12 @@ export default function EmployeesPage() {
               className="bmx-input w-[200px] rounded-xl border border-biome-line bg-biome-bg py-2 pl-8 pr-3 text-[12px] text-biome-text outline-none"
             />
           </div>
+          {(data?.pendingCount || 0) > 0 && (
+            <a href="#pending-approval" data-testid="pending-badge"
+              className="flex items-center gap-1.5 rounded-xl border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-[11px] font-bold text-amber-600">
+              <Hourglass size={13} /> {data.pendingCount} pending approval
+            </a>
+          )}
           {data?.canAdd && (
             <button onClick={() => setAddOpen(true)}
               className="bmx-btn flex items-center gap-2 rounded-xl bg-biome-leaf px-4 py-2.5 text-[11.5px] font-bold text-white">
@@ -107,6 +114,17 @@ export default function EmployeesPage() {
           <AlertCircle size={15} className="mt-px shrink-0 text-rose-500" />
           <p className="text-[11.5px] text-biome-text">{error}</p>
         </div>
+      )}
+
+      {notice && (
+        <div className="bmx-msg-in flex items-start gap-2 rounded-2xl border border-emerald-500/25 bg-emerald-500/[.07] px-4 py-3" data-testid="employees-notice">
+          <Check size={15} className="mt-px shrink-0 text-emerald-600" />
+          <p className="text-[11.5px] text-biome-text">{notice}</p>
+        </div>
+      )}
+
+      {(data?.requests || []).length > 0 && (
+        <RequestsPanel data={data} onChanged={load} setError={setError} />
       )}
 
       {flagged.length > 0 && (
@@ -189,7 +207,13 @@ export default function EmployeesPage() {
           onClose={() => setAddOpen(false)}
           org={data.org}
           myPlant={data.myPlant}
-          onSaved={() => { setAddOpen(false); load(); }}
+          onSaved={(pending) => {
+            setAddOpen(false);
+            setNotice(pending
+              ? "Sent for approval. The person becomes active — for attendance, leave and imprest — once the admin or developer approves."
+              : "Employee added.");
+            load();
+          }}
         />
       )}
 
@@ -207,11 +231,116 @@ export default function EmployeesPage() {
   );
 }
 
+
+/* ------------------------------------------------------------------ */
+/* New-employee requests (plant manager → admin / developer)           */
+/* ------------------------------------------------------------------ */
+
+const REQ_STATUS: Record<string, [string, string]> = {
+  pending_approval: ["Pending approval", "border-amber-500/35 bg-amber-500/10 text-amber-600"],
+  approved: ["Approved", "border-emerald-500/35 bg-emerald-500/10 text-emerald-600"],
+  rejected: ["Rejected", "border-rose-500/35 bg-rose-500/10 text-rose-500"],
+  withdrawn: ["Withdrawn", "border-biome-line text-biome-muted"],
+};
+
+function RequestsPanel({ data, onChanged, setError }: { data: any; onChanged: () => void; setError: (s: string | null) => void }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [reason, setReason] = useState<Record<string, string>>({});
+  const requests: any[] = data.requests || [];
+  const office = !data.myPlant;
+
+  async function act(id: string, action: "approve" | "reject" | "withdraw") {
+    setBusy(id + action); setError(null);
+    try {
+      const res = await fetch("/api/payroll/employees", {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, action, reason: reason[id] || "" }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || `Failed (${res.status}).`);
+      onChanged();
+    } catch (e) { setError((e as Error).message); } finally { setBusy(null); }
+  }
+
+  return (
+    <section id="pending-approval" data-testid="pending-approval"
+      className="rounded-2xl border border-amber-500/30 bg-amber-500/[.04] p-4">
+      <h2 className="flex items-center gap-2 text-[13px] font-semibold text-biome-text">
+        <Hourglass size={14} className="text-amber-600" />
+        {office ? "Pending approval" : "Your requests"}
+        {data.pendingCount > 0 && (
+          <span className="rounded-full bg-amber-500 px-2 py-0.5 text-[10px] font-bold text-white">{data.pendingCount}</span>
+        )}
+      </h2>
+      <p className="mt-0.5 text-[10.5px] text-biome-muted">
+        {office
+          ? data.canApprove
+            ? "Plant managers asked to add these people. Nobody is active — in attendance, leave, imprest or payroll — until approved."
+            : "Waiting for the admin or the developer. Accounts can see the queue but not decide it."
+          : "People you asked to add. They appear in attendance, leave and imprest once approved."}
+      </p>
+      <div className="mt-3 space-y-2">
+        {requests.map((r) => {
+          const st = r.approval?.status || "pending_approval";
+          const [label, cls] = REQ_STATUS[st] || REQ_STATUS.pending_approval;
+          const pending = st === "pending_approval";
+          const own = r.approval?.requestedBy?.uid === data.me;
+          return (
+            <div key={r.id} data-testid="employee-request" className="rounded-xl border border-biome-line bg-biome-bgSoft px-3.5 py-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-[12.5px] font-semibold text-biome-text">{r.name}</p>
+                <span className="text-[10.5px] text-biome-muted">
+                  {r.code} · {r.designation || (r.type === "labour" ? "Labour" : "Staff")} · {r.plant}
+                </span>
+                <span className={`rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase tracking-[.1em] ${cls}`}>{label}</span>
+              </div>
+              <p className="mt-1 text-[10px] text-biome-muted">
+                Asked by {r.approval?.requestedBy?.name} · {r.approval?.requestedAt ? new Date(r.approval.requestedAt).toLocaleString("en-IN") : ""}
+                {r.approval?.decidedByName && !pending && ` · ${label.toLowerCase()} by ${r.approval.decidedByName}`}
+              </p>
+              {r.approval?.reason && !pending && (
+                <p className="mt-1.5 rounded-lg border border-biome-line bg-biome-bg px-2.5 py-1.5 text-[10.5px] text-biome-text">
+                  Reason: {r.approval.reason}
+                </p>
+              )}
+              {pending && data.canApprove && office && (
+                own ? (
+                  <p className="mt-2 text-[10.5px] text-biome-muted">Your own request — another approver must decide it.</p>
+                ) : (
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <input value={reason[r.id] || ""} onChange={(e) => setReason({ ...reason, [r.id]: e.target.value })}
+                      placeholder="Reason (required to reject)"
+                      className="bmx-input min-w-[200px] flex-1 rounded-lg border border-biome-line bg-biome-bg px-2.5 py-1.5 text-[11px] text-biome-text outline-none" />
+                    <button onClick={() => act(r.id, "approve")} disabled={Boolean(busy)}
+                      className="bmx-btn flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-[11px] font-bold text-white disabled:opacity-60">
+                      {busy === r.id + "approve" ? <Loader2 size={12} className="bmx-spin" /> : <Check size={12} />} Approve
+                    </button>
+                    <button onClick={() => act(r.id, "reject")} disabled={Boolean(busy) || !(reason[r.id] || "").trim()}
+                      className="bmx-btn flex items-center gap-1.5 rounded-lg border border-rose-500/40 px-3 py-1.5 text-[11px] font-bold text-rose-500 disabled:opacity-50">
+                      <X size={12} /> Reject
+                    </button>
+                  </div>
+                )
+              )}
+              {pending && !office && (
+                <button onClick={() => act(r.id, "withdraw")} disabled={Boolean(busy)}
+                  className="bmx-chip mt-2 flex items-center gap-1.5 rounded-lg border border-biome-line px-3 py-1.5 text-[11px] font-semibold text-biome-muted">
+                  <Undo2 size={12} /> Withdraw
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 /* ------------------------------------------------------------------ */
 
 function AddEmployee({
   open, onClose, org, myPlant, onSaved,
-}: { open: boolean; onClose: () => void; org: any; myPlant: string | null; onSaved: () => void }) {
+}: { open: boolean; onClose: () => void; org: any; myPlant: string | null; onSaved: (pending: boolean) => void }) {
   const PLANTS = usePlants();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -245,7 +374,7 @@ function AddEmployee({
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json.error || `Failed (${res.status}).`);
-      onSaved();
+      onSaved(Boolean(json.pending));
     } catch (err) { setError((err as Error).message); } finally { setBusy(false); }
   }
 
@@ -264,9 +393,16 @@ function AddEmployee({
         </>
       }
     >
+      {myPlant && (
+        <div className="rounded-xl border border-sky-500/25 bg-sky-500/[.06] px-4 py-3 text-[11px] leading-relaxed text-biome-text">
+          Adding to <b>your plant ({myPlant})</b>. This creates an employee <b>record</b> — not an app login —
+          and goes to the admin for <b>approval</b>. Once approved you keep their attendance, leave and imprest
+          here; pay can be left blank for accounts to fill in.
+        </div>
+      )}
       <FormSection title="Who they are" columns={3}>
         <Field label="Employee code"><input value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} placeholder="EMP001" className={inputCls} /></Field>
-        <Field label="Full name"><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inputCls} /></Field>
+        <Field label="Full name"><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Full name" className={inputCls} /></Field>
         <Field label="Father / spouse name"><input value={form.kyc.fatherOrSpouse} onChange={(e) => setKyc("fatherOrSpouse", e.target.value)} className={inputCls} /></Field>
         <Field label="Designation">
           <select value={form.designation} onChange={(e) => setForm({ ...form, designation: e.target.value })} className={inputCls}>
@@ -298,7 +434,7 @@ function AddEmployee({
         <Field label="Work email"><input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="For the payslip" className={inputCls} /></Field>
       </FormSection>
 
-      <FormSection title="How they are paid" hint="Skill category decides which state minimum wage applies to this person." columns={3}>
+      <FormSection title="How they are paid" hint={myPlant ? "Optional for a plant manager — accounts sets the pay. Skill category decides the state minimum wage." : "Skill category decides which state minimum wage applies to this person."} columns={3}>
         <Field label="Paid as">
           <select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })} className={inputCls}>
             <option value="staff">Staff — monthly salary</option>
