@@ -16,6 +16,19 @@
  *  and the TDL/parsing can be corrected quickly.
  */
 
+// Transport lives in tallyFinance.ts (one implementation for every route).
+import {
+  resolveTallyTarget,
+  type TallyRequestSettings,
+  parseLedgerBalances,
+  escapeXml,
+  decodeTally,
+  parseTallyAmount,
+  toTallyDate as toTallyDateShared,
+} from "./tallyFinance";
+export { resolveTallyTarget };
+export type { TallyRequestSettings };
+
 export interface TallyConnectionSettings {
   host: string; // e.g. "localhost" or a LAN IP like "192.168.1.20"
   port: number; // default 9000
@@ -33,38 +46,6 @@ export interface TallyVoucherRow {
 
 const DEFAULT_PORT = 9000;
 
-export interface TallyRequestSettings {
-  mode?: "direct" | "agent";
-  host?: string;
-  port?: number;
-  agentUrl?: string;
-  agentApiKey?: string;
-}
-
-/** Works out where to actually send the Tally XML request and with what
- *  headers, whether the person is connecting directly (same PC/LAN) or
- *  through the Biome Tally Agent (cross-network, see /tally-agent). */
-export function resolveTallyTarget(settings: TallyRequestSettings): {
-  url: string;
-  headers: Record<string, string>;
-} {
-  if (settings.mode === "agent") {
-    const base = (settings.agentUrl || "").trim().replace(/\/+$/, "");
-    return {
-      url: `${base}/tally`,
-      headers: {
-        "Content-Type": "text/xml",
-        Authorization: `Bearer ${settings.agentApiKey || ""}`,
-        // Without this, ngrok's free-tier warning interstitial page comes
-        // back instead of the actual response for any non-browser request.
-        "ngrok-skip-browser-warning": "biome-platform",
-      },
-    };
-  }
-  const host = (settings.host || "localhost").trim();
-  const port = settings.port && settings.port > 0 ? settings.port : DEFAULT_PORT;
-  return { url: `http://${host}:${port}`, headers: { "Content-Type": "text/xml" } };
-}
 
 export function normalizeTallySettings(s: Partial<TallyConnectionSettings>): TallyConnectionSettings {
   return {
@@ -77,7 +58,7 @@ export function normalizeTallySettings(s: Partial<TallyConnectionSettings>): Tal
 function toTallyDate(d: string): string {
   // Accepts "YYYY-MM-DD" (from <input type=date>) and returns Tally's
   // expected "YYYYMMDD".
-  return d.replace(/-/g, "");
+  return toTallyDateShared(d);
 }
 
 /** Minimal request Tally will always respond to (even a "company not
@@ -140,27 +121,10 @@ export function buildVoucherFetchRequestXml(
 </ENVELOPE>`;
 }
 
-function escapeXml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-/** Tally's XML output is famously a little loose (unescaped characters
- *  in older versions, its own numeric entity codes for punctuation).
- *  A small tolerant regex-based reader handles this better than a
- *  strict XML parser would, and needs no extra npm dependency. */
+/** Tally's XML output is a little loose (its own &#4; marker, unescaped
+ *  characters in older versions), so a tolerant tag reader is used. */
 function decodeTallyEntities(s: string): string {
-  return s
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#4;/g, "'") // Tally's own code for an apostrophe
-    .replace(/&#39;/g, "'")
-    .trim();
+  return decodeTally(s).trim();
 }
 
 function extractBlocks(xml: string, tag: string): string[] {
@@ -195,7 +159,7 @@ export function parseVoucherExportXml(xml: string): TallyVoucherRow[] {
     const entryBlocks = extractBlocks(block, "LEDGERENTRY");
     const entries = entryBlocks.map((eb) => ({
       ledgerName: extractTag(eb, "LEDGERNAME") || "",
-      amount: parseFloat((extractTag(eb, "AMOUNT") || "0").replace(/,/g, "")) || 0,
+      amount: parseTallyAmount(extractTag(eb, "AMOUNT")),
     }));
 
     let amount: number | null = null;
@@ -238,12 +202,21 @@ export function tallyRowsToParsedFile(
   };
 }
 
-/** Fetches Ledger MASTERS (name, group, opening/closing balance) — this
- *  uses Tally's generic inline-collection request (same mechanism as the
- *  ping request), so it does NOT need the custom TDL at all. Used to
- *  power Vendors / Customers / Ledgers pages by filtering on `parent`
- *  (Tally's group name, e.g. "Sundry Creditors", "Sundry Debtors"). */
-export function buildLedgerMastersRequestXml(): string {
+/** Fetches Ledger MASTERS (name, group, opening/closing balance) through
+ *  Tally's generic inline collection (no custom TDL needed).
+ *
+ *  Always pass the company and period: without SVCURRENTCOMPANY Tally
+ *  answers for whichever company is active on its screen, and without
+ *  SVFROMDATE/SVTODATE for whatever period was last chosen there. */
+export function buildLedgerMastersRequestXml(opts: { company?: string; from?: string; to?: string } = {}): string {
+  const sv = [
+    `<SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>`,
+    opts.company ? `<SVCURRENTCOMPANY>${escapeXml(opts.company)}</SVCURRENTCOMPANY>` : "",
+    opts.from ? `<SVFROMDATE TYPE="Date">${toTallyDate(opts.from)}</SVFROMDATE>` : "",
+    opts.to ? `<SVTODATE TYPE="Date">${toTallyDate(opts.to)}</SVTODATE>` : "",
+  ]
+    .filter(Boolean)
+    .join("\n    ");
   return `<ENVELOPE>
  <HEADER>
   <VERSION>1</VERSION>
@@ -254,7 +227,7 @@ export function buildLedgerMastersRequestXml(): string {
  <BODY>
   <DESC>
    <STATICVARIABLES>
-    <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+    ${sv}
    </STATICVARIABLES>
    <TDL>
     <TDLMESSAGE>
@@ -271,31 +244,20 @@ export function buildLedgerMastersRequestXml(): string {
 
 export interface TallyLedgerMaster {
   name: string;
+  /** Immediate parent group. */
   group: string | null;
+  /** Tally XML sign: Dr negative, Cr positive. */
   openingBalance: number;
   closingBalance: number;
+  /** Set by /api/tally/ledgers: Tally's predefined group above this
+   *  ledger (e.g. "Sundry Debtors"), found by walking the group tree. */
+  reservedGroup?: string | null;
+  primaryGroup?: string | null;
 }
 
-/** Parses the <COLLECTION> response from buildLedgerMastersRequestXml.
- *  Tally emits one <LEDGER NAME="..."> element per ledger, each with
- *  child tags matching the fetch list (<PARENT>, <OPENINGBALANCE>,
- *  <CLOSINGBALANCE>). */
+/** Parses the <COLLECTION> response from buildLedgerMastersRequestXml. */
 export function parseLedgerMastersXml(xml: string): TallyLedgerMaster[] {
-  const blocks = extractBlocksWithAttrName(xml, "LEDGER");
-  return blocks.map(({ name, block }) => ({
-    name,
-    group: extractTag(block, "PARENT"),
-    openingBalance: parseFloat((extractTag(block, "OPENINGBALANCE") || "0").replace(/,/g, "")) || 0,
-    closingBalance: parseFloat((extractTag(block, "CLOSINGBALANCE") || "0").replace(/,/g, "")) || 0,
-  }));
-}
-
-function extractBlocksWithAttrName(xml: string, tag: string): { name: string; block: string }[] {
-  const re = new RegExp(`<${tag}[^>]*NAME="([^"]*)"[^>]*>([\\s\\S]*?)</${tag}>`, "gi");
-  const out: { name: string; block: string }[] = [];
-  let m;
-  while ((m = re.exec(xml))) out.push({ name: decodeTallyEntities(m[1]), block: m[2] });
-  return out;
+  return parseLedgerBalances(xml);
 }
 
 /** True if the response at least looks like Tally XML (vs. an HTML error

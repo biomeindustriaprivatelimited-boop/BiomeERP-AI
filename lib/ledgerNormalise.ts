@@ -85,20 +85,29 @@ export function parseAmount(raw: unknown): number {
   let s = String(raw).trim();
   if (!s) return 0;
 
-  // Trailing Dr/Cr markers carry sign meaning in Tally exports.
+  // Trailing Dr/Cr markers carry sign meaning in Tally exports — with or
+  // without a space ("5,000.00Dr" used to read as 0).
   let sign = 1;
-  const drCr = s.match(/\b(dr|cr)\b\.?$/i);
-  if (drCr) {
+  const drCr = s.match(/(dr|cr)\.?$/i);
+  if (drCr && /[\d)\s]$/.test(s.slice(0, drCr.index))) {
     if (drCr[1].toLowerCase() === "cr") sign = -1;
-    s = s.replace(/\b(dr|cr)\b\.?$/i, "").trim();
+    s = s.slice(0, drCr.index).trim();
   }
-  // Accounting negatives are parenthesised.
-  if (/^\(.*\)$/.test(s)) {
+  // Tally's own text form of a negative is "(-)5,000.00".
+  if (s.startsWith("(-)")) {
+    sign *= -1;
+    s = s.slice(3);
+  } else if (/^\(.*\)$/.test(s)) {
+    // Accounting negatives are parenthesised.
     sign *= -1;
     s = s.slice(1, -1);
   }
 
   s = s.replace(/[₹$,\s]/g, "");
+  if (s.startsWith("-")) {
+    sign *= -1;
+    s = s.slice(1);
+  }
   if (s === "" || s === "-") return 0;
 
   const n = Number(s);

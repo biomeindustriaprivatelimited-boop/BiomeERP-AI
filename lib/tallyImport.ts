@@ -112,8 +112,9 @@ export function readNumber(v: unknown): number {
   if (typeof v === "number") return Number.isFinite(v) ? v : 0;
   let s = String(v ?? "").trim();
   if (!s) return 0;
-  const negative = /^\(.*\)$/.test(s) || s.startsWith("-");
-  s = s.replace(/[()₹,\s]/g, "").replace(/^-/, "").replace(/(cr|dr)$/i, "");
+  // "(1,265)", "-1,265" and Tally's own "(-)1,265.00" are all negative.
+  const negative = /^\(.*\)$/.test(s) || s.startsWith("-") || s.startsWith("(-)");
+  s = s.replace(/[()₹,\s]/g, "").replace(/^-/, "").replace(/(cr|dr)\.?$/i, "");
   const n = Number(s);
   if (!Number.isFinite(n)) return 0;
   return negative ? -n : n;

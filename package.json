@@ -9,6 +9,7 @@
     "start": "next start",
     "lint": "next lint",
     "check": "node tools/check-coordination.mjs",
+    "check:tally": "node tools/tally-check.mjs",
     "electron:dev": "electron .",
     "dist:win": "next build && electron-builder --win --x64",
     "dist:win:dir": "next build && electron-builder --win --x64 --dir",

@@ -24,6 +24,7 @@ export default function TallyLedgerTable({ title, description, icon: Icon, group
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [basis, setBasis] = useState<string | null>(null);
 
   async function fetchLedgers() {
     setLoading(true);
@@ -38,11 +39,19 @@ export default function TallyLedgerTable({ title, description, icon: Icon, group
       const data = await res.json();
       if (!res.ok || data.error) throw new Error(data.error || "Could not fetch from Tally.");
       setLedgers(data.ledgers);
+      setBasis(
+        data.company
+          ? `${data.company} · ${data.period?.label ?? ""} (${data.period?.range ?? ""}) · read ${new Date(
+              data.fetchedAt
+            ).toLocaleTimeString("en-IN")}`
+          : null
+      );
     } catch (err: any) {
       setError(
         err?.message || "Could not fetch from Tally. Check Settings → Tally Integration."
       );
       setLedgers(null);
+      setBasis(null);
     } finally {
       setLoading(false);
     }
@@ -57,8 +66,14 @@ export default function TallyLedgerTable({ title, description, icon: Icon, group
     if (!ledgers) return [];
     let rows = ledgers;
     if (groupKeywords.length) {
+      // Match the immediate group AND the Tally group above it, so parties
+      // in sub-groups (e.g. "Debtors - NTPC" under Sundry Debtors) count.
       rows = rows.filter((l) =>
-        groupKeywords.some((kw) => (l.group || "").toLowerCase().includes(kw.toLowerCase()))
+        groupKeywords.some((kw) =>
+          [l.group, l.reservedGroup, l.primaryGroup].some((g) =>
+            (g || "").toLowerCase().includes(kw.toLowerCase())
+          )
+        )
       );
     }
     if (query.trim()) {
@@ -68,6 +83,7 @@ export default function TallyLedgerTable({ title, description, icon: Icon, group
     return rows;
   }, [ledgers, groupKeywords, query]);
 
+  // Tally sign: Dr negative, Cr positive. Summed as-is, then shown Dr/Cr.
   const totalClosing = filtered.reduce((sum, l) => sum + l.closingBalance, 0);
 
   function exportExcel() {
@@ -76,8 +92,11 @@ export default function TallyLedgerTable({ title, description, icon: Icon, group
         [title]: filtered.map((l) => ({
           Name: l.name,
           Group: l.group ?? "",
-          "Opening Balance": l.openingBalance,
-          "Closing Balance": l.closingBalance,
+          "Tally Group": l.reservedGroup ?? "",
+          "Opening Balance": Math.abs(l.openingBalance),
+          "Opening Dr/Cr": drCr(l.openingBalance),
+          "Closing Balance": Math.abs(l.closingBalance),
+          "Closing Dr/Cr": drCr(l.closingBalance),
         })),
       },
       `${title.toLowerCase().replace(/\s+/g, "-")}.xlsx`
@@ -142,10 +161,12 @@ export default function TallyLedgerTable({ title, description, icon: Icon, group
         {filtered.length > 0 && (
           <>
             <div className="mb-3 flex items-center justify-between text-[11px] text-biome-muted">
-              <span>{filtered.length} ledgers</span>
+              <span>
+                {filtered.length} ledgers{basis ? ` · ${basis}` : ""}
+              </span>
               <span>
                 Total closing balance:{" "}
-                <span className="font-medium text-biome-text">{formatINR(totalClosing)}</span>
+                <span className="font-medium text-biome-text">{formatDrCr(totalClosing)}</span>
               </span>
             </div>
             <div className="overflow-x-auto rounded-xl border border-biome-line">
@@ -168,12 +189,17 @@ export default function TallyLedgerTable({ title, description, icon: Icon, group
                       className="border-t border-biome-line/60"
                     >
                       <td className="px-3 py-2 text-biome-text">{l.name}</td>
-                      <td className="px-3 py-2 text-biome-muted">{l.group ?? "—"}</td>
+                      <td className="px-3 py-2 text-biome-muted">
+                        {l.group ?? "—"}
+                        {l.reservedGroup && l.reservedGroup !== l.group && (
+                          <span className="ml-1 text-[10px] text-biome-muted/70">({l.reservedGroup})</span>
+                        )}
+                      </td>
                       <td className="px-3 py-2 text-right text-biome-muted">
-                        {formatINR(l.openingBalance)}
+                        {formatDrCr(l.openingBalance)}
                       </td>
                       <td className="px-3 py-2 text-right font-medium text-biome-text">
-                        {formatINR(l.closingBalance)}
+                        {formatDrCr(l.closingBalance)}
                       </td>
                     </motion.tr>
                   ))}
@@ -185,4 +211,14 @@ export default function TallyLedgerTable({ title, description, icon: Icon, group
       </GlassCard>
     </div>
   );
+}
+
+/** Tally's XML sign: Dr negative, Cr positive. */
+function drCr(n: number): string {
+  return n < 0 ? "Dr" : n > 0 ? "Cr" : "";
+}
+
+function formatDrCr(n: number): string {
+  if (!n) return formatINR(0);
+  return `${formatINR(Math.abs(n))} ${drCr(n)}`;
 }

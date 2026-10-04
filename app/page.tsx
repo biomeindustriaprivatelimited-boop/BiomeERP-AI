@@ -25,7 +25,7 @@ import {
   Percent,
   Building2,
 } from "lucide-react";
-import { useTallyFull, inrShort as inrShortShared } from "@/lib/useTallyFull";
+import { useTallyFull, tallyBasisLine, inrShort as inrShortShared } from "@/lib/useTallyFull";
 
 interface Summary {
   cashInHand: number | null;
@@ -85,7 +85,8 @@ export default function DashboardPage() {
     return () => clearInterval(t);
   }, []);
 
-  const { data: full, loading: tallyLoading, error: fullError, reload } = useTallyFull();
+  // Balances only — the KPIs never depend on the (slower) voucher pull.
+  const { data: full, loading: tallyLoading, error: fullError, reload } = useTallyFull({ includeVouchers: false });
   const load = reload;
 
   useEffect(() => {
@@ -184,14 +185,23 @@ export default function DashboardPage() {
         ))}
       </div>
 
+      {/* What the figures are: period, company, when read */}
+      {full && !tallyError && (
+        <p className="px-1 text-[11px] text-biome-muted">
+          {tallyBasisLine(full)}
+          {" · receivables & payables are net of advances"}
+          {full.summary.bankOverdraft ? ` · bank OD/CC owed ${inrShort(full.summary.bankOverdraft)} (not in bank balance)` : ""}
+        </p>
+      )}
+
       {/* Tally not reachable — one quiet line, not a wall of text */}
       {tallyError && (
         <div className="glass flex flex-wrap items-center gap-x-3 gap-y-1 rounded-2xl px-4 py-2.5">
           <Plug size={14} className="shrink-0 text-biome-bolt" />
           <p className="text-[11.5px] text-biome-text">
-            Tally isn&apos;t connected, so the figures above stay blank.
+            Couldn&apos;t read Tally, so the figures above stay blank (no old numbers are shown).
           </p>
-          <p className="min-w-0 flex-1 truncate text-[11px] text-biome-muted" title={tallyError}>
+          <p className="min-w-0 flex-1 text-[11px] text-biome-muted" title={tallyError}>
             {tallyError}
           </p>
           <Link href="/settings" className="shrink-0 text-[11.5px] font-medium text-biome-leafBright hover:underline">
@@ -207,7 +217,9 @@ export default function DashboardPage() {
           <div className="mb-4 flex items-center justify-between">
             <div>
               <h2 className="font-display text-[15px] font-semibold text-biome-text">Sales vs Purchases</h2>
-              <p className="text-[11px] text-biome-muted">Closing balances for the open period</p>
+              <p className="text-[11px] text-biome-muted">
+                {full?.period?.label ? `Sales & Purchase Accounts, ${full.period.label} (excl. GST)` : "Sales & Purchase Accounts"}
+              </p>
             </div>
             <span className="rounded-lg border border-biome-line px-2.5 py-1 text-[11px] text-biome-muted">
               From Tally
@@ -543,7 +555,11 @@ function buildAlerts(data: DashboardData | null, wa: any) {
   if (data?.summary.payables) {
     out.push({
       title: `${inrShort(data.summary.payables)} owed to vendors`,
-      detail: `Across ${(data as any).counts?.creditors ?? 0} creditor ledgers.`,
+      detail:
+        `Across ${(data as any).counts?.creditors ?? 0} creditor ledgers with a balance` +
+        ((data as any).summary?.advancesToVendors
+          ? `, net of ${inrShort((data as any).summary.advancesToVendors)} advances paid.`
+          : "."),
       severity: "medium",
       tone: "text-amber-500",
       href: "/vendors",

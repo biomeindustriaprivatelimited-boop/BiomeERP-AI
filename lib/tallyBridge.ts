@@ -19,6 +19,8 @@
  * caller can fall back to the legacy path rather than showing an error.
  */
 
+import { parseTallyAmount, escapeXml, toTallyDate } from "./tallyFinance";
+
 export interface TallyConn {
   host: string;
   port: number;
@@ -51,32 +53,25 @@ function envelope(reportName: string, conn: TallyConn, extra = ""): string {
 </ENVELOPE>`;
 }
 
-function escapeXml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
 /** Tally wants dates as YYYYMMDD. */
-function tallyDate(d: string): string {
-  return d.replace(/-/g, "").slice(0, 8);
-}
+const tallyDate = (d: string) => toTallyDate(d);
+
+/** Balances are "as on" SVTODATE and P&L figures are for SVFROMDATE ..
+ *  SVTODATE. Without these Tally uses whatever period was last chosen on
+ *  its screen (Alt+F2), so every balance request carries them. */
+const period = (from?: string, to?: string) =>
+  from && to
+    ? `<SVFROMDATE TYPE="Date">${tallyDate(from)}</SVFROMDATE>
+        <SVTODATE TYPE="Date">${tallyDate(to)}</SVTODATE>`
+    : "";
 
 export const requests = {
   version: (c: TallyConn) => envelope("BiomeVersionInfo", c),
-  ledgers: (c: TallyConn) => envelope("BiomeLedgerMasters", c),
-  balanceSheet: (c: TallyConn) => envelope("BiomeBalanceSheet", c),
-  profitLoss: (c: TallyConn) => envelope("BiomeProfitLoss", c),
-  stock: (c: TallyConn) => envelope("BiomeStockItems", c),
-  vouchers: (c: TallyConn, from: string, to: string) =>
-    envelope(
-      "BiomeVouchers",
-      c,
-      `<SVFROMDATE TYPE="Date">${tallyDate(from)}</SVFROMDATE>
-        <SVTODATE TYPE="Date">${tallyDate(to)}</SVTODATE>`
-    ),
+  ledgers: (c: TallyConn, from?: string, to?: string) => envelope("BiomeLedgerMasters", c, period(from, to)),
+  balanceSheet: (c: TallyConn, from?: string, to?: string) => envelope("BiomeBalanceSheet", c, period(from, to)),
+  profitLoss: (c: TallyConn, from?: string, to?: string) => envelope("BiomeProfitLoss", c, period(from, to)),
+  stock: (c: TallyConn, from?: string, to?: string) => envelope("BiomeStockItems", c, period(from, to)),
+  vouchers: (c: TallyConn, from: string, to: string) => envelope("BiomeVouchers", c, period(from, to)),
 };
 
 // ---------------------------------------------------------------------
@@ -111,11 +106,11 @@ function tagText(block: string, tag: string): string | null {
   return v === "" ? null : v;
 }
 
+/** Amounts from TDL fields often arrive as text ("18,65,432.00 Dr",
+ *  "(-)5,000.00"); a plain Number() turned all of those into 0. Result is
+ *  in Tally's XML convention: Dr negative, Cr positive. */
 function tagNumber(block: string, tag: string): number {
-  const v = tagText(block, tag);
-  if (!v) return 0;
-  const n = Number(v.replace(/,/g, ""));
-  return Number.isFinite(n) ? n : 0;
+  return parseTallyAmount(tagText(block, tag));
 }
 
 function tagBool(block: string, tag: string): boolean {
@@ -253,12 +248,17 @@ export function parseVouchers(xml: string): BridgeVoucher[] {
     referenceDate: readDate(tagText(b, "REFERENCEDATE")),
     narration: tagText(b, "NARRATION"),
     amount: tagNumber(b, "AMOUNT"),
-    entries: blocks(b, "ENTRY").map((e) => ({
-      ledger: tagText(e, "LEDGER"),
-      amount: tagNumber(e, "AMOUNT"),
-      isDebit: tagBool(e, "ISDEBIT"),
-      billRefs: tagText(e, "BILLREFS"),
-    })),
+    entries: blocks(b, "ENTRY").map((e) => {
+      const isDebit = tagBool(e, "ISDEBIT");
+      const amt = Math.abs(tagNumber(e, "AMOUNT"));
+      return {
+        ledger: tagText(e, "LEDGER"),
+        // Tally convention, decided by IsDeemedPositive: Dr negative.
+        amount: isDebit ? -amt : amt,
+        isDebit,
+        billRefs: tagText(e, "BILLREFS"),
+      };
+    }),
   }));
 }
 

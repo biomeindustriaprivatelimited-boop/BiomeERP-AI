@@ -29,12 +29,7 @@
 import { paths, readJson } from "./dataRoot";
 import { agentJson, AgentUnavailableError } from "./whatsappAgent";
 import type { Vendor, Client, WhatsappDocument, SupplySet } from "./whatsapp";
-import {
-  buildLedgerMastersRequestXml,
-  parseLedgerMastersXml,
-  buildVoucherFetchRequestXml,
-  parseVoucherExportXml,
-} from "./tally";
+import { fetchTallyFinance, fetchVouchers, TallyFetchError, CATEGORY_LABEL } from "./tallyFinance";
 
 export type ToolAccess = "read" | "write";
 
@@ -72,26 +67,15 @@ export interface ToolResult {
 // Helpers
 // ---------------------------------------------------------------------
 
-async function askTally(ctx: ToolContext, xml: string, timeoutMs = 30000): Promise<string> {
-  const host = ctx.tally?.host || "localhost";
-  const port = ctx.tally?.port || 9000;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(`http://${host}:${port}`, {
-      method: "POST",
-      headers: { "Content-Type": "text/xml;charset=utf-8" },
-      body: xml,
-      signal: controller.signal,
-    });
-    if (!res.ok) throw new Error(`Tally replied with HTTP ${res.status}`);
-    return await res.text();
-  } finally {
-    clearTimeout(timer);
-  }
+function tallyTarget(ctx: ToolContext) {
+  return { host: ctx.tally?.host || "localhost", port: ctx.tally?.port || 9000, company: ctx.tally?.company };
 }
 
-function tallyUnreachable(ctx: ToolContext): ToolResult {
+function tallyUnreachable(ctx: ToolContext, err?: unknown): ToolResult {
+  // Company/period problems have their own precise message.
+  if (err instanceof TallyFetchError && err.code !== "unreachable" && err.code !== "timeout") {
+    return { ok: false, error: err.message };
+  }
   const host = ctx.tally?.host || "localhost";
   const port = ctx.tally?.port || 9000;
   return {
@@ -102,12 +86,6 @@ function tallyUnreachable(ctx: ToolContext): ToolResult {
   };
 }
 
-/** Indian financial year containing today. */
-function currentFY(): { from: string; to: string } {
-  const now = new Date();
-  const y = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
-  return { from: `${y}0401`, to: `${y + 1}0331` };
-}
 
 const norm = (s: string) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 
@@ -125,37 +103,22 @@ export const TOOLS: ToolDefinition[] = [
     parameters: { type: "object", properties: {} },
     async run(_args, ctx) {
       try {
-        const xml = await askTally(ctx, buildLedgerMastersRequestXml());
-        const ledgers = parseLedgerMastersXml(xml);
-        if (!ledgers.length) {
-          return { ok: false, error: "Tally responded but returned no ledgers. Check the right company is loaded." };
-        }
-
-        const inGroup = (g: string | null, keys: string[]) =>
-          keys.some((k) => (g || "").toLowerCase().includes(k));
-        // Magnitudes only — Tally's sign convention differs between
-        // installations, so the meaning comes from the account type.
-        const total = (keys: string[]) =>
-          ledgers.filter((l) => inGroup(l.group, keys)).reduce((s, l) => s + Math.abs(l.closingBalance), 0);
-        const count = (keys: string[]) => ledgers.filter((l) => inGroup(l.group, keys)).length;
-
+        const fin = await fetchTallyFinance({ ...tallyTarget(ctx), timeoutMs: 30000 });
         return {
           ok: true,
-          source: "Tally ledger masters",
+          source: `Tally, ${fin.company}, ${fin.period.label} (${fin.period.range})`,
           data: {
-            cashInHand: total(["cash-in-hand", "cash in hand"]),
-            bankBalance: total(["bank account", "bank od", "bank occ"]),
-            receivables: total(["sundry debtor"]),
-            payables: total(["sundry creditor"]),
-            customerCount: count(["sundry debtor"]),
-            vendorCount: count(["sundry creditor"]),
-            ledgerCount: ledgers.length,
+            ...fin.summary,
+            customerCount: fin.buckets.debtors.count,
+            vendorCount: fin.buckets.creditors.count,
+            ledgerCount: fin.ledgers.length,
             currency: "INR",
-            note: "Balances are closing balances from Tally ledger masters.",
+            note:
+              "Receivables and payables are NET (customer advances and vendor advances already subtracted; gross and advance figures are given separately). Bank balance excludes bank OD/cash-credit, which is bankOverdraft. Sales and purchases are Sales Accounts / Purchase Accounts for the period, excluding GST.",
           },
         };
-      } catch {
-        return tallyUnreachable(ctx);
+      } catch (err) {
+        return tallyUnreachable(ctx, err);
       }
     },
   },
@@ -176,15 +139,21 @@ export const TOOLS: ToolDefinition[] = [
       const query = norm(args?.name);
       if (!query) return { ok: false, error: "A party name is required." };
       try {
-        const xml = await askTally(ctx, buildLedgerMastersRequestXml());
-        const ledgers = parseLedgerMastersXml(xml);
-        const matches = ledgers
+        const fin = await fetchTallyFinance({ ...tallyTarget(ctx), timeoutMs: 30000 });
+        const matches = fin.ledgers
           .filter((l) => norm(l.name).includes(query) || query.includes(norm(l.name)))
           .map((l) => ({
             name: l.name,
             group: l.group,
+            tallyGroup: CATEGORY_LABEL[l.category],
             closingBalance: Math.abs(l.closingBalance),
-            openingBalance: Math.abs(l.openingBalance),
+            side: l.side || "nil",
+            meaning:
+              l.category === "debtors"
+                ? l.natural >= 0 ? "they owe us" : "advance received from them"
+                : l.category === "creditors"
+                  ? l.natural >= 0 ? "we owe them" : "advance paid to them"
+                  : undefined,
           }))
           .sort((a, b) => b.closingBalance - a.closingBalance)
           .slice(0, 20);
@@ -192,13 +161,17 @@ export const TOOLS: ToolDefinition[] = [
         if (!matches.length) {
           return {
             ok: true,
-            source: "Tally ledger masters",
+            source: `Tally, ${fin.company}`,
             data: { matches: [], note: `No ledger in Tally matches "${args.name}".` },
           };
         }
-        return { ok: true, source: "Tally ledger masters", data: { matches, currency: "INR" } };
-      } catch {
-        return tallyUnreachable(ctx);
+        return {
+          ok: true,
+          source: `Tally, ${fin.company}, balances ${fin.period.label}`,
+          data: { matches, currency: "INR" },
+        };
+      } catch (err) {
+        return tallyUnreachable(ctx, err);
       }
     },
   },
@@ -219,14 +192,13 @@ export const TOOLS: ToolDefinition[] = [
       },
     },
     async run(args, ctx) {
-      const fy = currentFY();
       try {
-        const xml = await askTally(
-          ctx,
-          buildVoucherFetchRequestXml(fy.from, fy.to, ctx.tally?.company || undefined),
-          45000
-        );
-        let vouchers = parseVoucherExportXml(xml);
+        const fin = await fetchTallyFinance({ ...tallyTarget(ctx), timeoutMs: 30000 });
+        const fy = { from: fin.period.from, to: fin.period.to };
+        const fetched = await fetchVouchers({ ...tallyTarget(ctx), timeoutMs: 45000 }, fin.company, fy.from, fy.to);
+        if (fetched.error) return { ok: false, error: fetched.error };
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        let vouchers = fetched.vouchers.map(({ entries, ...v }) => v);
 
         if (args?.party) {
           const p = norm(args.party);
@@ -254,8 +226,8 @@ export const TOOLS: ToolDefinition[] = [
             transactions: vouchers.slice(0, 500),
           },
         };
-      } catch {
-        return tallyUnreachable(ctx);
+      } catch (err) {
+        return tallyUnreachable(ctx, err);
       }
     },
   },
