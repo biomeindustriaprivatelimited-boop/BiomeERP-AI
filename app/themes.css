@@ -62,7 +62,9 @@ html[data-theme="sunrise"] {
   --c-hover: 40 28 18;        /* ink wash on ivory */
   color-scheme: light;
   --c-bg: 252 248 240; --c-bg-soft: 255 253 248; --c-surface: 246 238 224;
-  --c-text: 40 28 18; --c-muted: 120 100 84; --c-line: 226 212 190;
+  /* muted was 120 100 84: at the /60 used for hints and placeholders it
+     fell to 2.3:1 on ivory. 98 78 62 keeps the warm tone and reads. */
+  --c-text: 40 28 18; --c-muted: 98 78 62; --c-line: 226 212 190;
   --c-leaf: 176 74 30; --c-leaf-bright: 172 96 20; --c-volt: 255 176 60;
   --c-sky: 30 120 170; --c-sky-bright: 40 150 200; --c-bolt: 196 140 20; --c-bolt-deep: 160 110 10;
   --hero-a: 255 176 60; --hero-b: 120 40 20;
@@ -251,3 +253,72 @@ html[data-theme="sunrise"] canvas[data-animated-background] { display: none; }
   main h1 { font-size: 1.35rem; line-height: 1.2; }
   main pre, main code { white-space: pre-wrap; word-break: break-word; }
 }
+
+/* ==================================================================
+   SIDEBAR LINES — a hairline between options and an accent bar per item
+   ------------------------------------------------------------------
+   --rail-ink is the accent the rail is drawn in: lime on the dark rails,
+   the theme's own accent ink on the light ones, so the lines read on
+   every theme without a per-theme patch for each element.
+   ================================================================== */
+.forest-rail { --rail-ink: 159 232 112; --rail-line: 159 232 112; }
+html[data-theme="command"] .forest-rail { --rail-ink: 103 232 249; --rail-line: 103 232 249; }
+html[data-theme="midnight"] .forest-rail { --rail-ink: 190 255 90; --rail-line: 130 150 255; }
+html[data-theme="light"] .forest-rail, html[data-theme="sunrise"] .forest-rail { --rail-ink: var(--c-leaf-bright); --rail-line: var(--c-leaf-bright); }
+
+.rail-sep {
+  height: 1px;
+  background: linear-gradient(90deg, transparent 0%, rgb(var(--rail-line) / .30) 22%, rgb(var(--rail-line) / .55) 50%, rgb(var(--rail-line) / .30) 78%, transparent 100%);
+}
+.rail-sep-brand { background: linear-gradient(90deg, transparent, rgb(var(--rail-line) / .6) 30%, rgb(var(--c-sky) / .5) 70%, transparent); }
+html[data-theme="light"] .rail-sep, html[data-theme="sunrise"] .rail-sep {
+  background: linear-gradient(90deg, transparent 0%, rgb(var(--rail-line) / .18) 22%, rgb(var(--rail-line) / .38) 50%, rgb(var(--rail-line) / .18) 78%, transparent 100%);
+}
+
+/* The accent bar sits just outside the pill, on the rail's inner edge. */
+.rail-item .rail-accent {
+  position: absolute; left: -9px; top: 50%; width: 3px; height: 0; border-radius: 9999px;
+  transform: translateY(-50%);
+  background: linear-gradient(180deg, rgb(var(--rail-ink)), rgb(var(--c-sky)));
+  box-shadow: 0 0 10px rgb(var(--rail-ink) / .7);
+  opacity: 0; transition: height .28s cubic-bezier(.19,1,.22,1), opacity .2s;
+  pointer-events: none;
+}
+.rail-item:hover .rail-accent { height: 55%; opacity: .9; }
+.rail-item.is-active .rail-accent { height: 80%; opacity: 1; animation: rail-accent-glow 2.6s ease-in-out infinite; }
+@keyframes rail-accent-glow { 0%, 100% { box-shadow: 0 0 6px rgb(var(--rail-ink) / .5); } 50% { box-shadow: 0 0 14px rgb(var(--rail-ink) / .95); } }
+
+/* The brand mark gets a soft halo in the theme's accent. */
+.rail-logo { filter: drop-shadow(0 6px 14px rgb(var(--rail-ink) / .35)); }
+
+/* MPIN boxes: the blinking caret in the box that takes the next digit. */
+.bmx-pin-caret { animation: bmx-pin-blink 1.05s steps(2, start) infinite; }
+@keyframes bmx-pin-blink { to { visibility: hidden; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .rail-item.is-active .rail-accent, .bmx-pin-caret { animation: none; }
+}
+
+/* ==================================================================
+   LEGIBILITY FLOOR — found by the contrast sweep (every page × 5 themes)
+   ------------------------------------------------------------------
+   1. Muted text below 60% opacity (step numbers, hints, placeholders)
+      dropped under 2:1 on the light themes. Never fainter than 70%.
+   2. Tailwind's 500-weight amber/emerald/orange and the 100–300 red/rose/
+      amber/emerald tints are drawn for dark surfaces; on paper and ivory
+      they read 1.3–2.5:1. On the light themes they map to deeper shades.
+      Screens that paint their own dark scene (login, lock, splash) are
+      left alone — they carry data-force-dark / data-always-dark.
+   ================================================================== */
+html .text-biome-muted\/40, html .text-biome-muted\/45, html .text-biome-muted\/50 { color: rgb(var(--c-muted) / .72); }
+html .placeholder\:text-biome-muted\/40::placeholder,
+html .placeholder\:text-biome-muted\/50::placeholder,
+html .placeholder\:text-biome-muted\/60::placeholder { color: rgb(var(--c-muted) / .75); }
+html[data-theme] :not([data-force-dark] *):not([data-always-dark] *):is(input, textarea):not(.biome-login-input):not(.biome-login-input-dark)::placeholder { color: rgb(var(--c-muted) / .78); }
+
+:is(html[data-theme="light"], html[data-theme="sunrise"]) :not([data-force-dark] *):not([data-always-dark] *):is(.text-amber-500, .text-amber-400, .text-yellow-500) { color: rgb(180 83 9); }
+:is(html[data-theme="light"], html[data-theme="sunrise"]) :not([data-force-dark] *):not([data-always-dark] *):is(.text-emerald-500, .text-emerald-400, .text-green-500) { color: rgb(4 120 87); }
+:is(html[data-theme="light"], html[data-theme="sunrise"]) :not([data-force-dark] *):not([data-always-dark] *):is(.text-orange-500, .text-orange-400) { color: rgb(194 65 12); }
+:is(html[data-theme="light"], html[data-theme="sunrise"]) :not([data-force-dark] *):not([data-always-dark] *):is(.text-red-100, .text-red-200, .text-red-300, .text-rose-100, .text-rose-200, .text-rose-300) { color: rgb(185 28 28); }
+:is(html[data-theme="light"], html[data-theme="sunrise"]) :not([data-force-dark] *):not([data-always-dark] *):is(.text-amber-100, .text-amber-200, .text-amber-300) { color: rgb(146 64 14); }
+:is(html[data-theme="light"], html[data-theme="sunrise"]) :not([data-force-dark] *):not([data-always-dark] *):is(.text-emerald-100, .text-emerald-200, .text-emerald-300) { color: rgb(6 95 70); }

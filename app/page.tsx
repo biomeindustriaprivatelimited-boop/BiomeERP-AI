@@ -1,12 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { motion } from "framer-motion";
 import { useSession } from "@/lib/session";
 import { TiltCard, Scramble, SplitText, SPRING } from "@/components/motion/kit";
-import { CategoryGrid } from "@/components/hub/HubGrid";
-import { FEATURE_MAP } from "@/lib/featureMap";
+import HomeReports from "@/components/home/HomeReports";
 import {
   Wallet,
   ArrowDownLeft,
@@ -15,10 +14,7 @@ import {
   FileWarning,
   Landmark,
   BarChart3,
-  ScanLine,
-  MessagesSquare,
   Users,
-  ShieldCheck,
   Bot,
   ChevronRight,
   RefreshCw,
@@ -26,8 +22,6 @@ import {
   Plug,
   AlertTriangle,
   CheckCircle2,
-  Rocket,
-  Calendar,
   Percent,
   Building2,
 } from "lucide-react";
@@ -73,17 +67,11 @@ function greeting() {
   return "Good Evening";
 }
 
-const QUICK_ACTIONS = [
-  { href: "/reconciliation", title: "Reconciliation", desc: "Match & reconcile ledgers instantly", icon: BarChart3, from: "from-emerald-400", to: "to-green-600" },
-  { href: "/ocr", title: "OCR Scanner", desc: "Extract text from invoices & receipts", icon: ScanLine, from: "from-blue-400", to: "to-indigo-600" },
-  { href: "/whatsapp", title: "WhatsApp Docs", desc: "Supply documents, filed automatically", icon: MessagesSquare, from: "from-violet-400", to: "to-purple-600" },
-  { href: "/payments", title: "Payments", desc: "Record & track payments", icon: Wallet, from: "from-amber-400", to: "to-orange-600" },
-  { href: "/vendors", title: "Vendors", desc: "Codes, details & KYC", icon: Users, from: "from-teal-400", to: "to-cyan-600" },
-  { href: "/gst-compliance", title: "GST Dashboard", desc: "Check GST status & filings", icon: ShieldCheck, from: "from-rose-400", to: "to-pink-600" },
-];
 
 export default function DashboardPage() {
-  const { can, visible } = useSession();
+  const { user } = useSession();
+  // The signed-in person's first name — never a hard-coded one.
+  const firstName = (user?.name || user?.username || "").trim().split(/\s+/)[0] || "";
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [tallyError, setTallyError] = useState<string | null>(null);
@@ -128,7 +116,7 @@ export default function DashboardPage() {
       {/* ================= Header row ================= */}
       <div className="flex flex-wrap items-start justify-between gap-4 pt-1">
         <div className="min-w-0">
-          <p className="text-[12.5px] text-biome-muted">{greeting()}, Govind 👋</p>
+          <p className="text-[12.5px] text-biome-muted">{greeting()}{firstName ? `, ${firstName}` : ""} 👋</p>
           <h1 className="mt-0.5 font-display text-[30px] font-bold leading-tight tracking-tight text-biome-text">
             <SplitText text="Finance" /> <span className="text-biome-leafBright"><SplitText text="Command Center" delay={0.15} /></span>
           </h1>
@@ -306,35 +294,12 @@ export default function DashboardPage() {
         </section>
       </div>
 
-      {/* ================= Quick actions ================= */}
-      <section>
-        <section className="mb-6">
-        <div className="mb-3 flex items-end justify-between"><h2 className="biome-shout text-[22px] leading-none text-biome-text">Open the OS<span className="text-biome-leafBright">.</span></h2><p className="text-[11px] text-biome-muted">Click a category → its features → their options.</p></div>
-        <CategoryGrid categories={FEATURE_MAP} />
-      </section>
-      <h2 className="mb-3 font-display text-[15px] font-semibold text-biome-text">Quick Actions</h2>
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
-          {QUICK_ACTIONS.filter((a) => visible(a.href)).map((a, i) => (
-            <motion.div key={a.href} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.08 + i * 0.04 }}>
-              <Link
-                href={a.href}
-                className={`group flex h-full flex-col justify-between rounded-2xl bg-gradient-to-br ${a.from} ${a.to} p-4 text-biome-text shadow-md transition-transform hover:-translate-y-1`}
-              >
-                <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-biome-hover">
-                  <a.icon size={17} />
-                </span>
-                <div className="mt-5">
-                  <p className="text-[13px] font-semibold leading-tight">{a.title}</p>
-                  <p className="mt-1 text-[10.5px] leading-snug text-white/85">{a.desc}</p>
-                </div>
-                <span className="mt-3 flex h-6 w-6 items-center justify-center self-end rounded-full bg-biome-hover transition-transform group-hover:translate-x-0.5">
-                  <ArrowUpRight size={13} />
-                </span>
-              </Link>
-            </motion.div>
-          ))}
-        </div>
-      </section>
+      {/* ================= Reports =================
+          The old "Open the OS" category grid and the Quick Actions tiles
+          were shortcuts the sidebar already gives. The owner asked for this
+          page to carry only reports of the app's data, so each card is a
+          live summary with a link to its full report. */}
+      <HomeReports tally={full as any} tallyLoading={tallyLoading} wa={wa} />
 
       {/* ================= Bottom row ================= */}
       <div className="grid gap-4 xl:grid-cols-[1.6fr_1fr]">

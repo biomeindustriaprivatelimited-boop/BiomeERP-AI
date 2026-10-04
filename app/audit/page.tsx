@@ -33,7 +33,7 @@ const CATEGORY_TONE: Record<string, string> = {
   documents: "text-cyan-600 bg-cyan-500/12",
   cloud: "text-violet-600 bg-violet-500/12",
   support: "text-orange-600 bg-orange-500/12",
-  settings: "text-slate-600 bg-slate-500/12",
+  settings: "text-slate-500 bg-slate-500/12", // 600 vanished on the dark themes
   tally: "text-lime-600 bg-lime-500/12",
 };
 

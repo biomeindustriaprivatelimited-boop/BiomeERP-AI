@@ -75,7 +75,11 @@ export default function ReportBuilderPage() {
     const j = await r.json().catch(() => ({}));
     if (!r.ok) { setErr(j.error || "Could not load reports."); return; }
     setMeta(j);
-    setSpec((s: any) => (s.dataset ? s : { ...s, dataset: j.catalogue?.[0]?.id || "", groupBy: j.catalogue?.[0]?.dimensions?.[0]?.key || "" }));
+    // ?dataset=<id> (the home page's report cards link here) opens that report.
+    let wanted = "";
+    try { wanted = new URLSearchParams(window.location.search).get("dataset") || ""; } catch {}
+    const first = j.catalogue?.find((d: any) => d.id === wanted) || j.catalogue?.[0];
+    setSpec((s: any) => (s.dataset ? s : { ...s, dataset: first?.id || "", groupBy: first?.dimensions?.[0]?.key || "" }));
   }, []);
   useEffect(() => { load(); }, [load]);
 

@@ -44,7 +44,7 @@ export default function LockPage() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-[#04110a] p-5 text-white">
+    <main className="flex min-h-screen items-center justify-center bg-[#04110a] p-5 text-white" data-always-dark="1">
       <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(ellipse_at_top,rgba(159,232,112,.12),transparent_60%)]" />
       <section className="relative w-full max-w-sm rounded-[28px] border border-white/10 bg-white/[.04] p-7 shadow-[0_40px_120px_-40px_rgba(0,0,0,.8)] backdrop-blur-xl">
         <div className="flex items-center gap-3">

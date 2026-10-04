@@ -179,7 +179,7 @@ export default function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
     >
       {/* ---- Brand ---- */}
       <div className="relative flex items-center gap-2.5 px-4 py-5">
-        <span className="flex h-10 w-10 shrink-0 items-center justify-center drop-shadow-[0_6px_16px_rgba(159,232,112,.35)]">
+        <span className="rail-logo flex h-10 w-10 shrink-0 items-center justify-center">
           <BiomeLogo size={40} />
         </span>
         {!collapsed && (
@@ -192,11 +192,13 @@ export default function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
             </p>
           </div>
         )}
+        {/* A lit hairline under the brand, like the ones between items. */}
+        <span aria-hidden className="rail-sep rail-sep-brand pointer-events-none absolute inset-x-4 bottom-0" />
       </div>
 
       {/* ---- Navigation ---- */}
-      <nav className="flex-1 space-y-5 overflow-y-auto px-3 pb-20">
-        {sections.map((section) => {
+      <nav className="flex-1 overflow-y-auto px-3 pb-20 pt-2">
+        {sections.map((section, sectionIndex) => {
           const key = section.title ?? "root";
           // A section with no heading (Dashboard and friends) is never a
           // dropdown — there is nothing to label the toggle with.
@@ -205,7 +207,10 @@ export default function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
           const activeInside = section.items.some((i) => i.href === pathname);
 
           return (
-            <div key={key}>
+            <div key={`${key}-${sectionIndex}`}>
+              {/* The line between options: a thin gradient hairline that
+                  brightens in the middle — see .rail-sep in themes.css. */}
+              {sectionIndex > 0 && <span aria-hidden className={`rail-sep my-1 block ${collapsed ? "mx-2" : "mx-3"}`} />}
               {!collapsed && section.title && (
                 <button
                   onClick={() => setOpenSections((o) => ({ ...o, [key]: o[key] === false }))}
@@ -269,6 +274,8 @@ export default function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
                               active ? "is-active" : ""
                             }`}
                           >
+                            {/* Accent bar on the left edge: grows on hover, full on the open page. */}
+                            <span aria-hidden className="rail-accent" />
                             {active && (
                               <motion.span
                                 layoutId="nav-active"
@@ -326,7 +333,7 @@ export default function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
           onClick={() => setPlanOpen((o) => !o)}
           className="flex w-full items-center gap-2.5 rounded-2xl border border-[#9fe870]/15 bg-white/[0.04] px-2.5 py-2.5 text-left transition-colors hover:bg-white/[0.08]"
         >
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#9fe870] text-[11px] font-bold text-[#163300]">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#9fe870] text-[11px] font-bold" style={{ color: "#163300" }}>
             BI
           </span>
           {!collapsed && (
