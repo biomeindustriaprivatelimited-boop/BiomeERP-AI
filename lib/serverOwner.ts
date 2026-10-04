@@ -56,3 +56,19 @@ export function serverReady(): boolean {
 
 export const SERVER_NOT_READY_MESSAGE =
   "The server PC is not ready — the developer is not signed in there. Ask the developer to sign in on the server PC, then try again.";
+
+/** When the developer last signed in on THIS server (ISO), or null. */
+export function ownerSince(): string | null {
+  const cur = readJson<Owner | null>(file(), null);
+  return cur && cur.since ? cur.since : null;
+}
+
+/**
+ * A server with real company data — more than the first-run account.
+ * A freshly installed, empty server must never take the clients over from
+ * the real one, even if someone signs in there as the developer.
+ */
+export function serverEstablished(): boolean {
+  const users = readJson<{ users?: any[] }>(path.join(paths.configDir, "users.json"), { users: [] }).users || [];
+  return users.filter((u) => u && !u.deleted).length > 1;
+}

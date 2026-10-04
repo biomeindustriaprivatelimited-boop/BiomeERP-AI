@@ -28,6 +28,10 @@ export interface SessionUser {
   /** From Organisation — shown on the phone header and payslips. */
   designation?: string;
   department?: string;
+  /** An 8-digit MPIN is set (lib/mpin.ts). */
+  hasMpin?: boolean;
+  /** Lock this device after this many idle minutes (0 = never). */
+  autoLockMinutes?: number;
 }
 
 interface SessionValue {

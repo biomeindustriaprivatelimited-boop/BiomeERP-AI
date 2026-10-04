@@ -16,6 +16,7 @@ import { PageWipe } from "@/components/motion/kit";
 import FeatureShell from "@/components/FeatureShell";
 import { Particles, Ripples } from "@/components/fx";
 import DeviceHeartbeat from "@/components/DeviceHeartbeat";
+import IdleLock from "@/components/IdleLock";
 import { NotificationsProvider } from "@/lib/notifications";
 import { SessionProvider, useSession } from "@/lib/session";
 
@@ -46,7 +47,7 @@ function Gate({ children }: { children: React.ReactNode }) {
 
   const signedIn = Boolean(user);
   // Screens that stand alone, outside the sidebar/navbar shell.
-  const isBareScreen = pathname === "/login" || pathname === "/change-password";
+  const isBareScreen = pathname === "/login" || pathname === "/change-password" || pathname === "/lock";
   // The phone experience. /m/* pages carry their own chrome — a sidebar
   // built for a 1440px desk would be unusable on a 390px screen.
   const isMobileScreen = pathname.startsWith("/m/") || pathname === "/m";
@@ -105,6 +106,7 @@ function Gate({ children }: { children: React.ReactNode }) {
     return (
       <ServerGuard>
         <DeviceHeartbeat />
+        <IdleLock minutes={user?.autoLockMinutes || 0} />
         <NotificationsProvider>{children}</NotificationsProvider>
       </ServerGuard>
     );
@@ -117,6 +119,7 @@ function Gate({ children }: { children: React.ReactNode }) {
       <Ripples />
       <PreferencesInit />
       <DeviceHeartbeat />
+      <IdleLock minutes={user?.autoLockMinutes || 0} />
       <NotificationsProvider>
         <div className="flex h-screen overflow-hidden">
           <Sidebar />

@@ -12,6 +12,9 @@ import { canAccessPath, isPublicPath, hasPermission, landingPathFor } from "@/li
  * added to ROUTE_PERMISSIONS rather than whenever someone remembers to
  * add a check inside it.
  */
+/** What a locked device may still reach. */
+const LOCK_ALLOWED = ["/lock", "/api/auth/unlock", "/api/auth/security", "/api/health"];
+
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
@@ -30,6 +33,17 @@ export async function middleware(req: NextRequest) {
     const url = req.nextUrl.clone();
     url.pathname = "/login";
     url.search = "";
+    return NextResponse.redirect(url);
+  }
+
+  // LOCKED (this device): only the lock screen and the unlock call work
+  // until the signed-in person enters their MPIN or password. The server
+  // and every other device carry on as normal.
+  if (req.cookies.get("biome_lock")?.value === "1" && !LOCK_ALLOWED.some((p) => pathname === p || pathname.startsWith(p + "/"))) {
+    if (isApi) return NextResponse.json({ error: "This app is locked on this device.", code: "LOCKED" }, { status: 423 });
+    const url = req.nextUrl.clone();
+    url.search = pathname && pathname !== "/" ? `?next=${encodeURIComponent(pathname)}` : "";
+    url.pathname = "/lock";
     return NextResponse.redirect(url);
   }
 

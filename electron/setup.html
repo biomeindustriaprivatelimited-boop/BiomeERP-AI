@@ -148,7 +148,7 @@
       });
 
       $("server").addEventListener("click", function () {
-        if (!confirm("Make THIS PC the Biome server?\n\nDo this only on the main office PC that will hold all company data.")) return;
+        if (!confirm("Make THIS PC the Biome server?\n\nDo this only on the main office PC that will hold all company data.\n\nCompany data is NOT copied automatically: restore the latest backup here (Settings → Backup → Restore) before the developer signs in. Once the developer signs in here with the company data, the old server PC hands over to this one.")) return;
         busy(true);
         api.makeServer().then(function (r) {
           if (r.ok) show("ok", "This PC is now the server — restarting…");

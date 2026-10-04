@@ -435,6 +435,8 @@ export const PUBLIC_PREFIXES = [
   "/api/auth/logout",
   // Developer password recovery — answers only on the server PC itself.
   "/api/auth/recover",
+  // MPIN sign-in on a device that already knows the person (lib/mpin.ts).
+  "/api/auth/mpin",
   // The server heartbeat. It MUST answer before anyone signs in — the
   // login screen itself sits behind the ServerGuard, and a 401 here was
   // read as "server down", blocking the whole app on its own doorstep.

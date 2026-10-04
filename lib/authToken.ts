@@ -110,7 +110,7 @@ async function key(): Promise<CryptoKey> {
  * (every other account, and the developer on any client PC) keeps the
  * eight-hour working-day limit.
  */
-export const SERVER_PC_DEVELOPER_TTL_SECONDS = 365 * 24 * 60 * 60;
+export const SERVER_PC_DEVELOPER_TTL_SECONDS = 10 * 365 * 24 * 60 * 60;
 
 export async function signSession(
   payload: Omit<SessionPayload, "iat" | "exp">,
@@ -166,6 +166,31 @@ export async function verifySession(token: string | undefined | null): Promise<S
     if (!payload || typeof payload.exp !== "number") return null;
     if (payload.exp < Math.floor(Date.now() / 1000)) return null;
     return payload;
+  } catch {
+    return null;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Small signed tokens (device memory for MPIN sign-in)                 */
+/* ------------------------------------------------------------------ */
+
+/** Signs any small JSON payload with the installation's secret. */
+export async function signToken(payload: Record<string, unknown>): Promise<string> {
+  const body = base64UrlEncode(new TextEncoder().encode(JSON.stringify(payload)));
+  const signature = await crypto.subtle.sign("HMAC", await key(), new TextEncoder().encode("tok." + body));
+  return `${body}.${base64UrlEncode(new Uint8Array(signature))}`;
+}
+
+/** The payload of a token from signToken, or null when forged/garbled. */
+export async function verifyToken<T = Record<string, unknown>>(token: string | undefined | null): Promise<T | null> {
+  if (!token || typeof token !== "string") return null;
+  const [body, signature] = token.split(".");
+  if (!body || !signature) return null;
+  try {
+    const ok = await crypto.subtle.verify("HMAC", await key(), base64UrlDecode(signature), new TextEncoder().encode("tok." + body));
+    if (!ok) return null;
+    return JSON.parse(new TextDecoder().decode(base64UrlDecode(body))) as T;
   } catch {
     return null;
   }

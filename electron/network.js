@@ -46,7 +46,7 @@ function probe(url, timeoutMs = 4000) {
         res.on("end", () => {
           try {
             const j = JSON.parse(body);
-            if (j && j.ok && j.startedAt) return finish({ ok: true, url, id: j.id || null, owned: j.owned !== false });
+            if (j && j.ok && j.startedAt) return finish({ ok: true, url, id: j.id || null, owned: j.owned !== false, ownerSince: j.ownerSince || null, established: j.established !== false });
           } catch (_) {}
           finish({ ok: false, url });
         });

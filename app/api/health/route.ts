@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { serverReady } from "@/lib/serverOwner";
+import { serverReady, ownerSince, serverEstablished } from "@/lib/serverOwner";
 import { SERVER_PC_HEADER, isServerPcRequest } from "@/lib/authToken";
 
 /**
@@ -28,7 +28,7 @@ export async function GET(req: NextRequest) {
   const owned = serverReady();
   const self = await isServerPcRequest(req.headers.get(SERVER_PC_HEADER));
   return NextResponse.json(
-    { ok: true, time: new Date().toISOString(), startedAt, id: process.env.BIOME_SERVER_ID || null, owned, ready: owned || self },
+    { ok: true, time: new Date().toISOString(), startedAt, id: process.env.BIOME_SERVER_ID || null, owned, ready: owned || self, ownerSince: owned ? ownerSince() : null, established: serverEstablished() },
     { headers: { "Cache-Control": "no-store" } }
   );
 }

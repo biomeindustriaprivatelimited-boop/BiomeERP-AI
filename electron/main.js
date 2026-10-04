@@ -537,10 +537,27 @@ async function openRouter() {
  * office static IP, is a PC that became a server by mistake. It turns
  * itself into a client of the real one (its own data stays on disk, unused).
  */
+function myOwnerSince() {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(localDataRoot(), "config", "server-owner.json"), "utf8")).since || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * The server stays the server — even after the developer signs out here —
+ * until the developer signs in on ANOTHER server PC that holds real company
+ * data. Then this one (an older developer sign-in, or none) becomes a
+ * client of the new one, so client PCs and phones are never left without
+ * a server.
+ */
 async function stepAsideIfNotTheServer() {
-  if (quitting || SYNC.mode !== "server" || serverOwned()) return;
+  if (quitting || SYNC.mode !== "server") return;
   const real = await net.findServer({ excludeId: serverId(), ownedOnly: true }).catch(() => null);
-  if (!real || serverOwned()) return;
+  if (!real || !real.established) return;
+  const mine = myOwnerSince();
+  if (mine && (!real.ownerSince || String(real.ownerSince) <= String(mine))) return;
   console.error(`Another Biome server with the developer signed in is at ${real.url} — this PC becomes a client of it.`);
   try { writeSyncConfig({ mode: "client", serverUrl: real.url, auto: true }); } catch (_) { return; }
   quitting = true;
@@ -711,6 +728,9 @@ function createMainWindow() {
       nodeIntegration: false,
       preload: path.join(__dirname, "preload.js"),
       backgroundThrottling: false,
+      // No developer tools in the installed app: they would let anyone at
+      // the PC read or remove the sign-in and lock cookies.
+      devTools: !app.isPackaged,
     },
   });
 
@@ -770,6 +790,9 @@ function createMainWindow() {
   mainWindow.on("close", (e) => {
     if (SYNC.mode !== "server" || quitting) return;
     e.preventDefault();
+    // Hidden to the tray = locked: whoever opens it from the tray needs
+    // the MPIN or password. The server keeps running for every client.
+    lockApp();
     mainWindow.hide();
     if (!trayHintShown) {
       trayHintShown = true;
@@ -801,7 +824,7 @@ function createMainWindow() {
         title: "Document",
         autoHideMenuBar: true,
         backgroundColor: "#ffffff",
-        webPreferences: { contextIsolation: true },
+        webPreferences: { contextIsolation: true, devTools: !app.isPackaged },
       });
       viewer.loadURL(url);
       return { action: "deny" };
@@ -972,6 +995,19 @@ function applyAutoStart(on) {
   }
 }
 
+/**
+ * Lock the app on THIS PC (the server keeps serving everyone). Uses the
+ * page's own sign-in, so it locks whoever is signed in here.
+ */
+function lockApp() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents
+    .executeJavaScript(
+      `fetch("/api/auth/lock",{method:"POST"}).then(function(r){ if (r.ok && location.pathname !== "/lock" && location.pathname !== "/login") location.href = "/lock"; }).catch(function(){})`
+    )
+    .catch(() => {});
+}
+
 function showMainWindow() {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.show();
@@ -1009,6 +1045,7 @@ function createTray() {
     tray.setContextMenu(
       Menu.buildFromTemplate([
         { label: "Open Biome", click: showMainWindow },
+        { label: "Lock Biome now", click: lockApp },
         { type: "separator" },
         { label: "Server is running — client PCs and phones are connected through this PC", enabled: false },
         {
@@ -1028,6 +1065,9 @@ function createTray() {
 
 app.whenReady().then(() => {
   if (!GOT_LOCK) return;
+  // No application menu in the installed app: its shortcuts include
+  // reload-and-bypass and "Toggle Developer Tools".
+  if (app.isPackaged) Menu.setApplicationMenu(null);
   wipeClientCache();
   if (SYNC.mode === "server") {
     createTray();

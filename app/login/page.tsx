@@ -8,6 +8,7 @@ import BiomassLoginScene from "@/components/brand/BiomassLoginScene";
 import BiomeLogo from "@/components/brand/BiomeLogo";
 import { CursorGlow } from "@/components/fx";
 import { useSession } from "@/lib/session";
+import PinInput from "@/components/PinInput";
 import { usePlants } from "@/lib/usePlants";
 
 export default function LoginPage() {
@@ -32,6 +33,56 @@ export default function LoginPage() {
   const [plant, setPlant] = useState<string>("");
 
   const revealLogin = useCallback(() => setLoginReady(true), []);
+
+  /**
+   * MPIN sign-in: people who have signed in on THIS device before (and set
+   * an MPIN) can come back with it. A new device lists nobody here.
+   */
+  const [known, setKnown] = useState<{ uid: string; name: string; username: string; plants: string[] }[]>([]);
+  const [mpinFor, setMpinFor] = useState<string | null>(null);
+  const [usePassword, setUsePassword] = useState(false);
+  const [mpin, setMpin] = useState("");
+  const [mpinPlant, setMpinPlant] = useState("");
+  useEffect(() => {
+    fetch("/api/auth/mpin", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((j) => {
+        const list = Array.isArray(j?.users) ? j.users : [];
+        setKnown(list);
+        if (list.length) setMpinFor(list[0].uid);
+      })
+      .catch(() => {});
+  }, []);
+  const mpinUser = known.find((k) => k.uid === mpinFor) || null;
+  const showMpin = Boolean(mpinUser) && !usePassword;
+
+  async function signInWithMpin(pin: string) {
+    if (busy || !mpinUser) return;
+    const plantNow = mpinUser.plants.length === 1 ? mpinUser.plants[0] : mpinPlant;
+    if (mpinUser.plants.length > 1 && !plantNow) { fail("Choose which plant you are signing in for."); return; }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/auth/mpin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uid: mpinUser.uid, mpin: pin, plant: plantNow || null }),
+      });
+      const json = await res.json().catch(() => ({} as any));
+      if (!res.ok) {
+        setMpin("");
+        if (json.code === "MPIN_BLOCKED" || json.code === "UNKNOWN_DEVICE") { setUsePassword(true); setUserId(mpinUser.username); }
+        fail(json.error || `Sign-in failed (${res.status}).`);
+        return;
+      }
+      await refresh();
+      router.replace(json.user?.mustChangePassword ? "/change-password" : "/");
+    } catch (err) {
+      fail(`Couldn't reach the server: ${(err as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   /**
    * Desktop app only: which server this PC signs in to, with a way to
@@ -172,6 +223,33 @@ export default function LoginPage() {
                 </p>
               </div>
             )}
+            {showMpin && mpinUser ? (
+              <div className="space-y-3 rounded-2xl border border-white/10 bg-white/[.03] p-4">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[10px] font-bold uppercase tracking-[.13em] text-white/45">Sign in with MPIN</p>
+                  {known.length > 1 && (
+                    <select value={mpinFor || ""} onChange={(e) => { setMpinFor(e.target.value); setMpin(""); }}
+                      className="rounded-lg border border-white/15 bg-[#06151d] px-2 py-1 text-[10.5px] text-white/80 outline-none">
+                      {known.map((k) => <option key={k.uid} value={k.uid}>{k.name}</option>)}
+                    </select>
+                  )}
+                </div>
+                <p className="text-[15px] font-semibold text-white">{mpinUser.name} <span className="font-mono text-[11px] font-normal text-white/45">@{mpinUser.username}</span></p>
+                {mpinUser.plants.length > 1 && (
+                  <select value={mpinPlant} onChange={(e) => setMpinPlant(e.target.value)}
+                    className="w-full rounded-xl border border-white/15 bg-[#06151d] px-3 py-2 text-[11.5px] text-white outline-none">
+                    <option value="">Signing in for… (choose plant)</option>
+                    {mpinUser.plants.map((code) => <option key={code} value={code}>{PLANTS.find((p) => p.code === code)?.label || code} ({code})</option>)}
+                  </select>
+                )}
+                <PinInput value={mpin} onChange={setMpin} onComplete={(v) => signInWithMpin(v)} disabled={busy} />
+                <button type="button" onClick={() => { setUsePassword(true); setUserId(mpinUser.username); setError(null); }}
+                  className="text-[10.5px] font-semibold text-[#9fe870] underline decoration-dotted">
+                  Use user ID &amp; password instead
+                </button>
+              </div>
+            ) : (
+              <>
             <Field label="User ID" icon={<UserRound size={15} />} dark filled={userId.trim().length > 0}>
               <input value={userId} onChange={e => setUserId(e.target.value)} onKeyDown={e => e.key === "Enter" && signIn()} placeholder="Enter your User ID" autoComplete="username" className="biome-login-input biome-login-input-dark bmx-input pr-9" />
             </Field>
@@ -179,6 +257,14 @@ export default function LoginPage() {
               <input type={showPassword ? "text" : "password"} value={password} onChange={e => setPassword(e.target.value)} onKeyDown={e => e.key === "Enter" && signIn()} placeholder="Enter your password" autoComplete="current-password" className="biome-login-input biome-login-input-dark bmx-input pr-12" />
               <button type="button" onClick={() => setShowPassword(v => !v)} className="bmx-toggle absolute right-2 top-1/2 -translate-y-1/2 rounded-xl p-2 text-white/35 hover:bg-white/10 hover:text-cyan-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/40" aria-label={showPassword ? "Hide password" : "Show password"}>{showPassword ? <EyeOff size={15} /> : <Eye size={15} />}</button>
             </Field>
+                {known.length > 0 && (
+                  <button type="button" onClick={() => { setUsePassword(false); setError(null); }}
+                    className="text-[10.5px] font-semibold text-[#9fe870] underline decoration-dotted">
+                    Sign in with MPIN instead
+                  </button>
+                )}
+              </>
+            )}
 
             {/* Both of these render nothing in the normal case, so the
                 screen looks exactly as it did before. The picker appears
@@ -211,7 +297,7 @@ export default function LoginPage() {
           </div>
 
           <div className={`relative z-10 mt-6 ${loginReady ? "bmx-rise" : "opacity-0"}`} style={{ animationDelay: ".48s" }}>
-          <button onClick={signIn} disabled={busy} className="biome-login-button bmx-btn group relative flex w-full items-center justify-between overflow-hidden rounded-2xl border border-cyan-200/10 px-4 py-4 text-[12px] font-bold text-white disabled:opacity-70">
+          <button onClick={() => (showMpin ? signInWithMpin(mpin) : signIn())} disabled={busy || (showMpin && mpin.length !== 8)} className="biome-login-button bmx-btn group relative flex w-full items-center justify-between overflow-hidden rounded-2xl border border-cyan-200/10 px-4 py-4 text-[12px] font-bold text-white disabled:opacity-70">
             <span className="bmx-btn-sheen pointer-events-none absolute inset-y-0 -left-1/3 w-1/3" style={{ background: "linear-gradient(90deg,transparent,rgba(255,255,255,.28),transparent)" }} />
             <span className="relative z-10 flex items-center gap-2">
               <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-white/10 transition-transform duration-300 group-hover:scale-110"><ShieldCheck size={14} /></span>

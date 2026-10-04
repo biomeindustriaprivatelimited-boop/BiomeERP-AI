@@ -126,3 +126,17 @@ device ho to use hata dein. Diagnostics me "Engine: WhatsApp Web (msedge.exe)" d
 12. **Holiday announce**: theek kiya (calendar + attendance me Holiday lagta hai, email optional); sirf developer/admin.
 13. **Coordination import**: "Import data" → Excel template (Trading/Manufacturing) → har row ka check: Complete / Missing data (kya missing) / Error (vendor registered nahi, duplicate…) → "sirf complete rows" ya "missing data ke saath" import, ya Cancel.
 14. **Server PC**: X dabane par app band nahi hota — server tray (ghadi ke paas Biome icon) me chalta rehta hai; Windows ke saath apne aap start; tray me "Stop server & quit" se hi band (clients ko "Server connection lost" dikhega).
+
+## 9. Developer account security (04-10-2026)
+- **Server PC par developer kabhi apne aap logout nahi hota** (login har hafte apne aap naya hota hai).
+- **Developer logout kare tab bhi server server hi rehta hai** — clients/Android kaam karte rehte hain.
+  Server tabhi badalta hai jab developer kisi **doosre PC** ko server bana kar wahan login kare **aur us PC
+  par company ka data ho** (backup restore). Khaali naya PC kabhi server nahi chheen sakta.
+- **Lock**: user menu → "Lock now", tray → "Lock Biome now", aur window tray me jaate hi lock.
+  Auto-lock: developer ke liye hamesha (default 5 min, band nahi ho sakta); baaki users Security me chun sakte hain.
+  Lock sirf us PC ka hota hai — server sabke liye chalta rehta hai.
+- **8-digit MPIN** (har account): user menu → "Security & MPIN" → MPIN + password se set.
+  Jis PC/phone par pehle password se login kiya ho wahan logout ke baad MPIN se login aur unlock.
+  **Naye PC par hamesha User ID + password.** 5 galat MPIN → MPIN block, password se login karne par khulta hai.
+  Aasaan MPIN (11111111, 12345678…) nahi chalta.
+- Installed app me developer tools / menu shortcuts band — koi PC par baith kar andar se cookie ya data nahi chhed sakta.

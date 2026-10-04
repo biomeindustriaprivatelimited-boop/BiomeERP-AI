@@ -2,8 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import Portal from "@/components/Portal";
+import { lockNow } from "@/components/IdleLock";
 import Link from "next/link";
-import { Sun, Moon, Factory, Bot, ChevronDown, User, LogOut, Menu } from "lucide-react";
+import { Sun, Moon, Factory, Bot, ChevronDown, User, LogOut, Menu, Lock, KeyRound } from "lucide-react";
 import GlobalSearch from "@/components/GlobalSearch";
 import StatusCluster from "@/components/StatusCluster";
 import NotificationBell from "@/components/NotificationBell";
@@ -147,6 +148,19 @@ export default function Navbar() {
                 >
                   {/* Same filtering as the sidebar: a link the role can't
                       open would only lead to a refusal page. */}
+                  <button
+                    onClick={() => { setMenuOpen(false); lockNow(); }}
+                    className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[12px] text-biome-muted transition-colors hover:bg-biome-hover hover:text-biome-text"
+                  >
+                    <Lock size={13} /> Lock now
+                  </button>
+                  <Link
+                    href="/security"
+                    onClick={() => setMenuOpen(false)}
+                    className="flex items-center gap-2 rounded-lg px-3 py-2 text-[12px] text-biome-muted transition-colors hover:bg-biome-hover hover:text-biome-text"
+                  >
+                    <KeyRound size={13} /> Security &amp; MPIN
+                  </Link>
                   {([
                     ["/company", "Company profile", "company"],
                     ["/settings", "Settings", "settings"],

@@ -150,6 +150,10 @@ export function publicUser(user: User) {
     plants: user.plants,
     active: user.active,
     mustChangePassword: user.mustChangePassword,
+    // MPIN / auto-lock (lib/mpin.ts) — whether one is set, never the hash.
+    hasMpin: Boolean((user as any).mpinHash),
+    autoLockMinutes:
+      typeof (user as any).autoLockMinutes === "number" ? (user as any).autoLockMinutes : user.role === "developer" ? 5 : 0,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
   };
