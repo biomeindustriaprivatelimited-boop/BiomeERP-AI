@@ -35,6 +35,7 @@ import crypto from "crypto";
 import path from "path";
 import { paths, readJson, writeJsonAtomic, ensureDir } from "@/lib/dataRoot";
 import type { ImprestEntry, ImprestPerson } from "@/lib/imprest";
+import { isSpend } from "@/lib/imprest";
 
 export type BudgetScope =
   | "all" | "head" | "plant" | "person" | "designation" | "department"
@@ -260,7 +261,7 @@ const same = (a: string | undefined, b: string | undefined) =>
 export function covers(b: ImprestBudget, entry: ImprestEntry, lookup?: HolderLookup): boolean {
   // Only spending counts. Cash handed to a holder or handed back is not an
   // expense against anything.
-  if (entry.kind !== "expense") return false;
+  if (!isSpend(entry)) return false;
   const m = b.match;
   const info = lookup?.(entry.personId);
   if (m.personId && entry.personId !== m.personId) return false;

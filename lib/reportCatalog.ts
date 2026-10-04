@@ -19,7 +19,7 @@
 import path from "path";
 import { paths, readJson } from "@/lib/dataRoot";
 import type { Permission, Role } from "@/lib/permissions";
-import { loadEntries as loadImprestEntries, loadPeople as loadImprestPeople, STATUS_LABELS as IMPREST_STATUS } from "@/lib/imprest";
+import { loadEntries as loadImprestEntries, loadPeople as loadImprestPeople, STATUS_LABELS as IMPREST_STATUS, isSpend as isImprestSpend, isCashReturn as isImprestReturn } from "@/lib/imprest";
 import {
   loadBudgets as loadImprestBudgets, makeLookup as budgetLookup, visibleBudgets, windowsBetween, usageIn,
   BUDGET_SCOPES, BUDGET_PERIODS,
@@ -125,8 +125,11 @@ export const DATASETS: DatasetDef[] = [
       { key: "mode", label: "Mode", type: "text" },
       { key: "status", label: "Status", type: "text" },
       { key: "filedBy", label: "Filed by", type: "text" },
-      { key: "expense", label: "Expense ₹", type: "money", sum: true },
-      { key: "advance", label: "Advance ₹", type: "money", sum: true },
+      { key: "receivedFrom", label: "Received from", type: "text" },
+      { key: "bills", label: "Bills attached", type: "number" },
+      { key: "expense", label: "Spent ₹", type: "money", sum: true },
+      { key: "advance", label: "Received ₹", type: "money", sum: true },
+      { key: "returned", label: "Cash returned ₹", type: "money", sum: true },
     ],
     dimensions: [
       { key: "category", label: "Category" }, { key: "holder", label: "Person (holder)" }, { key: "plantName", label: "Plant" },
@@ -148,10 +151,15 @@ export const DATASETS: DatasetDef[] = [
         const p = people.find((x) => x.id === e.personId);
         return {
           date: e.date, holder: p?.name || "—", plant: e.plant || p?.plant || "", plantName: plantLabel(e.plant || p?.plant || ""),
-          kindLabel: e.kind === "advance" ? "Advance" : e.kind === "return" ? "Cash returned" : "Expense",
-          category: e.category || (e.kind === "advance" ? "Advance" : e.kind === "return" ? "Cash returned" : "—"),
+          // Two types only. Cash handed back is "Money spent" with its own
+          // category and its own column, so spend totals stay true spend.
+          kindLabel: e.kind === "advance" ? "Money received" : "Money spent",
+          category: e.category || (e.kind === "advance" ? "Advance / float received" : "—"),
+          receivedFrom: e.kind === "advance" ? e.receivedFrom || "" : "",
           description: e.description, reference: e.reference, mode: e.mode, status: IMPREST_STATUS[e.status] || e.status, filedBy: e.createdByName,
-          expense: e.kind === "expense" ? e.amount : 0, advance: e.kind === "advance" ? e.amount : 0,
+          expense: isImprestSpend(e) ? e.amount : 0, advance: e.kind === "advance" ? e.amount : 0,
+          returned: isImprestReturn(e) ? e.amount : 0,
+          bills: (e.attachments || []).length,
         };
       });
     },

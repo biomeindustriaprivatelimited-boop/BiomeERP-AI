@@ -1,12 +1,14 @@
 /**
  * Biome Platform — imprest (server only)
  * -------------------------------------------------------------------
- * An imprest account is a cash float held by a person. Money moves three
+ * An imprest account is a cash float held by a person. Money moves two
  * ways and the sign convention matters, so it is fixed here once:
  *
- *   advance  — the company hands cash to the holder      (+ to their float)
- *   expense  — the holder spends it and produces a bill  (- from the float)
- *   return   — the holder hands unspent cash back        (- from the float)
+ *   advance  ("Money received") — cash reaches the holder   (+ to their float)
+ *   expense  ("Money spent")    — the holder pays it out    (- from the float)
+ *
+ * Cash handed back to the office is "Money spent" with the category
+ * "Cash returned to office" — it leaves the float but is not spending.
  *
  * Only APPROVED movements change a balance. A pending expense is a claim,
  * not a fact, and counting claims would let anyone inflate their own float
@@ -21,7 +23,11 @@ import path from "path";
 import fs from "fs";
 import { paths, readJson, writeJsonAtomic, ensureDir } from "@/lib/dataRoot";
 
-export type ImprestKind = "advance" | "expense" | "return";
+/**
+ * Two entry types only: "advance" is shown as "Money received", "expense"
+ * as "Money spent". The old third type "return" is migrated on load.
+ */
+export type ImprestKind = "advance" | "expense";
 /**
  * `pending_budget_approval` — the expense would take an enforced budget
  * past its amount, so it is held for the admin/developer. Once they pass
@@ -118,7 +124,40 @@ export const IMPREST_CATEGORIES = [
   "Bank charges",
   "Legal & professional",
   "Miscellaneous / Other",
+
+  // --- Not a spend: leftover cash handed back to the office ---
+  "Cash returned to office",
 ] as const;
+
+/**
+ * There are only two kinds of entry a person files: money spent and money
+ * received. Handing leftover cash back to the office is "money spent" with
+ * this category — it leaves the holder's hands — but it is NOT spending, so
+ * budgets, spend totals and reports leave it out (see isCashReturn).
+ *
+ * Older data had a third kind, "return". loadEntries() migrates those to
+ * kind "expense" + this category, and keeps the old kind in `legacyKind`.
+ */
+export const RETURN_CATEGORY = "Cash returned to office";
+
+/** Category given to "money received" entries that never had one. */
+export const RECEIVED_CATEGORY = "Advance / float received";
+
+/** Where received money came from — a short pick list, free text allowed. */
+export const RECEIVED_SOURCES = [
+  "Accounts / head office",
+  "Plant manager",
+  "Director",
+  "Client / party",
+  "Other",
+] as const;
+
+/**
+ * Above this amount a "money spent" entry needs a bill photo or PDF. The
+ * form refuses to file without one, and accounts cannot approve such an
+ * entry while it has no bill attached.
+ */
+export const BILL_REQUIRED_ABOVE = 500;
 
 export interface ImprestPerson {
   id: string;
@@ -156,6 +195,10 @@ export interface ImprestEvent {
 
 export interface ImprestEntry {
   id: string;
+  /** "Money received": who handed it over (accounts, a director, a party…). */
+  receivedFrom?: string;
+  /** The kind this entry had before the two-type migration, if it changed. */
+  legacyKind?: string;
   /** Set when a developer rewrote this entry (stays highlighted). */
   devEdited?: { by: string; at: string; fields: string[]; note?: string } | null;
   personId: string;
@@ -243,7 +286,82 @@ export function makePerson(input: {
 
 export function loadEntries(): ImprestEntry[] {
   const f = readJson<EntriesFile>(entriesFile(), { entries: [] });
-  return Array.isArray(f.entries) ? f.entries : [];
+  const list = Array.isArray(f.entries) ? f.entries : [];
+  // One-time, idempotent migration to the two entry types. Written back so
+  // every later reader (reports, budgets, backups) sees the same thing.
+  let changed = false;
+  const out = list.map((e) => {
+    const m = migrateEntry(e);
+    if (m !== e) changed = true;
+    return m;
+  });
+  if (changed) {
+    try { saveEntries(out); } catch { /* read-only data root: migrate in memory only */ }
+  }
+  return out;
+}
+
+/**
+ * Old "return" → money spent, category "Cash returned to office".
+ * Old "advance" with no category → category "Advance / float received".
+ * Returns the same object when nothing needs to change.
+ */
+export function migrateEntry(e: ImprestEntry): ImprestEntry {
+  if ((e.kind as string) === "return") {
+    return {
+      ...e,
+      kind: "expense",
+      legacyKind: "return",
+      category: e.category && e.category !== RETURN_CATEGORY ? `${RETURN_CATEGORY} (${e.category})` : RETURN_CATEGORY,
+    };
+  }
+  if (e.kind === "advance" && !e.category) {
+    return { ...e, category: RECEIVED_CATEGORY, legacyKind: e.legacyKind || "advance" };
+  }
+  return e;
+}
+
+/** Leftover cash handed back — leaves the float but is not spending. */
+export function isCashReturn(e: Pick<ImprestEntry, "kind" | "category">): boolean {
+  return (e.kind as string) === "return" || (e.kind === "expense" && (e.category || "").startsWith(RETURN_CATEGORY));
+}
+
+/** Real spending: "money spent" that is not cash handed back. */
+export function isSpend(e: Pick<ImprestEntry, "kind" | "category">): boolean {
+  return e.kind === "expense" && !isCashReturn(e);
+}
+
+/** Text normalised for duplicate checks. */
+function norm(s: string): string {
+  return (s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+/**
+ * Entries that look like the same money filed twice: same holder, same
+ * type, same date, same amount, and the same description (ignoring case
+ * and punctuation). Rejected entries don't count — re-filing a rejected
+ * claim is the expected fix.
+ */
+export function findDuplicates(
+  entries: ImprestEntry[],
+  c: { id?: string; personId: string; kind: string; date: string; amount: number; description: string }
+): ImprestEntry[] {
+  const d = norm(c.description);
+  return entries.filter(
+    (e) =>
+      e.id !== c.id &&
+      e.personId === c.personId &&
+      e.status !== "rejected" &&
+      e.kind === c.kind &&
+      e.date === c.date &&
+      Math.abs(e.amount - c.amount) < 0.005 &&
+      norm(e.description) === d
+  );
+}
+
+/** True when a "money spent" entry of this size must carry a bill. */
+export function billRequired(e: Pick<ImprestEntry, "kind" | "category" | "amount">): boolean {
+  return isSpend(e) && e.amount > BILL_REQUIRED_ABOVE;
 }
 
 export function saveEntries(entries: ImprestEntry[]): void {
@@ -251,22 +369,21 @@ export function saveEntries(entries: ImprestEntry[]): void {
   writeJsonAtomic(entriesFile(), { entries, updatedAt: new Date().toISOString() });
 }
 
-/** Plain-language labels. "Return" reads as a rejection to most people. */
-export const KIND_LABELS: Record<ImprestKind, { short: string; long: string; help: string }> = {
+/**
+ * Plain-language labels. Only two types are offered to anyone filing:
+ * money spent and money received. (The API still understands "return"
+ * from an old client and converts it to money spent / cash returned.)
+ */
+export const KIND_LABELS: Record<"advance" | "expense", { short: string; long: string; help: string }> = {
   advance: {
     short: "Money received",
     long: "Money received — cash or transfer given to you",
-    help: "Recorded by accounts when they hand over the float. It increases what you hold.",
+    help: "Say who gave it. It increases what you hold once accounts confirms it.",
   },
   expense: {
     short: "Money spent",
-    long: "Money spent — you paid for something",
+    long: "Money spent — you paid for something (or gave cash back to the office)",
     help: "Attach the bill. It reduces what you hold.",
-  },
-  return: {
-    short: "Money given back",
-    long: "Money given back — you returned unspent cash to the office",
-    help: "Use this when you hand leftover cash back. It reduces what you hold.",
   },
 };
 
@@ -317,8 +434,8 @@ export function balanceFor(personId: string, entries: ImprestEntry[]): ImprestBa
         if (e.mode && e.mode !== "cash") advancedByBank += e.amount;
         else advancedByCash += e.amount;
       }
-      else if (e.kind === "expense") spent += e.amount;
-      else returned += e.amount;
+      else if (isCashReturn(e)) returned += e.amount;
+      else spent += e.amount;
     } else if (e.status === "submitted") {
       pendingCount += 1;
       // An advance awaiting approval is money not yet handed over, so it
@@ -355,7 +472,7 @@ export function spentInMonth(personId: string, month: string, entries: ImprestEn
     .filter(
       (e) =>
         e.personId === personId &&
-        e.kind === "expense" &&
+        isSpend(e) &&
         e.status === "approved" &&
         e.date.slice(0, 7) === month
     )

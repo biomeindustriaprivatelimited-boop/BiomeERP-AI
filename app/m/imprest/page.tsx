@@ -21,8 +21,10 @@ import { useSession } from "@/lib/session";
  * up on the phone without anyone pulling to refresh. The `revision` field
  * from the API makes that cheap — same revision, no redraw.
  *
- * Advances are absent on purpose: only accounts records an advance, and
- * accounts sits at a desk. A phone files expenses and returns.
+ * Two types only: "Money spent" (cash handed back to the office is money
+ * spent with the "Cash returned to office" category) and "Money received"
+ * (waits for accounts to confirm). The bill photo is taken right here and
+ * is required above the limit the server sends.
  */
 
 const POLL_MS = 10_000;
@@ -35,7 +37,7 @@ interface Entry {
 interface Me {
   id: string; name: string; code: string; plant: string;
   monthlyLimit: number;
-  balance: { inHand: number; advanced: number; spent: number; returned: number };
+  balance: { inHand: number; advanced: number; spent: number; returned: number; pendingClaims?: number };
 }
 
 const STATUS_META: Record<string, { label: string; cls: string; icon: React.ReactNode }> = {
@@ -61,10 +63,11 @@ export default function MobileImprestPage() {
   const revision = useRef("");
 
   const today = new Date().toISOString().slice(0, 10);
-  const [form, setForm] = useState({
-    kind: "expense", date: today, amount: "", category: "",
-    description: "", mode: "cash", reference: "",
-  });
+  const blank = { kind: "expense", date: today, amount: "", category: "", receivedFrom: "", description: "", mode: "cash", reference: "" };
+  const [form, setForm] = useState(blank);
+  const [bill, setBill] = useState<File | null>(null);
+  // Server question (duplicate / more than balance) answered with one tap.
+  const [ask, setAsk] = useState<string | null>(null);
 
   const load = useCallback(async (force = false) => {
     try {
@@ -95,17 +98,40 @@ export default function MobileImprestPage() {
     [data, me]
   );
 
-  async function file() {
+  const billAbove: number = data?.billRequiredAbove ?? 500;
+  const returnCat: string = data?.returnCategory || "Cash returned to office";
+  const amt = Number(form.amount) || 0;
+  const needsBill = form.kind === "expense" && form.category !== returnCat && amt > billAbove;
+  const available = me ? me.balance.inHand - (me.balance.pendingClaims || 0) : 0;
+  const after = available + (form.kind === "advance" ? amt : -amt);
+
+  async function file(confirmed = false) {
     setBusy(true); setError(null);
     try {
       const res = await fetch("/api/imprest/entries", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...form, amount: Number(form.amount) }),
+        body: JSON.stringify({
+          ...form, amount: Number(form.amount), hasBill: !!bill,
+          ...(confirmed ? { confirmDuplicate: true, confirmOverBalance: true } : {}),
+        }),
       });
       const json = await res.json().catch(() => ({}));
+      if (res.status === 409 && (json.duplicate || json.overBalance)) { setAsk(json.error); return; }
       if (!res.ok) throw new Error(json.error || "Could not file that.");
-      setForm({ kind: "expense", date: today, amount: "", category: "", description: "", mode: "cash", reference: "" });
+      setAsk(null);
+      if (bill) {
+        const fd = new FormData();
+        fd.set("entryId", json.entry.id);
+        fd.set("file", bill);
+        const up = await fetch("/api/imprest/attachment", { method: "POST", body: fd });
+        if (!up.ok) {
+          const upErr = await up.json().catch(() => ({}));
+          setError(`Entry saved, but the bill photo didn't attach: ${upErr.error || up.status}. Attach it from the desktop app.`);
+        }
+      }
+      setForm(blank);
+      setBill(null);
       setFiling(false);
       if (json.budgetBlocked) {
         setHeld(json.message || "Over budget — waiting for admin approval.");
@@ -179,7 +205,7 @@ export default function MobileImprestPage() {
               </p>
               <div className="mt-4 grid grid-cols-3 gap-2 text-center">
                 {[
-                  { l: "Advanced", v: me.balance.advanced },
+                  { l: "Received", v: me.balance.advanced },
                   { l: "Spent", v: me.balance.spent },
                   { l: "Returned", v: me.balance.returned },
                 ].map((x) => (
@@ -213,7 +239,7 @@ export default function MobileImprestPage() {
             </p>
             {entries.length === 0 && (
               <p className="rounded-2xl border border-biome-line bg-biome-bgSoft px-4 py-6 text-center text-[11.5px] text-biome-muted">
-                Nothing filed yet. The + button below files your first expense.
+                Nothing filed yet. The + button below files your first entry.
               </p>
             )}
             {entries.map((e) => {
@@ -222,7 +248,7 @@ export default function MobileImprestPage() {
                 <article key={e.id} className="bmx-card rounded-2xl border border-biome-line bg-biome-bgSoft px-4 py-3">
                   <div className="flex items-center gap-2">
                     <p className="min-w-0 flex-1 truncate text-[12px] font-semibold text-biome-text">
-                      {e.category || (e.kind === "return" ? "Cash returned" : e.kind === "advance" ? "Advance" : "Expense")}
+                      {e.category || (e.kind === "advance" ? "Money received" : "Money spent")}
                     </p>
                     <p className={`font-mono text-[13px] font-semibold ${e.kind === "advance" ? "text-emerald-600" : "text-biome-text"}`}>
                       {e.kind === "advance" ? "+" : "−"}{inr(e.amount)}
@@ -273,10 +299,10 @@ export default function MobileImprestPage() {
             <div className="mt-4 space-y-3.5">
               <div className="grid grid-cols-2 gap-2">
                 {[
-                  { id: "expense", label: "Expense" },
-                  { id: "return", label: "Cash return" },
+                  { id: "expense", label: "Money spent" },
+                  { id: "advance", label: "Money received" },
                 ].map((k) => (
-                  <button key={k.id} onClick={() => setForm({ ...form, kind: k.id })}
+                  <button key={k.id} onClick={() => { setForm({ ...form, kind: k.id }); setAsk(null); }}
                     className={`rounded-xl border px-3 py-3 text-[12px] font-bold transition-colors ${
                       form.kind === k.id
                         ? "border-biome-leaf/50 bg-biome-leaf/12 text-biome-leaf"
@@ -296,12 +322,35 @@ export default function MobileImprestPage() {
                 </div>
               </MField>
 
-              {form.kind === "expense" && (
+              {me && amt > 0 && (
+                <div className={`rounded-xl border px-3.5 py-2.5 text-[11px] ${after < 0 ? "border-rose-500/30 bg-rose-500/[.07]" : "border-biome-line bg-biome-bg"}`}>
+                  <p className="text-biome-muted">
+                    Cash available {inr(Math.round(available))} → after this{" "}
+                    <span className={`font-mono font-bold ${after < 0 ? "text-rose-500" : "text-emerald-600"}`}>
+                      {after < 0 ? "−" : ""}{inr(Math.abs(Math.round(after)))}
+                    </span>
+                  </p>
+                  {after < 0 && form.kind === "expense" && (
+                    <p className="mt-0.5 text-rose-500">More than the cash you hold — check the amount.</p>
+                  )}
+                </div>
+              )}
+
+              {form.kind === "expense" ? (
                 <MField label="Spent on">
                   <select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} className={mInput}>
                     <option value="">Choose…</option>
                     {(data?.categories || []).map((c: string) => <option key={c} value={c}>{c}</option>)}
                   </select>
+                </MField>
+              ) : (
+                <MField label="Received from (who gave it)">
+                  <input list="m-imprest-from" value={form.receivedFrom}
+                    onChange={(e) => setForm({ ...form, receivedFrom: e.target.value })}
+                    placeholder="e.g. Accounts / head office" className={mInput} />
+                  <datalist id="m-imprest-from">
+                    {(data?.receivedSources || []).map((r: string) => <option key={r} value={r} />)}
+                  </datalist>
                 </MField>
               )}
 
@@ -329,12 +378,29 @@ export default function MobileImprestPage() {
                   placeholder="Bill number, slip number…" className={mInput} />
               </MField>
 
-              <button onClick={file} disabled={busy || !form.amount || !form.description || (form.kind === "expense" && !form.category)}
-                className="bmx-btn flex w-full items-center justify-center gap-2 rounded-2xl bg-biome-leaf px-5 py-4 text-[13px] font-bold text-white disabled:opacity-50">
-                {busy ? <Loader2 size={16} className="bmx-spin" /> : <Check size={16} />} File it
+              <MField label={needsBill ? `Bill photo — required above ${inr(billAbove)}` : "Bill photo (optional)"}>
+                <label className={`flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed px-3 py-3.5 text-[12px] font-semibold ${
+                  needsBill && !bill ? "border-rose-500/50 bg-rose-500/[.05] text-rose-500" : "border-biome-line text-biome-muted"}`}>
+                  {bill ? `✓ ${bill.name.slice(0, 28)}` : "Take photo / choose file"}
+                  <input type="file" accept="image/*,application/pdf" capture="environment" className="hidden"
+                    onChange={(e) => setBill(e.target.files?.[0] || null)} />
+                </label>
+              </MField>
+
+              {ask && (
+                <div className="rounded-xl border border-amber-500/30 bg-amber-500/[.1] px-3.5 py-2.5">
+                  <p className="text-[11px] font-semibold text-amber-600">Please check</p>
+                  <p className="mt-0.5 text-[11px] leading-relaxed text-biome-text">{ask}</p>
+                </div>
+              )}
+
+              <button onClick={() => file(!!ask)}
+                disabled={busy || !form.amount || !form.description || (form.kind === "expense" && !form.category) || (form.kind === "advance" && !form.receivedFrom.trim()) || (needsBill && !bill)}
+                className={`bmx-btn flex w-full items-center justify-center gap-2 rounded-2xl px-5 py-4 text-[13px] font-bold text-white disabled:opacity-50 ${ask ? "bg-amber-600" : "bg-biome-leaf"}`}>
+                {busy ? <Loader2 size={16} className="bmx-spin" /> : <Check size={16} />} {ask ? "Yes, file it anyway" : "File it"}
               </button>
               <p className="text-center text-[9.5px] leading-relaxed text-biome-muted">
-                Goes straight to the office for approval — bills can be attached from the desktop app.
+                Goes straight to the office for approval.
               </p>
             </div>
           </div>

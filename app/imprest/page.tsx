@@ -30,7 +30,8 @@ interface Person {
 }
 interface Attachment { id: string; name: string; size: number; type: string; }
 interface Entry {
-  id: string; personId: string; kind: "advance" | "expense" | "return";
+  id: string; personId: string; kind: "advance" | "expense";
+  receivedFrom?: string;
   date: string; category: string; amount: number; description: string; reference: string;
   plant: string; attachments: Attachment[]; status: "submitted" | "approved" | "rejected" | "pending_budget_approval";
   createdBy?: string; createdByName: string; createdAt: string; updatedAt: string;
@@ -47,16 +48,26 @@ const money = (n: number) =>
 
 // Plain language. "Return" was read as a rejection rather than as handing
 // cash back, which is why the option made no sense to anyone using it.
+// Two types only. Cash handed back is "Money spent" with its own category,
+// drawn with its own icon so it is not mistaken for spending.
 const KIND_META = {
   advance: { label: "Money received", icon: ArrowDownLeft, tone: "text-emerald-500 bg-emerald-500/12" },
   expense: { label: "Money spent", icon: Receipt, tone: "text-amber-500 bg-amber-500/12" },
-  return: { label: "Money given back", icon: RotateCcw, tone: "text-sky-500 bg-sky-500/12" },
+  cashback: { label: "Money spent · cash returned", icon: RotateCcw, tone: "text-sky-500 bg-sky-500/12" },
 } as const;
+const RETURN_CAT = "Cash returned to office";
+const metaFor = (e: { kind: string; category: string }) =>
+  e.kind === "advance" ? KIND_META.advance
+  : (e.category || "").startsWith(RETURN_CAT) || e.kind === "return" ? KIND_META.cashback
+  : KIND_META.expense;
+/** Must match BILL_REQUIRED_ABOVE in lib/imprest.ts (the API sends it too). */
+const BILL_ABOVE_DEFAULT = 500;
 
 export default function ImprestPage() {
   const [data, setData] = useState<{
     entries: Entry[]; people: Person[]; me: Person | null;
     canApprove: boolean; viewAll: boolean; canManage: boolean; categories: string[];
+    receivedSources?: string[]; billRequiredAbove?: number; returnCategory?: string;
     budgetMonth?: string;
     budgetUsage?: BudgetUsage[];
     budgetImpacts?: Record<string, BudgetImpact[]>;
@@ -242,6 +253,11 @@ export default function ImprestPage() {
             </div>
           )}
 
+          {/* This month at a glance — own float only. */}
+          {tab === "mine" && data.me && (
+            <MonthSummary entries={data.entries} personId={data.me.id} returnCategory={data.returnCategory || RETURN_CAT} />
+          )}
+
           {/* Where this person's budgets stand — before they file. */}
           {tab === "mine" && !canApprove && (data.budgetUsage || []).length > 0 && (
             <MyBudgets usage={data.budgetUsage || []} />
@@ -264,6 +280,9 @@ export default function ImprestPage() {
               canApprove={canApprove}
               canChooseHolder={canApprove || !!data.canFileForPlant}
               categories={data.categories}
+              receivedSources={data.receivedSources || []}
+              billRequiredAbove={data.billRequiredAbove ?? BILL_ABOVE_DEFAULT}
+              returnCategory={data.returnCategory || RETURN_CAT}
               onFiled={() => load()}
             />
           )}
@@ -304,6 +323,7 @@ export default function ImprestPage() {
             myUserId={data.myUserId || ""}
             myPersonId={data.me?.id ?? null}
             categories={data.categories}
+            billAbove={data.billRequiredAbove ?? BILL_ABOVE_DEFAULT}
             budgetImpacts={data.budgetImpacts || {}}
             onChanged={() => load()}
           />
@@ -354,7 +374,7 @@ function FloatCard({ person, compact }: { person: Person; compact?: boolean }) {
 
       {!compact && (
         <div className="relative mt-3 grid grid-cols-3 gap-2 border-t border-biome-line pt-3">
-          <Stat label="Advanced" value={money(b.advanced)} />
+          <Stat label="Received" value={money(b.advanced)} />
           <Stat label="Spent" value={money(b.spent)} />
           <Stat label="Returned" value={money(b.returned)} />
         </div>
@@ -380,37 +400,51 @@ function Stat({ label, value }: { label: string; value: string }) {
 
 /* ------------------------------------------------------------------ */
 
+interface Guards {
+  available: number; after: number; overBalance: boolean; needsBill: boolean; billRequiredAbove: number;
+  duplicates: { id: string; date: string; amount: number; description: string; status: string; createdByName: string }[];
+}
+
 function NewEntry({
-  people, me, canApprove, canChooseHolder, categories, onFiled,
+  people, me, canApprove, canChooseHolder, categories, receivedSources, billRequiredAbove, returnCategory, onFiled,
 }: {
   people: Person[]; me: Person | null; canApprove: boolean; canChooseHolder: boolean;
-  categories: string[]; onFiled: () => void;
+  categories: string[]; receivedSources: string[]; billRequiredAbove: number; returnCategory: string; onFiled: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [held, setHeld] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
   const [preview, setPreview] = useState<{ impacts: BudgetImpact[]; blocked: boolean } | null>(null);
+  const [guards, setGuards] = useState<Guards | null>(null);
+  // A question the server asked (duplicate / more than balance) — the
+  // person answers it with one more click.
+  const [confirm, setConfirm] = useState<{ duplicate?: boolean; overBalance?: boolean; message: string } | null>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [form, setForm] = useState({
     personId: me?.id || people[0]?.id || "",
     kind: "expense" as Entry["kind"],
     date: new Date().toISOString().slice(0, 10),
     category: categories[0] || "",
+    receivedFrom: canApprove ? "Accounts / head office" : "",
     amount: "",
     description: "",
     reference: "",
     mode: "cash",
     transactionRef: "",
   });
+  const amountNum = Number(form.amount) || 0;
+  const isReturn = form.kind === "expense" && form.category === returnCategory;
+  const billNeeded = form.kind === "expense" && !isReturn && amountNum > billRequiredAbove;
 
   /**
-   * Live budget check while the form is open: the server works out what
-   * this amount does to every budget it touches, nothing is saved. The
-   * person sees "₹2,400 left, this goes ₹600 over" before pressing File.
+   * Live check while the form is open: the server works out what this
+   * amount does to the cash in hand and to every budget it touches, and
+   * whether it looks like something already filed. Nothing is saved.
    */
   useEffect(() => {
-    if (!open || form.kind !== "expense") { setPreview(null); return; }
+    if (!open) { setPreview(null); setGuards(null); return; }
     const amount = Number(form.amount);
     const timer = window.setTimeout(async () => {
       try {
@@ -426,26 +460,45 @@ function NewEntry({
         });
         const json = await res.json().catch(() => ({}));
         if (res.ok && json.preview) {
-          setPreview({ impacts: amount > 0 ? json.impacts : json.impacts.map((i: BudgetImpact) => ({ ...i, remainingAfter: i.remainingBefore, overBy: 0 })), blocked: amount > 0 && json.blocked });
+          if (form.kind === "expense") {
+            setPreview({ impacts: amount > 0 ? json.impacts : json.impacts.map((i: BudgetImpact) => ({ ...i, remainingAfter: i.remainingBefore, overBy: 0 })), blocked: amount > 0 && json.blocked });
+          } else setPreview(null);
+          setGuards({
+            available: json.available, after: amount > 0 ? json.after : json.available,
+            overBalance: amount > 0 && !!json.overBalance, needsBill: !!json.needsBill,
+            billRequiredAbove: json.billRequiredAbove,
+            // An empty description can't be a duplicate of anything yet.
+            duplicates: amount > 0 && form.description.trim() ? json.duplicates || [] : [],
+          });
         }
       } catch { /* preview is a convenience */ }
     }, 350);
     return () => window.clearTimeout(timer);
-  }, [open, form.kind, form.amount, form.category, form.date, form.personId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open, form.kind, form.amount, form.category, form.date, form.personId, form.description]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function submit() {
+  async function submit(flags: { confirmDuplicate?: boolean; confirmOverBalance?: boolean } = {}) {
     if (busy) return;
+    if (billNeeded && files.length === 0) {
+      setError(`Attach the bill photo — it is required for money spent above ${money(billRequiredAbove)}.`);
+      return;
+    }
     setBusy(true);
     setError(null);
     setHeld(null);
+    setDone(null);
     try {
       const res = await fetch("/api/imprest/entries", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...form, amount: Number(form.amount) }),
+        body: JSON.stringify({ ...form, amount: Number(form.amount), hasBill: files.length > 0, ...flags }),
       });
       const json = await res.json().catch(() => ({}));
+      if (res.status === 409 && (json.duplicate || json.overBalance)) {
+        setConfirm({ duplicate: !!json.duplicate, overBalance: !!json.overBalance, message: json.error });
+        return;
+      }
       if (!res.ok) throw new Error(json.error || `Failed (${res.status}).`);
+      setConfirm(null);
 
       // Bills go up one at a time against the saved entry, so a failed
       // upload never loses the entry the person just typed.
@@ -460,13 +513,16 @@ function NewEntry({
         }
       }
 
-      setForm({ ...form, amount: "", description: "", reference: "" });
+      setForm({ ...form, amount: "", description: "", reference: "", transactionRef: "" });
       setFiles([]);
       if (json.budgetBlocked) {
         // Not a normal entry — say so plainly, outside the closed card.
         setHeld(json.message || "Over budget — waiting for admin approval.");
         setOpen(false);
-      } else if (!json.overLimit) setOpen(false);
+      } else if (!json.overLimit) {
+        setOpen(false);
+        setDone(`${form.kind === "advance" ? "Money received" : "Money spent"} of ${money(Number(form.amount))} filed. ${json.entry?.status === "approved" ? "It is already approved." : "Accounts will check it."}`);
+      }
       else setError(`Filed. Note: this month's spend (${money(json.monthSpend)}) is over the ${money(json.limit)} limit, so accounts will see it flagged.`);
       onFiled();
     } catch (err) {
@@ -480,6 +536,8 @@ function NewEntry({
   // "ask accounts" when they ARE accounts is what made this look broken.
   if (people.length === 0) return null;
 
+  const set = (patch: Partial<typeof form>) => { setForm({ ...form, ...patch }); setConfirm(null); };
+
   return (
     <>
       {held && (
@@ -492,79 +550,149 @@ function NewEntry({
           <button onClick={() => setHeld(null)} className="text-biome-muted" aria-label="Dismiss"><X size={13} /></button>
         </div>
       )}
-      <button
-        onClick={() => setOpen(true)}
-        className="bmx-btn flex w-full items-center justify-between rounded-2xl border border-biome-line bg-biome-bgSoft px-5 py-4 text-left"
-      >
-        <span className="flex items-center gap-2 text-[13px] font-semibold text-biome-text">
-          <Plus size={15} className="text-biome-leaf" /> File an entry
-        </span>
-        <span className="text-[11px] text-biome-muted">Opens as a card</span>
-      </button>
+      {done && (
+        <div className="bmx-msg-in flex items-start gap-2 rounded-2xl border border-emerald-500/30 bg-emerald-500/[.07] px-4 py-3">
+          <Check size={15} className="mt-px shrink-0 text-emerald-600" />
+          <p className="flex-1 text-[11.5px] leading-relaxed text-biome-text">{done}</p>
+          <button onClick={() => setDone(null)} className="text-biome-muted" aria-label="Dismiss"><X size={13} /></button>
+        </div>
+      )}
+      <div className="grid gap-2 sm:grid-cols-2">
+        <button
+          onClick={() => { set({ kind: "expense", category: form.category === returnCategory ? categories[0] || "" : form.category }); setOpen(true); }}
+          className="bmx-btn flex items-center gap-3 rounded-2xl border border-biome-line bg-biome-bgSoft px-5 py-4 text-left"
+        >
+          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-amber-500/12 text-amber-500"><Receipt size={16} /></span>
+          <span>
+            <span className="block text-[13px] font-semibold text-biome-text">Money spent</span>
+            <span className="block text-[10.5px] text-biome-muted">I paid for something — or gave cash back</span>
+          </span>
+          <Plus size={15} className="ml-auto text-biome-leaf" />
+        </button>
+        <button
+          onClick={() => { set({ kind: "advance" }); setOpen(true); }}
+          className="bmx-btn flex items-center gap-3 rounded-2xl border border-biome-line bg-biome-bgSoft px-5 py-4 text-left"
+        >
+          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-500/12 text-emerald-500"><ArrowDownLeft size={16} /></span>
+          <span>
+            <span className="block text-[13px] font-semibold text-biome-text">Money received</span>
+            <span className="block text-[10.5px] text-biome-muted">{canApprove ? "Cash or transfer given to a holder" : "Someone gave me cash or a transfer"}</span>
+          </span>
+          <Plus size={15} className="ml-auto text-biome-leaf" />
+        </button>
+      </div>
 
       <FormPanel
         open={open}
         onClose={() => setOpen(false)}
-        title="File an imprest entry"
-        subtitle="Everything on one screen. Attach the bill before you save."
+        title={form.kind === "advance" ? "Money received" : "Money spent"}
+        subtitle={form.kind === "advance"
+          ? canApprove ? "Lands approved, because you are the one handing it over." : "Accounts confirms it before it adds to your balance."
+          : "Everything on one screen. Attach the bill before you save."}
         footer={
           <>
             <button onClick={() => setOpen(false)} className="bmx-chip rounded-xl border border-biome-line px-4 py-2.5 text-[11.5px] font-semibold text-biome-muted">
               Cancel
             </button>
-            <button
-              onClick={submit}
-              disabled={busy}
-              className="bmx-btn flex items-center gap-2 rounded-xl bg-biome-leaf px-5 py-2.5 text-[11.5px] font-bold text-white disabled:opacity-60"
-            >
-              {busy ? <Loader2 size={14} className="bmx-spin" /> : <Check size={14} />}
-              {busy ? "Filing…" : "File entry"}
-            </button>
+            {confirm ? (
+              <button
+                onClick={() => submit({ confirmDuplicate: true, confirmOverBalance: true })}
+                disabled={busy}
+                className="bmx-btn flex items-center gap-2 rounded-xl bg-amber-600 px-5 py-2.5 text-[11.5px] font-bold text-white disabled:opacity-60"
+              >
+                {busy ? <Loader2 size={14} className="bmx-spin" /> : <Check size={14} />}
+                Yes, file it anyway
+              </button>
+            ) : (
+              <button
+                onClick={() => submit()}
+                disabled={busy || (billNeeded && files.length === 0)}
+                title={billNeeded && files.length === 0 ? "Attach the bill first" : undefined}
+                className="bmx-btn flex items-center gap-2 rounded-xl bg-biome-leaf px-5 py-2.5 text-[11.5px] font-bold text-white disabled:opacity-60"
+              >
+                {busy ? <Loader2 size={14} className="bmx-spin" /> : <Check size={14} />}
+                {busy ? "Filing…" : "File entry"}
+              </button>
+            )}
           </>
         }
       >
+        {/* The two types, as big buttons — nothing else to choose from. */}
+        <div className="grid grid-cols-2 gap-2">
+          {([
+            { id: "expense", label: "Money spent", sub: "Paid for something / gave cash back", Icon: Receipt, on: "border-amber-500/50 bg-amber-500/10 text-amber-600" },
+            { id: "advance", label: "Money received", sub: "Cash or transfer reached the holder", Icon: ArrowDownLeft, on: "border-emerald-500/50 bg-emerald-500/10 text-emerald-600" },
+          ] as const).map((k) => (
+            <button key={k.id} type="button" onClick={() => set({ kind: k.id })}
+              className={`flex items-center gap-2.5 rounded-xl border px-3.5 py-3 text-left transition ${form.kind === k.id ? k.on : "border-biome-line text-biome-muted hover:text-biome-text"}`}>
+              <k.Icon size={16} />
+              <span>
+                <span className="block text-[12px] font-bold">{k.label}</span>
+                <span className="block text-[10px] opacity-80">{k.sub}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+
         <FormSection title="What happened" columns={3}>
           {canChooseHolder && people.length > 1 && (
             <Field label="Holder">
-              <select value={form.personId} onChange={(e) => setForm({ ...form, personId: e.target.value })} className={inputCls}>
+              <select value={form.personId} onChange={(e) => set({ personId: e.target.value })} className={inputCls}>
                 {people.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.code})</option>)}
               </select>
             </Field>
           )}
 
-          <Field label="Type">
-            <select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value as Entry["kind"] })} className={inputCls}>
-              <option value="expense">Money spent — I paid for something (attach the bill)</option>
-              <option value="return">Money given back — I returned unspent cash to the office</option>
-              {canApprove && <option value="advance">Money received — cash or transfer given to the holder</option>}
-            </select>
-          </Field>
-
           <Field label="Date">
             <input type="date" max={new Date().toISOString().slice(0, 10)} value={form.date}
-              onChange={(e) => setForm({ ...form, date: e.target.value })} className={inputCls} />
+              onChange={(e) => set({ date: e.target.value })} className={inputCls} />
           </Field>
 
           <Field label="Amount (₹)">
             <input type="number" min="0" step="0.01" inputMode="decimal" value={form.amount}
-              onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="0.00" className={inputCls} />
+              onChange={(e) => set({ amount: e.target.value })} placeholder="0.00" className={inputCls} />
           </Field>
 
-          {form.kind === "expense" && (
+          {form.kind === "expense" ? (
             <Field label="Spent on">
-              <select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} className={inputCls}>
+              <select value={form.category} onChange={(e) => set({ category: e.target.value })} className={inputCls}>
                 {categories.map((c) => <option key={c} value={c}>{c}</option>)}
               </select>
             </Field>
+          ) : (
+            <Field label="Received from (who gave it)">
+              <input list="imprest-received-from" value={form.receivedFrom} onChange={(e) => set({ receivedFrom: e.target.value })}
+                placeholder="e.g. Accounts / head office" className={inputCls} />
+              <datalist id="imprest-received-from">
+                {receivedSources.map((r) => <option key={r} value={r} />)}
+              </datalist>
+            </Field>
           )}
         </FormSection>
+
+        {/* Running balance — seen while typing the amount, before saving. */}
+        {guards && <BalanceStrip guards={guards} kind={form.kind} amount={amountNum} />}
+
+        {guards && guards.duplicates.length > 0 && (
+          <div className="bmx-msg-in rounded-xl border border-amber-500/30 bg-amber-500/[.08] px-4 py-3">
+            <p className="flex items-center gap-1.5 text-[11.5px] font-semibold text-amber-600">
+              <AlertCircle size={13} /> Looks like this was already filed
+            </p>
+            {guards.duplicates.slice(0, 3).map((d) => (
+              <p key={d.id} className="mt-0.5 text-[10.5px] text-biome-text">
+                {d.date} · {money(d.amount)} · {d.description} · {d.status} (filed by {d.createdByName})
+              </p>
+            ))}
+            <p className="mt-1 text-[10.5px] text-biome-muted">Same date, amount and description. File again only if it really is a second payment.</p>
+          </div>
+        )}
 
         {/* Right under the amount, so the effect is seen while typing it. */}
         {preview && preview.impacts.length > 0 && <BudgetPreview impacts={preview.impacts} blocked={preview.blocked} />}
 
         <FormSection title="How the money moved" hint="Some people are paid in cash and some by transfer — recording which is what lets accounts tie this back to the bank statement." columns={3}>
           <Field label="Payment mode">
-            <select value={form.mode} onChange={(e) => setForm({ ...form, mode: e.target.value })} className={inputCls}>
+            <select value={form.mode} onChange={(e) => set({ mode: e.target.value })} className={inputCls}>
               <option value="cash">Cash</option>
               <option value="bank">Bank transfer</option>
               <option value="upi">UPI</option>
@@ -574,32 +702,43 @@ function NewEntry({
 
           {form.mode !== "cash" && (
             <Field label="UTR / cheque / txn no.">
-              <input value={form.transactionRef} onChange={(e) => setForm({ ...form, transactionRef: e.target.value })}
+              <input value={form.transactionRef} onChange={(e) => set({ transactionRef: e.target.value })}
                 placeholder="So it can be matched on the statement" className={inputCls} />
             </Field>
           )}
 
-          <Field label="Bill / voucher no.">
-            <input value={form.reference} onChange={(e) => setForm({ ...form, reference: e.target.value })}
-              placeholder="Optional" className={inputCls} />
-          </Field>
+          {form.kind === "expense" && (
+            <Field label="Bill / voucher no.">
+              <input value={form.reference} onChange={(e) => set({ reference: e.target.value })}
+                placeholder="Optional" className={inputCls} />
+            </Field>
+          )}
         </FormSection>
 
         <FormSection title="Details" columns={1}>
-          <Field label="What was this for?">
-            <textarea rows={3} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })}
-              placeholder="Diesel for RJ32GD6535, Rewari to Jhajjar — 42 litres at the HP pump on NH352"
+          <Field label={form.kind === "advance" ? "What is this money for?" : "What was this for?"}>
+            <textarea rows={3} value={form.description} onChange={(e) => set({ description: e.target.value })}
+              placeholder={form.kind === "advance"
+                ? "Float for October plant expenses"
+                : "Diesel for RJ32GD6535, Rewari to Jhajjar — 42 litres at the HP pump on NH352"}
               className={`${inputCls} resize-y`} />
           </Field>
         </FormSection>
 
-        <FormSection title="Bill photo or PDF" hint="Up to eight files. Photograph the bill — a phone photo is enough." columns={1}>
+        <FormSection
+          title={billNeeded ? "Bill photo or PDF — required" : "Bill photo or PDF"}
+          hint={form.kind === "advance"
+            ? "Optional — a photo of the receipt or transfer screenshot helps accounts."
+            : `Required for money spent above ${money(billRequiredAbove)}. Below that it is optional but recommended. A phone photo is enough; up to eight files.`}
+          columns={1}
+        >
           <div>
-            <label className="bmx-chip inline-flex cursor-pointer items-center gap-2 rounded-xl border border-dashed border-biome-line px-4 py-6 text-[11.5px] text-biome-muted hover:text-biome-text">
+            <label className={`bmx-chip inline-flex cursor-pointer items-center gap-2 rounded-xl border border-dashed px-4 py-6 text-[11.5px] hover:text-biome-text ${
+              billNeeded && files.length === 0 ? "border-rose-500/50 bg-rose-500/[.05] text-rose-500" : "border-biome-line text-biome-muted"}`}>
               <Paperclip size={15} />
-              {files.length === 0 ? "Choose files" : `${files.length} file(s) selected`}
+              {files.length === 0 ? (billNeeded ? "Attach the bill (required)" : "Choose files") : `${files.length} file(s) selected`}
               <input type="file" multiple accept="image/jpeg,image/png,image/webp,application/pdf" className="hidden"
-                onChange={(e) => setFiles(Array.from(e.target.files || []).slice(0, 8))} />
+                onChange={(e) => { setFiles(Array.from(e.target.files || []).slice(0, 8)); setError(null); }} />
             </label>
             {files.length > 0 && (
               <ul className="mt-2 space-y-1">
@@ -613,6 +752,16 @@ function NewEntry({
           </div>
         </FormSection>
 
+        {confirm && (
+          <div className="bmx-msg-in flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/[.1] px-4 py-3">
+            <AlertCircle size={15} className="mt-px shrink-0 text-amber-600" />
+            <div>
+              <p className="text-[11.5px] font-semibold text-amber-600">Please check before filing</p>
+              <p className="mt-0.5 text-[11.5px] leading-relaxed text-biome-text">{confirm.message}</p>
+            </div>
+          </div>
+        )}
+
         {error && (
           <div className="bmx-msg-in flex items-start gap-2 rounded-xl border border-amber-500/25 bg-amber-500/[.08] px-4 py-3">
             <AlertCircle size={15} className="mt-px shrink-0 text-amber-600" />
@@ -624,11 +773,103 @@ function NewEntry({
   );
 }
 
+/** "Cash available ₹X → after this entry ₹Y", shown while typing. */
+function BalanceStrip({ guards, kind, amount }: { guards: Guards; kind: Entry["kind"]; amount: number }) {
+  const neg = guards.after < 0;
+  return (
+    <div className={`bmx-msg-in rounded-xl border px-4 py-3 ${neg ? "border-rose-500/30 bg-rose-500/[.07]" : "border-biome-line bg-biome-bg/50"}`}>
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-1">
+        <div>
+          <p className="text-[9px] font-bold uppercase tracking-[.12em] text-biome-muted">Cash available now</p>
+          <p className={`font-mono text-[15px] font-semibold ${guards.available < 0 ? "text-rose-500" : "text-biome-text"}`}>
+            {guards.available < 0 ? "−" : ""}{money(guards.available)}
+          </p>
+        </div>
+        <span className="text-biome-muted">{kind === "advance" ? "+" : "−"} {money(amount)} →</span>
+        <div>
+          <p className="text-[9px] font-bold uppercase tracking-[.12em] text-biome-muted">After this entry</p>
+          <p className={`font-mono text-[15px] font-semibold ${neg ? "text-rose-500" : "text-emerald-600"}`}>
+            {neg ? "−" : ""}{money(guards.after)}
+          </p>
+        </div>
+      </div>
+      {neg && kind === "expense" && amount > 0 && (
+        <p className="mt-1.5 text-[10.5px] text-rose-500">
+          This is more than the cash you hold. Check the amount — if you paid the extra from your own pocket, you can still file it.
+        </p>
+      )}
+      <p className="mt-1 text-[9.5px] text-biome-muted">Approved balance less entries still waiting for accounts.</p>
+    </div>
+  );
+}
+
+/** This month at a glance, for the holder's own float. */
+function MonthSummary({ entries, personId, returnCategory }: { entries: Entry[]; personId: string; returnCategory: string }) {
+  const month = new Date().toISOString().slice(0, 7);
+  const mine = entries.filter((e) => e.personId === personId && e.date.slice(0, 7) === month && e.status !== "rejected");
+  const isRet = (e: Entry) => e.kind === "expense" && (e.category || "").startsWith(returnCategory);
+  const received = mine.filter((e) => e.kind === "advance").reduce((s, e) => s + e.amount, 0);
+  const spentList = mine.filter((e) => e.kind === "expense" && !isRet(e));
+  const spent = spentList.reduce((s, e) => s + e.amount, 0);
+  const returned = mine.filter(isRet).reduce((s, e) => s + e.amount, 0);
+  const waiting = mine.filter((e) => e.status === "submitted" || e.status === "pending_budget_approval").length;
+  const noBill = spentList.filter((e) => e.attachments.length === 0 && e.status !== "approved").length;
+  const byCat = new Map<string, number>();
+  for (const e of spentList) byCat.set(e.category || "Other", (byCat.get(e.category || "Other") || 0) + e.amount);
+  const top = Array.from(byCat.entries()).sort((a, b) => b[1] - a[1]).slice(0, 3);
+  const label = new Date(month + "-01T00:00:00").toLocaleDateString("en-IN", { month: "long", year: "numeric" });
+
+  return (
+    <section className="rounded-2xl border border-biome-line bg-biome-bgSoft p-4">
+      <div className="flex items-center justify-between">
+        <p className="text-[12.5px] font-semibold text-biome-text">{label} — summary</p>
+        <span className="text-[10px] text-biome-muted">{mine.length} entr{mine.length === 1 ? "y" : "ies"} (rejected not counted)</span>
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <MiniStat label="Received" value={money(received)} tone="text-emerald-600" />
+        <MiniStat label="Spent" value={money(spent)} tone="text-amber-600" />
+        <MiniStat label="Cash returned" value={money(returned)} tone="text-sky-600" />
+        <MiniStat label="Waiting for accounts" value={String(waiting)} tone={waiting ? "text-amber-600" : "text-biome-text"} />
+      </div>
+      {top.length > 0 && (
+        <div className="mt-3 space-y-1.5">
+          {top.map(([cat, amt]) => (
+            <div key={cat}>
+              <div className="flex justify-between text-[10.5px]">
+                <span className="text-biome-text">{cat}</span>
+                <span className="font-mono text-biome-muted">{money(amt)}</span>
+              </div>
+              <div className="mt-0.5 h-1.5 overflow-hidden rounded-full bg-biome-line">
+                <div className="h-full rounded-full bg-amber-500/70" style={{ width: `${spent ? Math.max(4, (amt / spent) * 100) : 0}%` }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {noBill > 0 && (
+        <p className="mt-3 flex items-center gap-1.5 text-[10.5px] text-amber-600">
+          <Paperclip size={11} /> {noBill} spent entr{noBill === 1 ? "y has" : "ies have"} no bill attached yet — add it below so accounts can approve.
+        </p>
+      )}
+    </section>
+  );
+}
+
+function MiniStat({ label, value, tone }: { label: string; value: string; tone: string }) {
+  return (
+    <div className="rounded-xl border border-biome-line bg-biome-bg/50 px-3 py-2">
+      <p className="text-[9px] font-bold uppercase tracking-[.12em] text-biome-muted">{label}</p>
+      <p className={`mt-0.5 font-mono text-[14px] font-semibold ${tone}`}>{value}</p>
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------------ */
 
 function EntryList({
-  entries, people, canApprove, canFileForPlant, myUserId, myPersonId, categories, budgetImpacts, onChanged,
+  entries, people, canApprove, canFileForPlant, myUserId, myPersonId, categories, billAbove, budgetImpacts, onChanged,
 }: {
+  billAbove: number;
   entries: Entry[]; people: Person[]; canApprove: boolean; canFileForPlant: boolean; myUserId: string;
   myPersonId: string | null;
   categories: string[]; budgetImpacts: Record<string, BudgetImpact[]>; onChanged: () => void;
@@ -651,6 +892,24 @@ function EntryList({
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json.error || `Failed (${res.status}).`);
       if (json.failed?.length) throw new Error(json.failed[0].reason);
+      onChanged();
+    } catch (err) {
+      setRowError((r) => ({ ...r, [entry.id]: (err as Error).message }));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function addBill(entry: Entry, file: File) {
+    setBusyId(entry.id);
+    setRowError((r) => ({ ...r, [entry.id]: "" }));
+    try {
+      const fd = new FormData();
+      fd.set("entryId", entry.id);
+      fd.set("file", file);
+      const res = await fetch("/api/imprest/attachment", { method: "POST", body: fd });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || `Failed (${res.status}).`);
       onChanged();
     } catch (err) {
       setRowError((r) => ({ ...r, [entry.id]: (err as Error).message }));
@@ -684,7 +943,9 @@ function EntryList({
   return (
     <div className="space-y-2">
       {entries.map((entry, i) => {
-        const meta = KIND_META[entry.kind];
+        const meta = metaFor(entry);
+        const isSpendEntry = entry.kind === "expense" && meta !== KIND_META.cashback;
+        const missingBill = isSpendEntry && entry.amount > billAbove && entry.attachments.length === 0;
         const Icon = meta.icon;
         const isMine = myPersonId === entry.personId;
         const filedByMe = canFileForPlant && !!myUserId && entry.createdBy === myUserId;
@@ -714,9 +975,25 @@ function EntryList({
                   {new Date(entry.date + "T00:00:00").toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}
                   {(canApprove || canFileForPlant) && !isMine && ` · ${nameOf(entry.personId)}`}
                   {entry.category && ` · ${entry.category}`}
+                  {entry.kind === "advance" && entry.receivedFrom && ` · from ${entry.receivedFrom}`}
                   {entry.reference && ` · ${entry.reference}`}
                   {entry.plant && ` · ${entry.plant}`}
                 </p>
+
+                {missingBill && (
+                  <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/[.07] px-2.5 py-1.5">
+                    <p className="flex items-center gap-1.5 text-[10.5px] font-semibold text-amber-600">
+                      <Paperclip size={11} /> No bill attached — required above {money(billAbove)}
+                    </p>
+                    {canEdit && (
+                      <label className="bmx-chip cursor-pointer rounded-md border border-amber-500/40 px-2 py-0.5 text-[10px] font-bold text-amber-600">
+                        {busyId === entry.id ? "Uploading…" : "Add bill"}
+                        <input type="file" accept="image/jpeg,image/png,image/webp,application/pdf" className="hidden"
+                          onChange={(ev) => { const f = ev.target.files?.[0]; if (f) addBill(entry, f); }} />
+                      </label>
+                    )}
+                  </div>
+                )}
 
                 {entry.attachments.length > 0 && (
                   <div className="mt-2 flex flex-wrap gap-1.5">
@@ -785,7 +1062,7 @@ function EntryList({
                     <input
                       value={note[entry.id] || ""}
                       onChange={(e) => setNote({ ...note, [entry.id]: e.target.value })}
-                      placeholder="Reason (required to reject)"
+                      placeholder={missingBill ? "Note (required: reject reason, or why approved without bill)" : "Reason (required to reject)"}
                       className="bmx-input min-w-[180px] flex-1 rounded-lg border border-biome-line bg-biome-bg px-2.5 py-1.5 text-[11px] text-biome-text"
                     />
                     <button
@@ -847,6 +1124,7 @@ function EditRow({
     date: entry.date,
     amount: String(entry.amount),
     category: entry.category || categories[0] || "",
+    receivedFrom: entry.receivedFrom || "",
     description: entry.description,
     reference: entry.reference,
   });
@@ -878,11 +1156,16 @@ function EditRow({
       <Field label="Amount (₹)">
         <input type="number" step="0.01" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} className={inputCls} />
       </Field>
-      {entry.kind === "expense" && (
+      {entry.kind === "expense" ? (
         <Field label="Spent on">
           <select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} className={inputCls}>
+            {!categories.includes(form.category) && <option value={form.category}>{form.category}</option>}
             {categories.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
+        </Field>
+      ) : (
+        <Field label="Received from">
+          <input value={form.receivedFrom} onChange={(e) => setForm({ ...form, receivedFrom: e.target.value })} className={inputCls} />
         </Field>
       )}
       <div className="md:col-span-2">

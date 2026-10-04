@@ -7,6 +7,8 @@ import {
   loadEntries, saveEntries, loadPeople, personForUser, balanceFor,
   spentInMonth, isEditable, event, ImprestEntry, ImprestKind, IMPREST_CATEGORIES,
   PaymentMode, PAYMENT_MODES, ensureSelfHolder, ImprestPerson, BudgetHold, STATUS_LABELS,
+  RETURN_CATEGORY, RECEIVED_CATEGORY, RECEIVED_SOURCES, BILL_REQUIRED_ABOVE, billRequired, findDuplicates,
+  isCashReturn, KIND_LABELS,
 } from "@/lib/imprest";
 import {
   loadBudgets, usageForMonth, impactOf, breachesOf, breachMessage, makeLookup,
@@ -18,7 +20,8 @@ import { recordAudit } from "@/lib/audit";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const KINDS: ImprestKind[] = ["advance", "expense", "return"];
+/** Only two types. "return" is still understood from older clients. */
+const KINDS: string[] = ["advance", "expense", "return"];
 
 /**
  * Who may see which entries.
@@ -167,6 +170,10 @@ export async function GET(req: NextRequest) {
     needsSetup: people.length === 0,
     myPlant: auth.session.plant,
     categories: IMPREST_CATEGORIES,
+    returnCategory: RETURN_CATEGORY,
+    receivedSources: RECEIVED_SOURCES,
+    billRequiredAbove: BILL_REQUIRED_ABOVE,
+    kindLabels: KIND_LABELS,
     paymentModes: PAYMENT_MODES,
     // Lets the approvals screen poll cheaply and only redraw on a change.
     revision: all.length ? all.reduce((m, e) => (e.updatedAt > m ? e.updatedAt : m), "") : "",
@@ -182,16 +189,21 @@ export async function GET(req: NextRequest) {
 }
 
 function readPayload(body: any) {
-  const kind = String(body.kind || "") as ImprestKind;
+  const rawKind = String(body.kind || "");
+  // Older phone builds may still send "return" — that is money spent with
+  // the "Cash returned to office" category now.
+  const kind = (rawKind === "return" ? "expense" : rawKind) as ImprestKind;
   const date = String(body.date || "").slice(0, 10);
   const amount = Number(body.amount);
-  const category = String(body.category || "").trim();
+  let category = rawKind === "return" ? RETURN_CATEGORY : String(body.category || "").trim();
+  if (kind === "advance" && !category) category = RECEIVED_CATEGORY;
+  const receivedFrom = kind === "advance" ? String(body.receivedFrom || "").trim().slice(0, 80) : "";
   const description = String(body.description || "").trim();
   const reference = String(body.reference || "").trim();
   const mode = (PAYMENT_MODES.some((m) => m.id === body.mode) ? body.mode : "cash") as PaymentMode;
   const transactionRef = String(body.transactionRef || "").trim().slice(0, 60);
 
-  if (!KINDS.includes(kind)) return { error: "Choose whether this is an advance, an expense or a return." };
+  if (!KINDS.includes(rawKind)) return { error: "Choose whether this is money spent or money received." };
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { error: "Enter a valid date." };
   if (date > new Date().toISOString().slice(0, 10)) return { error: "The date can't be in the future." };
   if (!Number.isFinite(amount) || amount <= 0) return { error: "Enter an amount greater than zero." };
@@ -199,7 +211,7 @@ function readPayload(body: any) {
   if (kind === "expense" && !category) return { error: "Pick what the money was spent on." };
   if (!description) return { error: "Write a short description so accounts knows what this is." };
 
-  return { kind, date, amount: Math.round(amount * 100) / 100, category, description, reference, mode, transactionRef };
+  return { kind, date, amount: Math.round(amount * 100) / 100, category, receivedFrom, description, reference, mode, transactionRef };
 }
 
 export async function POST(req: NextRequest) {
@@ -241,13 +253,14 @@ export async function POST(req: NextRequest) {
   }
   const forSelf = !!mine && person.id === mine.id;
 
-  // Only accounts hands out cash. If an employee could file their own
-  // advance, the float would be self-service.
-  if (parsed.kind === "advance" && !canApprove) {
-    return NextResponse.json(
-      { error: "Only accounts can record an advance. File the expense and they'll top you up." },
-      { status: 403 }
-    );
+  // "Money received" may be filed by anyone, but only an approver's entry
+  // lands approved. A holder's own "I received ₹5,000 from X" waits for
+  // accounts to confirm it, so the float is never self-service.
+  if (parsed.kind === "advance" && !parsed.receivedFrom) {
+    if (canApprove) parsed.receivedFrom = "Accounts / head office";
+    else if (body.preview !== true) {
+      return NextResponse.json({ error: "Say who gave you this money (for example: Accounts / head office)." }, { status: 400 });
+    }
   }
 
   const all = loadEntries();
@@ -258,7 +271,8 @@ export async function POST(req: NextRequest) {
     personId: person.id,
     kind: parsed.kind,
     date: parsed.date,
-    category: parsed.kind === "expense" ? parsed.category : "",
+    category: parsed.category,
+    receivedFrom: parsed.receivedFrom || undefined,
     amount: parsed.amount,
     description: parsed.description,
     reference: parsed.reference,
@@ -288,9 +302,48 @@ export async function POST(req: NextRequest) {
   const impacts = impactOf(entry, loadBudgets(), all, lookup);
   const breaches = breachesOf(impacts);
 
+  // Mistake guards. Worked out once, used by the live preview and by the
+  // real filing alike, so what the form warns about is what the server
+  // checks.
+  const bal = balanceFor(person.id, all);
+  // Cash the holder can still account for: approved balance less claims
+  // already filed but not yet decided.
+  const available = Math.round((bal.inHand - bal.pendingClaims) * 100) / 100;
+  const after = Math.round((available + (entry.kind === "advance" ? entry.amount : -entry.amount)) * 100) / 100;
+  const overBalance = entry.kind === "expense" && after < 0;
+  const duplicates = findDuplicates(all, entry).map((d) => ({
+    id: d.id, date: d.date, amount: d.amount, description: d.description, status: d.status, createdByName: d.createdByName,
+  }));
+  const needsBill = billRequired(entry);
+  const guards = { available, after, overBalance, duplicates, needsBill, billRequiredAbove: BILL_REQUIRED_ABOVE };
+
   // Live preview for the form: what this amount would do, nothing saved.
   if (body.preview === true) {
-    return NextResponse.json({ preview: true, impacts, breaches, blocked: breaches.length > 0, message: breaches.length ? breachMessage(breaches) : "" });
+    return NextResponse.json({ preview: true, impacts, breaches, blocked: breaches.length > 0, message: breaches.length ? breachMessage(breaches) : "", ...guards });
+  }
+
+  // A bill is required above the limit. The form sends `hasBill` when it
+  // has a file ready to upload straight after this entry is saved.
+  if (needsBill && body.hasBill !== true) {
+    return NextResponse.json({
+      error: `A bill photo or PDF is required for money spent above ₹${BILL_REQUIRED_ABOVE.toLocaleString("en-IN")}. Attach it and file again.`,
+      needsBill: true,
+    }, { status: 400 });
+  }
+  // Same money filed twice is the commonest imprest mistake. Ask once.
+  if (duplicates.length && body.confirmDuplicate !== true) {
+    return NextResponse.json({
+      error: `This looks like an entry already filed on ${entry.date} for ₹${entry.amount.toLocaleString("en-IN")} with the same description. File it again only if it really is a second payment.`,
+      duplicate: true, ...guards,
+    }, { status: 409 });
+  }
+  // Spending more than the holder has. Possible (they paid from their own
+  // pocket), so it is a question, not a refusal.
+  if (overBalance && body.confirmOverBalance !== true) {
+    return NextResponse.json({
+      error: `This is more than the cash available (₹${available.toLocaleString("en-IN")}). After this entry the balance would be −₹${Math.abs(after).toLocaleString("en-IN")}. If you paid the extra from your own pocket, confirm and file.`,
+      ...guards,
+    }, { status: 409 });
   }
 
   if (breaches.length) applyHold(entry, breaches, user);
@@ -313,7 +366,7 @@ export async function POST(req: NextRequest) {
   const overLimit = person.monthlyLimit > 0 && monthSpend > person.monthlyLimit;
 
   return NextResponse.json({
-    entry, overLimit, monthSpend, limit: person.monthlyLimit,
+    entry, overLimit, monthSpend, limit: person.monthlyLimit, ...guards,
     impacts,
     budgetBlocked: breaches.length > 0,
     breaches,
@@ -380,7 +433,8 @@ export async function PUT(req: NextRequest) {
     kind: parsed.kind,
     date: parsed.date,
     amount: parsed.amount,
-    category: parsed.kind === "expense" ? parsed.category : "",
+    category: parsed.category,
+    receivedFrom: parsed.kind === "advance" ? (parsed.receivedFrom || existing.receivedFrom || undefined) : undefined,
     description: parsed.description,
     reference: parsed.reference,
     mode: parsed.mode,
@@ -393,7 +447,7 @@ export async function PUT(req: NextRequest) {
   // claim over (or above what the admin agreed) holds it again.
   let breaches: BudgetImpact[] = [];
   if (existing.status === "submitted" || existing.status === "pending_budget_approval") {
-    breaches = updated.kind === "expense"
+    breaches = updated.kind === "expense" && !isCashReturn(updated)
       ? breachesOf(impactOf(updated, loadBudgets(), all, budgetLookup(loadPeople())))
       : [];
     const agreed = existing.budgetHold?.decision === "approved" ? existing.budgetHold.approvedAmount ?? 0 : null;
