@@ -34,6 +34,10 @@ const ALLOWED: Record<string, ("GET" | "POST")[]> = {
   // vendor paperwork held while the agent was off gets filed now.
   "staged/sweep": ["POST"],
   file: ["GET"],
+  // Pictures of a document (PDF page / scaled photo) for the supply-set
+  // panel thumbnails and the full-page viewer.
+  preview: ["GET"],
+  "preview-info": ["GET"],
   connect: ["POST"],
   disconnect: ["POST"],
   reprocess: ["POST"],
@@ -75,7 +79,7 @@ async function proxy(req: NextRequest, segments: string[], method: "GET" | "POST
     });
 
     // /file streams the actual PDF or image back to the browser.
-    if (route === "file") {
+    if (route === "file" || route === "preview") {
       if (!res.ok) {
         const errBody = await res.json().catch(() => ({ error: "Could not load that file." }));
         return NextResponse.json(errBody, { status: res.status });
@@ -85,7 +89,8 @@ async function proxy(req: NextRequest, segments: string[], method: "GET" | "POST
         headers: {
           "Content-Type": res.headers.get("Content-Type") || "application/octet-stream",
           "Content-Disposition": res.headers.get("Content-Disposition") || "inline",
-          "Cache-Control": "no-store",
+          "Cache-Control": route === "preview" ? "private, max-age=300" : "no-store",
+          ...(res.headers.get("X-Page-Count") ? { "X-Page-Count": res.headers.get("X-Page-Count") as string } : {}),
         },
       });
     }

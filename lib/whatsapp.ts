@@ -158,6 +158,8 @@ export interface ParsedReference {
   vendorCode: string; // "MHI"
   vendorDocNo: string; // "44"
   confidence: number;
+  /** Set opened under our document number while the vendor part is unknown ("BDC/871"). */
+  provisional?: boolean;
 }
 
 export interface ExtractedFields {
@@ -184,6 +186,17 @@ export interface ExtractedFields {
   taxableValue: string | null;
   totalAmount: string | null;
   transcription: string;
+  /** Load in kilograms, whatever unit the page used. */
+  quantityKg?: string | number | null;
+  /** GR / LR (Bill T) number. */
+  grNumber?: string | null;
+  vendorOwnDocNo?: string | null;
+  /** "us" = Biome issued it (seller/supplier), "them" = Biome is the buyer. */
+  issuerSide?: "us" | "them" | null;
+  issuerReason?: string | null;
+  readMethod?: string;
+  /** Tesseract's own confidence for photographed/scanned pages (0-100). */
+  ocrConfidence?: number;
 }
 
 export interface WhatsappDocument {
@@ -213,6 +226,8 @@ export interface WhatsappDocument {
   aiMessage: string | null;
   reviewRequired?: boolean;
   reviewReason?: string | null;
+  /** Why the agent placed it in its supply set. */
+  autoFiledReasons?: string[];
 }
 
 export interface SupplySet {

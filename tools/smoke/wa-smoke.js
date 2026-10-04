@@ -2,7 +2,7 @@
  * WhatsApp agent smoke test — runs the agent exactly as the installed app
  * does and checks the two things that matter:
  *
- *   A. Pipeline: two group documents (our tax invoice posted from the linked
+ *   A. Pipeline: group documents (our tax invoice posted from the linked
  *      phone, and the vendor's invoice) go through the WhatsApp Web message
  *      path → download → read → filed into ONE supply-set folder.
  *   B. Engine: the WhatsApp engine starts and reaches the QR screen
@@ -137,6 +137,46 @@ function call(method, route, body) {
     if ((after.processed || 0) + (after.failed || 0) > (before.processed || 0) + (before.failed || 0)) break;
   }
   report((after.processed || 0) > (before.processed || 0), "scanned PDF read with offline OCR", `processed ${after.processed}, failed ${after.failed}`);
+
+  // ---- A3. whose document is it, and does every paper reach its set ----
+  // Vendor papers for the Nabha supply arrive FIRST (a scanned vendor
+  // invoice where Biome is the buyer, a sideways weight-slip photo), then
+  // OUR delivery challan; separately, OUR tax invoice photographed at the
+  // Gangakhed plant. Nothing may be left waiting once its set exists.
+  const media = (f) => (/\.pdf$/i.test(f) ? ["document", "application/pdf"] : ["image", "image/jpeg"]);
+  const send = (id, f, fromMe, sender) => {
+    const [type, mimetype] = media(f);
+    return call("POST", "/test/web-message", { id, chat: GROUP, fromMe, author: fromMe ? undefined : "919800000003@c.us", type, mimetype, filename: f, base64: doc(f), sender });
+  };
+  const beforeA3 = (await call("GET", "/status")).json?.diag || {};
+  await send("SMOKEV1", "vendor_invoice_npl_scan.pdf", false, "IBS vendor");
+  await send("SMOKEV2", "weight_slip_sideways.jpg", false, "Driver");
+  await send("SMOKEO1", "biome_challan_npl.pdf", true, "Biome Accounts");
+  await send("SMOKEO2", "biome_invoice_photo_gkd.jpg", true, "Gangakhed Plant");
+  for (let i = 0; i < 120; i++) {
+    await sleep(2000);
+    const st = (await call("GET", "/status")).json || {};
+    const d = st.diag || {};
+    if ((d.processed || 0) + (d.failed || 0) >= (beforeA3.processed || 0) + (beforeA3.failed || 0) + 4 && !st.processing && !st.queueDepth) break;
+  }
+  const docsNow = ((await call("GET", "/documents?limit=1000")).json || {}).documents || [];
+  const byId = (id) => docsNow.find((d) => d.id === `doc-${id}`) || {};
+  const typeOf = (id) => byId(id).extracted?.documentType || "unread";
+  report(typeOf("SMOKEO2") === "biome_tax_invoice", "our tax invoice photographed is OURS, not a vendor's", `read as ${typeOf("SMOKEO2")}`);
+  report(typeOf("SMOKEO1") === "biome_delivery_challan", "our delivery challan is OURS", `read as ${typeOf("SMOKEO1")}`);
+  report(typeOf("SMOKEV1") === "vendor_tax_invoice", "vendor invoice (Biome as buyer) is the vendor's", `read as ${typeOf("SMOKEV1")}`);
+  const setsNow = ((await call("GET", "/sets")).json || {}).sets || [];
+  const npl = setsNow.find((s) => s.reference === "BDC/884/IBS/30");
+  const gkd = setsNow.find((s) => /^BDC\/905\//.test(s.reference || ""));
+  report(Boolean(npl), "supply set created from our challan (BDC/884/IBS/30)", npl ? `${npl.documents.length} document(s)` : setsNow.map((s) => s.reference).join(", "));
+  report(Boolean(gkd), "supply set created from our photographed invoice (BDC/905/GKD/905)", gkd ? gkd.reference : setsNow.map((s) => s.reference).join(", "));
+  const v1 = byId("SMOKEV1");
+  report(v1.bucket === "filed" && v1.reference?.canonical === "BDC/884/IBS/30" && Boolean(v1.filePath) && fs.existsSync(v1.filePath),
+    "vendor invoice that arrived first is filed into its supply-set folder", `${v1.bucket || "?"} ${v1.reference?.canonical || ""} ${v1.relativePath || ""}`);
+  const waitingNow = docsNow.filter((d) => d.bucket === "_Staged");
+  const stuck = waitingNow.filter((d) => ["SMOKEV1", "SMOKEV2"].some((k) => d.id === `doc-${k}`));
+  report(stuck.length === 0 && Boolean(npl), "no document left in waiting-to-match when its set exists",
+    stuck.length ? stuck.map((d) => `${d.originalName} (${d.extracted?.documentType || "?"})`).join(", ") : `${waitingNow.length} waiting overall`);
 
   // ---- B. engine reaches the QR screen ----
   await call("POST", "/connect");

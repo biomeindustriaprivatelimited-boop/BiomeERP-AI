@@ -99,6 +99,27 @@ async function rasterisePages(buffer, maxPages) {
 
 async function ocrScannedPdf(buffer, options = {}) {
   const maxPages = options.maxPages || 5;
+  // Preferred path: MuPDF renders each page and the shared photo pipeline
+  // (orientation, deskew, lighting, contrast — lib/imageOcr.js) reads it.
+  try {
+    const { ocrPdfPages } = require("./imageOcr");
+    const indexes = Array.isArray(options.pageIndexes) ? options.pageIndexes : [...Array(maxPages).keys()];
+    const read = await ocrPdfPages(buffer, indexes.slice(0, maxPages));
+    if (read.length && read.some((p) => p.text && p.text.trim())) {
+      const pages = read.map((p) => (p.text || "").trim());
+      const confs = read.filter((p) => p.text && p.text.trim()).map((p) => p.confidence || 0);
+      return {
+        pages,
+        text: pages.filter(Boolean).join("\n\n"),
+        imageCount: read.length,
+        confidence: confs.length ? Math.round(confs.reduce((a, b) => a + b, 0) / confs.length) : 0,
+        perPage: read.map((p) => ({ index: p.index, confidence: p.confidence, rotation: p.rotation, skew: p.skew })),
+      };
+    }
+  } catch {
+    /* fall back to the simple path below */
+  }
+
   let images = [];
   try {
     images = await rasterisePages(buffer, maxPages);
@@ -120,9 +141,12 @@ async function ocrScannedPdf(buffer, options = {}) {
   // the numbers are what every match depends on.
   const ocr = require("./ocrWorker");
   const pages = [];
+  const confs = [];
   for (const image of images) {
     try {
-      pages.push((await ocr.recognize(image)).trim());
+      const r = await ocr.recognizeFull(image);
+      pages.push((r.text || "").trim());
+      confs.push(r.confidence || 0);
     } catch {
       // One unreadable page shouldn't cost the other three.
       pages.push("");
@@ -133,6 +157,7 @@ async function ocrScannedPdf(buffer, options = {}) {
     pages,
     text: pages.filter(Boolean).join("\n\n"),
     imageCount: images.length,
+    confidence: confs.length ? Math.round(confs.reduce((a, b) => a + b, 0) / confs.length) : 0,
   };
 }
 

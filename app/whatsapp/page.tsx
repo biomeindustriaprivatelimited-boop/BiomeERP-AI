@@ -27,6 +27,7 @@ import {
 import PremiumButton from "@/components/ui/PremiumButton";
 import ConnectionPanel, { Diagnostics } from "@/components/whatsapp/ConnectionPanel";
 import SupplySetCard, { DocumentRow } from "@/components/whatsapp/SupplySetCard";
+import SupplySetPanel from "@/components/whatsapp/SupplySetPanel";
 import HistoricalScan from "@/components/whatsapp/HistoricalScan";
 import ManualClassify from "@/components/whatsapp/ManualClassify";
 import DataManagementPanel from "@/components/whatsapp/DataManagementPanel";
@@ -80,6 +81,16 @@ export default function WhatsappPage() {
   const [sweepNote, setSweepNote] = useState<string | null>(null);
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
   const [identifying, setIdentifying] = useState<WhatsappDocument | null>(null);
+  // The consignment whose papers show in the side panel.
+  const [selectedRef, setSelectedRef] = useState<string | null>(null);
+  const [wide, setWide] = useState(true);
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 1024px)");
+    const on = () => setWide(mq.matches);
+    on();
+    mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  }, []);
   const [deleting, setDeleting] = useState<WhatsappDocument | null>(null);
 
   // So we can tell the user when something new lands without spamming them.
@@ -235,6 +246,13 @@ export default function WhatsappPage() {
         .some((v) => String(v).toLowerCase().includes(q))
     );
   }, [documents, tab, query]);
+
+  // On a wide screen the first set is shown straight away; on a phone the
+  // panel only opens when a set is tapped.
+  const selectedSet = useMemo(
+    () => filteredSets.find((x) => x.reference === selectedRef) || (wide && !selectedRef ? filteredSets[0] : null) || null,
+    [filteredSets, selectedRef, wide]
+  );
 
   const stats = state?.stats;
   const unmatchedCount = documents.filter(
@@ -496,10 +514,24 @@ export default function WhatsappPage() {
               {!firstLoadDone ? (
                 <LoadingCard />
               ) : filteredSets.length ? (
-                <div className="space-y-2.5">
-                  {filteredSets.map((s, i) => (
-                    <SupplySetCard key={s.reference} set={s} onRescan={handleRescan} rescanningId={rescanningId} defaultOpen={i === 0 && !query} />
-                  ))}
+                <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_400px]">
+                  <div className="space-y-2.5">
+                    {filteredSets.map((s) => (
+                      <SupplySetCard
+                        key={s.reference}
+                        set={s}
+                        onRescan={handleRescan}
+                        rescanningId={rescanningId}
+                        selected={selectedSet?.reference === s.reference}
+                        onSelect={() => setSelectedRef(s.reference)}
+                      />
+                    ))}
+                  </div>
+                  {wide && selectedSet && (
+                    <div className="sticky top-[84px]">
+                      <SupplySetPanel key={selectedSet.reference} set={selectedSet} />
+                    </div>
+                  )}
                 </div>
               ) : (
                 <EmptyState
@@ -657,6 +689,17 @@ export default function WhatsappPage() {
           </motion.div>
         )}
       </AnimatePresence></Portal>
+
+      {/* Phone / narrow window: the set panel slides over the list. */}
+      {!wide && selectedSet && tab === "sets" && (
+        <Portal>
+          <div className="fixed inset-0 z-50 flex justify-end bg-black/50 backdrop-blur-sm" onClick={() => setSelectedRef(null)}>
+            <div className="h-full w-full max-w-md overflow-hidden p-2" onClick={(e) => e.stopPropagation()}>
+              <SupplySetPanel key={selectedSet.reference} set={selectedSet} onClose={() => setSelectedRef(null)} />
+            </div>
+          </div>
+        </Portal>
+      )}
 
       <AnimatePresence>
         {identifying && (

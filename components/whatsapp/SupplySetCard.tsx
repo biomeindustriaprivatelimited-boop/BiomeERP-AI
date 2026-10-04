@@ -19,7 +19,9 @@ import {
   Loader2,
   Hand,
   Trash2,
+  Eye,
 } from "lucide-react";
+import DocumentViewer from "./DocumentViewer";
 import GlassCard from "@/components/GlassCard";
 import {
   DOC_TYPE_LABEL,
@@ -63,6 +65,7 @@ export function DocumentRow({
   const side = type ? DOC_TYPE_SIDE[type] : "other";
   const isImage = doc.mimeType?.startsWith("image/");
   const busy = rescanningId === doc.id;
+  const [viewing, setViewing] = useState(false);
 
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-biome-line/60 bg-biome-hover px-3 py-2.5">
@@ -124,11 +127,22 @@ export function DocumentRow({
         </button>
       )}
 
+      <button
+        type="button"
+        onClick={() => setViewing(true)}
+        title="View the document (full page, zoom, download)"
+        data-testid="doc-view"
+        className="shrink-0 rounded-lg p-1 text-biome-muted transition-colors hover:bg-biome-hover hover:text-biome-leafBright"
+      >
+        <Eye size={13} />
+      </button>
+      {viewing && <DocumentViewer doc={doc} onClose={() => setViewing(false)} />}
+
       <a
         href={`/api/whatsapp/file?id=${encodeURIComponent(doc.id)}`}
         target="_blank"
         rel="noreferrer"
-        title="Open the file"
+        title="Open the original file in a new window"
         className="shrink-0 rounded-lg p-1 text-biome-muted transition-colors hover:bg-biome-hover hover:text-biome-text"
       >
         <ExternalLink size={13} />
@@ -142,21 +156,29 @@ export default function SupplySetCard({
   onRescan,
   rescanningId,
   defaultOpen = false,
+  selected = false,
+  onSelect,
 }: {
   set: SupplySet;
   onRescan: (id: string) => void;
   rescanningId: string | null;
   defaultOpen?: boolean;
+  /** When given, clicking the card selects it (details show in the side panel). */
+  selected?: boolean;
+  onSelect?: () => void;
 }) {
-  const [open, setOpen] = useState(defaultOpen);
+  const [open, setOpen] = useState(onSelect ? false : defaultOpen);
 
   return (
-    <GlassCard className="overflow-hidden">
+    <GlassCard className={`overflow-hidden ${selected ? "ring-2 ring-[#9fe870]/70" : ""}`}>
       <button
-        onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-start gap-3 px-4 py-3.5 text-left transition-colors hover:bg-biome-hover"
+        onClick={() => (onSelect ? onSelect() : setOpen((o) => !o))}
+        aria-pressed={onSelect ? selected : undefined}
+        data-testid="set-card"
+        data-reference={set.reference}
+        className={`flex w-full items-start gap-3 px-4 py-3.5 text-left transition-colors hover:bg-biome-hover ${selected ? "bg-biome-hover" : ""}`}
       >
-        <motion.span animate={{ rotate: open ? 0 : -90 }} transition={{ duration: 0.2 }} className="mt-1">
+        <motion.span animate={{ rotate: open || selected ? 0 : -90 }} transition={{ duration: 0.2 }} className="mt-1">
           <ChevronDown size={15} className="text-biome-muted" />
         </motion.span>
 
@@ -209,7 +231,7 @@ export default function SupplySetCard({
               </span>
             )}
             <span className="flex items-center gap-1.5">
-              <Factory size={11} /> Vendor {set.vendorCode}
+              <Factory size={11} /> {set.vendorCode ? `Vendor ${set.vendorCode}` : "Vendor not named yet"}
               {set.vendorName ? ` · ${set.vendorName}` : ""}
               {(() => { const amb = (set.documents || []).map((d: any) => d.extracted?.vendorAmbiguous).find((x: any) => Array.isArray(x) && x.length); return amb ? (
                 <span className="normal-case ml-1 rounded-full border border-amber-500/50 bg-amber-500/12 px-2 py-0.5 text-[9px] font-bold text-amber-600" title={`Code ${set.vendorCode} is shared by: ${amb.join(", ")}. None is named on the document — confirm the vendor.`}>⚠ Shared code — confirm vendor</span>

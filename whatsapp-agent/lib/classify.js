@@ -349,6 +349,10 @@ function coerce(result, ctx) {
     "quantityKg",
     "taxableValue",
     "totalAmount",
+    "vendorOwnDocNo",
+    "issuerSide",
+    "issuerReason",
+    "offlineDocumentType",
   ];
   for (const f of strFields) {
     const v = result?.[f];
@@ -361,6 +365,7 @@ function coerce(result, ctx) {
   if (result?.isMergedDocument) out.isMergedDocument = true;
   if (result?.pageCount) out.pageCount = result.pageCount;
   if (result?.readMethod) out.readMethod = result.readMethod;
+  if (Number.isFinite(Number(result?.ocrConfidence))) out.ocrConfidence = Number(result.ocrConfidence);
   if (Array.isArray(result?.fileNameHints)) out.fileNameHints = result.fileNameHints;
   out.transcription = typeof result?.transcription === "string" ? result.transcription : "";
   return out;
@@ -413,6 +418,7 @@ async function classifyDocument(buffer, mimeType, ctx = {}) {
   let pages = Array.isArray(ctx.pages) && ctx.pages.length ? ctx.pages : (ocrText ? [ocrText] : []);
   let ocrError = null;
   let readMethod = ocrText ? "provided" : null;
+  let ocrConfidence = ocrText ? 99 : null;
 
   if (!ocrText) {
     try {
@@ -420,6 +426,7 @@ async function classifyDocument(buffer, mimeType, ctx = {}) {
       ocrText = read.text;
       pages = read.pages;
       readMethod = read.method;
+      ocrConfidence = Number.isFinite(Number(read.confidence)) ? Number(read.confidence) : null;
     } catch (err) {
       ocrError = err.message;
     }
@@ -440,6 +447,7 @@ async function classifyDocument(buffer, mimeType, ctx = {}) {
         ? combinePages(classifyPages(pages, extractCtx), ocrText, extractCtx)
         : extractOffline(ocrText, extractCtx);
     offline.readMethod = readMethod;
+    if (ocrConfidence != null) offline.ocrConfidence = Math.round(ocrConfidence);
 
     // ---- 3: a local model, if one happens to be running ----
     if (offline.confidence < 70) {
@@ -542,7 +550,13 @@ async function classifyDocument(buffer, mimeType, ctx = {}) {
     };
   }
 
-  const goodEnough = offline && offline.confidence >= 60 && offline.documentType !== "other";
+  // A page the OCR itself was unsure of (blurred photo, tiny WhatsApp
+  // thumbnail), or OUR invoice/challan whose reference could not be read,
+  // is worth a second opinion from the AI when a key is configured. The
+  // offline answer still stands when there is no key or the AI fails.
+  const lowOcr = offline && offline.ocrConfidence != null && offline.ocrConfidence < 60;
+  const oursWithoutReference = offline && /^biome_(tax_invoice|delivery_challan)$/.test(offline.documentType) && !offline.referenceNo;
+  const goodEnough = offline && offline.confidence >= 60 && offline.documentType !== "other" && !lowOcr && !oursWithoutReference;
   if (goodEnough && !ctx.preferCloud) {
     return { ok: true, data: coerce(offline, ctx), provider: offline.engine };
   }
@@ -554,9 +568,9 @@ async function classifyDocument(buffer, mimeType, ctx = {}) {
       // user can correct beats nothing at all.
       return {
         ok: true,
-        data: coerce(offline),
+        data: coerce(offline, ctx),
         provider: offline.engine,
-        lowConfidence: true,
+        lowConfidence: !(offline.confidence >= 60 && offline.documentType !== "other"),
       };
     }
     return {
@@ -601,7 +615,19 @@ async function classifyDocument(buffer, mimeType, ctx = {}) {
   for (const [name, call] of providers) {
     try {
       const rawResult = await call();
-      return { ok: true, data: coerce(rawResult, ctx), provider: name };
+      // The AI is the second opinion, not a replacement: anything it left
+      // blank that the offline read DID find is kept, and the offline
+      // transcription is kept when the AI returned none.
+      const merged = { ...rawResult };
+      if (offline) {
+        for (const [k, v] of Object.entries(offline)) {
+          if (v != null && v !== "" && (merged[k] == null || merged[k] === "")) merged[k] = v;
+        }
+        if (!merged.transcription || String(merged.transcription).length < 40) merged.transcription = offline.transcription;
+        merged.offlineDocumentType = offline.documentType;
+      }
+      merged.readMethod = `${offline?.readMethod ? offline.readMethod + "+" : ""}${name}`;
+      return { ok: true, data: coerce(merged, ctx), provider: offline ? `${offline.engine}+${name}` : name };
     } catch (err) {
       lastErr = err;
     }
@@ -633,84 +659,98 @@ async function classifyDocument(buffer, mimeType, ctx = {}) {
  * merged PDFs and each page is often a different document.
  */
 async function readLocally(buffer, mimeType, fileName) {
-  // Spreadsheets, Word files and archives circulate in the group but are
-  // not supply paperwork. Running OCR on them yields nothing and they end
-  // up labelled "Unclassified", which reads like a failure when it isn't.
-  if (/\.(xlsx?|csv|docx?|pptx?|zip|rar|txt)$/i.test(fileName || "")) {
-    const kind = /\.(xlsx?|csv)$/i.test(fileName) ? "spreadsheet" : "office file";
-    throw new Error(`NOT_A_SUPPLY_DOCUMENT:This is a ${kind}, not supply paperwork.`);
+  const name = String(fileName || "");
+  const { sniffMime, ocrImage } = require("./imageOcr");
+  const kind = sniffMime(buffer, mimeType);
+
+  // Word / Excel attachments: read their text instead of refusing them.
+  // A weighment register or a typed challan sent as .docx/.xlsx is still
+  // supply paperwork; if the text says nothing supply-like the classifier
+  // calls it "other" and it is set aside like any other non-document.
+  if (/\.(docx|xlsx|xlsm|xls|csv|txt)$/i.test(name) || /officedocument|ms-excel|text\/(plain|csv)/i.test(mimeType || "")) {
+    let text = "";
+    try {
+      text = await officeText(buffer, name, mimeType);
+    } catch {
+      text = "";
+    }
+    if (text.replace(/\s/g, "").length > 20) {
+      return { text, pages: [text], method: /\.(xlsx|xlsm|xls|csv)$/i.test(name) ? "spreadsheet_text" : "office_text", confidence: 95 };
+    }
+    const label = /\.(xlsx?|xlsm|csv)$/i.test(name) ? "spreadsheet" : "office file";
+    throw new Error(`NOT_A_SUPPLY_DOCUMENT:This is a ${label} with no readable supply details.`);
+  }
+  if (/\.(docx?|pptx?|zip|rar|7z)$/i.test(name)) {
+    throw new Error(`NOT_A_SUPPLY_DOCUMENT:This is an office file or archive, not supply paperwork.`);
   }
 
-  const isPdf = mimeType === "application/pdf" || /\.pdf$/i.test(fileName || "");
+  const isPdf = kind === "application/pdf" || mimeType === "application/pdf" || /\.pdf$/i.test(name);
 
   if (isPdf) {
-    const result = await extractPdfPages(buffer, { maxPages: 20 });
-    if (result.hasTextLayer) {
-      return { text: result.text, pages: result.pages, method: "pdf_text" };
+    let result = null;
+    try {
+      result = await extractPdfPages(buffer, { maxPages: 20 });
+    } catch {
+      result = null; // damaged text layer — the pages can still be rendered and read
     }
-    // No text layer — a phone-scanner PDF. The page images are embedded
-    // as ordinary JPEGs, so they can be lifted out and OCRd without any
-    // rasterising toolchain.
-    const scanned = await ocrScannedPdf(buffer, { maxPages: 5 });
-    return { text: scanned.text, pages: scanned.pages, method: "pdf_scan_ocr" };
+    if (result && result.hasTextLayer) {
+      // A merged PDF can mix typed pages with photographed ones (our
+      // invoice, then a scanned weight slip). Pages with no text of their
+      // own are OCRd so nothing in the file goes unread.
+      const blank = result.pages
+        .map((t, i) => ({ t, i }))
+        .filter(({ t }) => String(t || "").replace(/\s/g, "").length < 40)
+        .map(({ i }) => i)
+        .slice(0, 8);
+      if (!blank.length) return { text: result.text, pages: result.pages, method: "pdf_text", confidence: 99 };
+      try {
+        const scanned = await ocrScannedPdf(buffer, { maxPages: 20, pageIndexes: blank });
+        const pages = result.pages.slice();
+        blank.forEach((pi, k) => { if (scanned.pages[k]) pages[pi] = scanned.pages[k]; });
+        return { text: pages.join("\n\n"), pages, method: "pdf_text+ocr", confidence: Math.min(99, scanned.confidence || 70) };
+      } catch {
+        return { text: result.text, pages: result.pages, method: "pdf_text", confidence: 99 };
+      }
+    }
+    // No text layer — a phone-scanner PDF. Every page is rendered and read
+    // through the photo pipeline (orientation, deskew, lighting).
+    const scanned = await ocrScannedPdf(buffer, { maxPages: 8 });
+    return { text: scanned.text, pages: scanned.pages, method: "pdf_scan_ocr", confidence: scanned.confidence };
   }
 
-  if (!mimeType.startsWith("image/")) {
+  if (!String(kind || "").startsWith("image/") && !String(mimeType || "").startsWith("image/")) {
     throw new Error(`Can't read files of type ${mimeType} locally.`);
   }
 
-  // Offline, time-limited, shared worker — see lib/ocrWorker.js for why
-  // a bare createWorker("eng") silently stopped the whole queue.
-  const ocr = require("./ocrWorker");
-  {
-    // These slips are photographed sideways. A receiving printed on a
-    // narrow till roll is almost always shot in portrait and lands
-    // rotated 90°, and Tesseract reading a rotated page produces exactly
-    // the character soup we were getting — the page was legible all
-    // along, just not the way round it was being read.
-    //
-    // So it is read at each orientation and the best result kept.
-    // "Best" is judged by how much of it looks like the words these
-    // documents actually contain, not by raw character count: noise is
-    // long and meaningless.
-    const SIGNALS = [
-      /weighment/i, /nett?\s*weight/i, /gross\s*weight/i, /tare/i,
-      /supplier/i, /vehicle/i, /sample/i, /laboratory/i, /moisture/i,
-      /[A-Z]{2}\s?\d{1,2}\s?[A-Z]{1,3}\s?\d{3,4}/,
-      /\d{2}[\/-]\d{2}[\/-]\d{4}/,
-    ];
-    const scoreText = (t) => {
-      if (!t) return 0;
-      let score = SIGNALS.reduce((n, re) => n + (re.test(t) ? 10 : 0), 0);
-      // A little credit for length, so a page with no keywords but real
-      // words still beats one with none.
-      return score + Math.min(10, t.replace(/\s/g, "").length / 100);
-    };
+  // Photos: decoded, turned the right way up, straightened, lighting
+  // evened out and contrast stretched before Tesseract reads them — see
+  // lib/imageOcr.js. Fully offline.
+  const read = await ocrImage(buffer, kind.startsWith("image/") ? kind : mimeType);
+  return { text: read.text, pages: [read.text], method: read.method, confidence: read.confidence };
+}
 
-    let best = { text: "", score: -1, rotation: 0 };
-    for (const rotation of [0, 90, 270, 180]) {
-      let result;
-      try {
-        result = { data: { text: await ocr.recognize(
-          buffer,
-          rotation === 0 ? {} : { rotateRadians: (rotation * Math.PI) / 180 }
-        ) } };
-      } catch {
-        continue;
-      }
-      const text = result?.data?.text || "";
-      const score = scoreText(text);
-      if (score > best.score) best = { text, score, rotation };
-      // Good enough — stop turning the page.
-      if (score >= 40) break;
+/** Plain text out of .docx / .xlsx / .csv / .txt, all in JavaScript. */
+async function officeText(buffer, name, mimeType) {
+  if (/\.(txt|csv)$/i.test(name) || /text\/(plain|csv)/i.test(mimeType || "")) return buffer.toString("utf8");
+  if (/\.docx$/i.test(name) || /wordprocessingml/i.test(mimeType || "")) {
+    const JSZip = require("jszip");
+    const zip = await JSZip.loadAsync(buffer);
+    const parts = Object.keys(zip.files).filter((f) => /^word\/(document|header\d*|footer\d*)\.xml$/.test(f)).sort();
+    let out = "";
+    for (const part of parts) {
+      const xml = await zip.file(part).async("string");
+      out += xml
+        .replace(/<w:tab\/>/g, "\t")
+        .replace(/<\/w:p>|<w:br\/>|<\/w:tr>/g, "\n")
+        .replace(/<\/w:tc>/g, "  ")
+        .replace(/<[^>]+>/g, "")
+        .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'") + "\n";
     }
-
-    return {
-      text: best.text,
-      pages: [best.text],
-      method: best.rotation ? `image_ocr_rotated_${best.rotation}` : "image_ocr",
-    };
+    return out;
   }
+  const XLSX = require("xlsx");
+  const wb = XLSX.read(buffer, { type: "buffer" });
+  return wb.SheetNames.slice(0, 5).map((n) => XLSX.utils.sheet_to_csv(wb.Sheets[n], { FS: "\t", blankrows: false }).replace(/"/g, "").replace(/\t+/g, "  ")).join("\n\n");
 }
 
 /**
