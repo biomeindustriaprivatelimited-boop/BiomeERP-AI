@@ -15,7 +15,7 @@
 
 import { loadWork, daysBetween, today, type WorkTask } from "@/lib/work";
 import { loadTrips, derivedStatus, shortageFor, gapsFor as tripGaps, DEFAULT_SHORTAGE_RULES, type Trip } from "@/lib/coordination";
-import { loadEntries as loadImprestEntries, loadPeople as loadImprestPeople } from "@/lib/imprest";
+import { isSpend, loadEntries as loadImprestEntries, loadPeople as loadImprestPeople } from "@/lib/imprest";
 import { loadPartners, gapsFor } from "@/lib/partners";
 import { loadEmployees, loadRuns } from "@/lib/payroll";
 
@@ -88,7 +88,7 @@ export function anomalies(): Anomaly[] {
   const out: Anomaly[] = [];
 
   // --- Duplicate expenses: same person, same amount, within 3 days.
-  const entries = loadImprestEntries().filter((e) => e.kind === "expense" && e.status !== "rejected");
+  const entries = loadImprestEntries().filter((e) => isSpend(e) && e.status !== "rejected");
   const people = loadImprestPeople();
   for (let i = 0; i < entries.length; i++) {
     for (let j = i + 1; j < entries.length; j++) {
@@ -232,7 +232,7 @@ export function predictions(): Prediction[] {
   // Cash need, next 15 days = imprest burn (avg of last 3 months, pro-rated) + payroll (last run) + pending imprest.
   const entries = loadImprestEntries();
   const since = monthsAgo(3);
-  const spend = entries.filter((e) => e.kind === "expense" && e.status === "approved" && e.date >= since).reduce((s, e) => s + e.amount, 0);
+  const spend = entries.filter((e) => isSpend(e) && e.status === "approved" && e.date >= since).reduce((s, e) => s + e.amount, 0);
   const burn15 = (spend / 90) * 15;
   const pending = entries.filter((e) => e.status === "submitted").reduce((s, e) => s + e.amount, 0);
   let payroll = 0, payrollBasis = "no payroll run yet";
@@ -304,7 +304,7 @@ export function predictions(): Prediction[] {
 export interface ExpenseFinding { category: string; thisMonth: number; lastMonth: number; changePct: number; note: string }
 
 export function expenseControl(): ExpenseFinding[] {
-  const entries = loadImprestEntries().filter((e) => e.kind === "expense" && e.status !== "rejected");
+  const entries = loadImprestEntries().filter((e) => isSpend(e) && e.status !== "rejected");
   const cur = ym(today());
   const prev = ym(new Date(new Date().getFullYear(), new Date().getMonth() - 1, 15).toISOString());
   const cats = new Set(entries.map((e) => e.category || "Uncategorised"));
@@ -376,7 +376,7 @@ export function whatIf(input: WhatIfInput): WhatIfResult {
   const trips = safeTrips().filter((t) => (t as any).billing?.taxableAmount && ym(((t as any).billing.invoiceDate || t.ourDocDate)) >= ym(monthsAgo(3)));
   const revenue3 = trips.reduce((s, t) => s + (Number((t as any).billing.taxableAmount) || 0), 0);
   const monthlyRevenue = revenue3 / 3;
-  const imprest3 = loadImprestEntries().filter((e) => e.kind === "expense" && e.status === "approved" && e.date >= monthsAgo(3)).reduce((s, e) => s + e.amount, 0);
+  const imprest3 = loadImprestEntries().filter((e) => isSpend(e) && e.status === "approved" && e.date >= monthsAgo(3)).reduce((s, e) => s + e.amount, 0);
   const monthlyImprest = imprest3 / 3;
   const transport = monthlyImprest * 0.6; // transport dominates site imprest; stated as an assumption below
 

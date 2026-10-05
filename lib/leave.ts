@@ -62,6 +62,12 @@ export interface Holiday {
   regions: HolidayRegion[];
   /** True where the date shifts year to year and must be verified. */
   confirm: boolean;
+  /** Set when the developer/admin announced it (shown as "new" on the leave page). */
+  announcedAt?: string;
+  announcedBy?: string;
+  /** "holiday" (default) or a plant "shutdown". */
+  kind?: "holiday" | "shutdown";
+  note?: string;
 }
 
 /**

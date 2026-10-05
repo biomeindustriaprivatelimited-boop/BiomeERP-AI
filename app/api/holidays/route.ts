@@ -4,6 +4,7 @@ import {
   loadHolidays, saveHolidays, Holiday, HolidayRegion, REGION_LABEL, datesBetween,
 } from "@/lib/leave";
 import { recordAudit } from "@/lib/audit";
+import { notifyHolidayAnnounced } from "@/lib/leaveNotify";
 import { loadEmployees } from "@/lib/payroll";
 import { applyHolidayToRegisters, clearHolidayFromRegisters } from "@/lib/attendance";
 import type { Role } from "@/lib/permissions";
@@ -77,6 +78,9 @@ export async function POST(req: NextRequest) {
     ? body.regions.filter((r: string) => REGIONS.includes(r as HolidayRegion))
     : [];
   const confirm = Boolean(body.confirm);
+  const note = String(body.note || "").trim().slice(0, 600);
+  // Everyone it applies to is emailed unless the editor says not to.
+  const email = body.email !== false;
 
   if (!name) return NextResponse.json({ error: "Give the holiday a name." }, { status: 400 });
   if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
@@ -105,7 +109,7 @@ export async function POST(req: NextRequest) {
       skipped.push(date);
       continue;
     }
-    const entry: Holiday = { date, name, regions, confirm };
+    const entry: Holiday = { date, name, regions, confirm, announcedAt: new Date().toISOString(), announcedBy: user.name, ...(note ? { note } : {}) };
     holidays.push(entry);
     added.push(entry);
   }
@@ -121,7 +125,13 @@ export async function POST(req: NextRequest) {
     detail: `${from}${to !== from ? ` to ${to}` : ""} · ${regions.join(", ")}${added.length > 1 ? ` · ${added.length} days` : ""}`,
   });
 
+  // Emails go out in the background; a mail failure never undoes the holiday.
+  const notice = email && added.length
+    ? notifyHolidayAnnounced({ name, fromDate: from, toDate: to, regions, note, by: user.name })
+    : null;
+
   return NextResponse.json({
+    notice,
     added: added.length,
     merged: skipped.length,
     attendanceMarked: marked,

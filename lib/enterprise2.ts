@@ -12,7 +12,7 @@ import path from "path";
 import crypto from "crypto";
 import { paths, readJson, writeJsonAtomic, ensureDir } from "@/lib/dataRoot";
 import { loadTrips, derivedStatus, type Trip } from "@/lib/coordination";
-import { loadEntries as loadImprestEntries } from "@/lib/imprest";
+import { isSpend, loadEntries as loadImprestEntries } from "@/lib/imprest";
 import { loadRuns } from "@/lib/payroll";
 import { computeAll as computePos } from "@/lib/po";
 import { daysBetween, today } from "@/lib/work";
@@ -172,7 +172,7 @@ export function cashFlow() {
     }
   } catch { /* none */ }
   // Imprest burn: 3-month average, spread daily.
-  const spend = loadImprestEntries().filter((e) => e.kind === "expense" && e.status === "approved" && daysBetween(e.date, t0) <= 90).reduce((s, e) => s + e.amount, 0);
+  const spend = loadImprestEntries().filter((e) => isSpend(e) && e.status === "approved" && daysBetween(e.date, t0) <= 90).reduce((s, e) => s + e.amount, 0);
   const daily = spend / 90;
   // Contract commitments (actual amounts, due dates as recorded).
   for (const c of loadContracts()) for (const o of c.obligations) if (!o.done && o.amount && o.dueOn >= t0) outflows.push({ on: o.dueOn, amount: o.amount, who: c.party, kind: "actual", label: `Contract: ${o.text.slice(0, 40)}` });

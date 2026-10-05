@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission, findById } from "@/lib/authServer";
-import { loadEntries, saveEntries, loadPeople, personForUser, event } from "@/lib/imprest";
+import { loadEntries, saveEntries, loadPeople, personForUser, event, billRequired, BILL_REQUIRED_ABOVE } from "@/lib/imprest";
 import { recordAudit } from "@/lib/audit";
 
 export const runtime = "nodejs";
@@ -60,6 +60,14 @@ export async function POST(req: NextRequest) {
     // one rule that makes an approval mean something.
     if (mine && entry.personId === mine.id) {
       results.push({ id, ok: false, reason: "You can't decide your own imprest entry. Ask another approver." });
+      continue;
+    }
+
+    // A large spend with no bill is approved only with a written reason —
+    // the form already insists on a bill, so this catches old entries and
+    // bills that failed to upload.
+    if (decision === "approved" && billRequired(entry) && (entry.attachments || []).length === 0 && !note) {
+      results.push({ id, ok: false, reason: `No bill attached to a spend above ₹${BILL_REQUIRED_ABOVE.toLocaleString("en-IN")}. Ask for the bill, or write a note saying why it is approved without one.` });
       continue;
     }
 

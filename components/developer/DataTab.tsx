@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import FactoryReset from "@/components/developer/FactoryReset";
 import { Trash2, Loader2, ShieldAlert, AlertTriangle, CheckCircle2, Archive, Search } from "lucide-react";
 
 /**
@@ -168,6 +169,8 @@ export default function DataTab() {
           ))}
         </div>
       </section>
+
+      <FactoryReset />
     </div>
   );
 }

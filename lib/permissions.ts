@@ -560,7 +560,7 @@ export function homePathFor(role: Role | null | undefined, perms: string[]): str
  * Users & Access so activating a feature is a considered decision, not a guess.
  */
 export const PERMISSION_INFO: Record<string, { label: string; what: string; why: string; risk: "low" | "medium" | "high" }> = {
-  "imprest.entry": { label: "Imprest — file entries", what: "File expenses, cash returns and see own float.", why: "Anyone who spends company cash in the field.", risk: "low" },
+  "imprest.entry": { label: "Imprest — file entries", what: "File money spent / money received and see own float.", why: "Anyone who spends company cash in the field.", risk: "low" },
   "imprest.view": { label: "Imprest — view & approve", what: "See every holder's float, approve/reject entries, set budgets.", why: "Accounts and managers who control petty cash.", risk: "medium" },
   documents: { label: "Documents", what: "Browse, search and upload company documents; open the Review Queue.", why: "Office roles that handle paperwork.", risk: "low" },
   whatsapp: { label: "WhatsApp Documents", what: "See the WhatsApp agent, filed supply sets, connection and training.", why: "Coordinators and accounts who work from supply documents.", risk: "medium" },

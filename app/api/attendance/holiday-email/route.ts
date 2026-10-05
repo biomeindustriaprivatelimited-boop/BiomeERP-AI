@@ -76,7 +76,11 @@ export async function POST(req: NextRequest) {
   for (const date of dates) {
     const clash = holidays.find((h) => h.date === date && h.name.toLowerCase() === reason.toLowerCase());
     if (clash) { clash.regions = [...new Set([...clash.regions, ...regions])]; continue; }
-    const entry: Holiday = { date, name: reason, regions, confirm: false };
+    const entry: Holiday = {
+      date, name: reason, regions, confirm: false,
+      announcedAt: new Date().toISOString(), announcedBy: user.name,
+      kind: kind === "Shutdown" ? "shutdown" : "holiday", ...(note ? { note } : {}),
+    };
     holidays.push(entry);
     added += 1;
   }

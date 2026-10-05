@@ -42,8 +42,10 @@ export const SOP_ENTRIES: SopEntry[] = [
     where: "/imprest or /m/imprest on the phone",
     steps: [
       "Open Imprest (desktop) or scan the 'Open on phone' QR to use /m/imprest.",
-      "Press + / File an entry → Expense or Cash return → amount, category, what it was for, date, paid-by, bill reference.",
-      "File it. It appears instantly for accounts as 'Waiting'. Attach bills from the desktop app if needed.",
+      "Press Money spent or Money received (only these two types). Cash handed back to the office = Money spent with the category 'Cash returned to office'. For money received, say who gave it.",
+      "Fill amount, category, what it was for, date, paid-by, bill reference. The form shows your cash available and the balance after this entry before you save.",
+      "Attach the bill photo — it is required for money spent above ₹500. The app warns if the same entry (date + amount + description) was already filed, or if you spend more than you hold.",
+      "File it. It appears instantly for accounts as 'Waiting'.",
       "Accounts approves or rejects with a note; your in-hand balance updates on approval.",
     ],
     approver: "Accounts (or Admin). Budgets warn the approver when crossed; they never block.",
