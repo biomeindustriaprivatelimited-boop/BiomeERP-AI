@@ -17,6 +17,7 @@ import { useNotifications } from "@/lib/notifications";
 import { downloadExcelWorkbook, downloadCsv } from "@/lib/reconciliation";
 import { useTallyFull, inrShort, inrFull } from "@/lib/useTallyFull";
 import TallyError from "@/components/TallyError";
+import TallyPeriodBar from "@/components/tally/TallyPeriodBar";
 
 type ReportId = "debtors" | "creditors" | "transactions" | "cashbank" | "monthly";
 
@@ -30,7 +31,7 @@ const REPORTS: { id: ReportId; label: string; desc: string }[] = [
 
 export default function ReportsPage() {
   const { notify } = useNotifications();
-  const { data, loading, error, reload } = useTallyFull();
+  const { data, loading, error, reload, progress, periodChoice, setPeriodChoice } = useTallyFull();
   const [active, setActive] = useState<ReportId>("debtors");
   const [query, setQuery] = useState("");
 
@@ -137,8 +138,8 @@ export default function ReportsPage() {
             Reports
           </h1>
           <p className="mt-1 max-w-2xl text-xs leading-relaxed text-biome-muted">
-            View any of these on screen, or export the lot to Excel. Everything is read live from
-            Tally — nothing is stored or stale.
+            View any of these on screen, or export the lot to Excel. Everything is read from Tally
+            for the period you pick below; the current month is always read live.
           </p>
         </div>
         <div className="flex gap-2">
@@ -155,6 +156,14 @@ export default function ReportsPage() {
           </PremiumButton>
         </div>
       </div>
+
+      <TallyPeriodBar
+        choice={periodChoice}
+        onChange={setPeriodChoice}
+        period={data?.period}
+        loading={loading}
+        progress={progress}
+      />
 
       {error && <TallyError error={error} />}
 

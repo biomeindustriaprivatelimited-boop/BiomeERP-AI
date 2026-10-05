@@ -253,6 +253,9 @@ export interface TallyLedgerMaster {
    *  ledger (e.g. "Sundry Debtors"), found by walking the group tree. */
   reservedGroup?: string | null;
   primaryGroup?: string | null;
+  /** Set by /api/tally/ledgers: a Sales / Purchase / Expense / Income
+   *  ledger, whose closing figure is the movement within the period. */
+  movement?: boolean;
 }
 
 /** Parses the <COLLECTION> response from buildLedgerMastersRequestXml. */

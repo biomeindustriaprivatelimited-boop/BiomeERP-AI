@@ -1,7 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getTallySettings } from "@/lib/preferences";
+import { postTallyStream } from "@/lib/tallyClient";
+import { useTallyPeriod, type ResolvedPeriod, type TallyProgressInfo } from "@/lib/tallyPeriod";
 
 /**
  * One place that fetches the full Tally picture — masters AND vouchers —
@@ -38,8 +40,24 @@ export interface TallyFull {
   company: string | null;
   /** Companies open in Tally right now. */
   companies?: string[];
-  /** label: "FY 2026-27 till today"; range: "01-Apr-2026 to 04-Oct-2026". */
-  period: { from: string; to: string; label?: string; range?: string; fy?: string };
+  /** label: "FY 2026-27 till today"; range: "01-Apr-2026 to 04-Oct-2026";
+   *  asOn: balance-sheet figures are as on this date; notes: what the
+   *  server changed (e.g. clamped to the books beginning). */
+  period: ResolvedPeriod;
+  /** Balance-sheet figures at the start of the period. */
+  opening?: {
+    asOn: string;
+    cashInHand: number | null;
+    bankBalance: number | null;
+    bankOverdraft: number | null;
+    receivables: number | null;
+    payables: number | null;
+  };
+  booksFrom?: string | null;
+  /** Separate Tally readings the balances needed (1 per FY piece). */
+  readings?: number;
+  fromCache?: boolean;
+  voucherChunks?: { total: number; read: number; failed: { from: string; to: string; error: string }[]; retried: number; cached: number } | null;
   /** "FY 2026-27 till today · <company>" — put this next to any KPI. */
   basis?: string;
   ledgerCount?: number;
@@ -130,54 +148,83 @@ export function tallyBasisLine(d: Pick<TallyFull, "period" | "company" | "fetche
   return parts.filter(Boolean).join(" · ");
 }
 
+/**
+ * Full Tally picture for the SHARED period (lib/tallyPeriod.ts). Returns
+ * the period choice too, so a page can put <TallyPeriodBar> above its
+ * figures. `reload(true)` = Refresh (re-reads Tally, skipping the cache of
+ * closed months).
+ */
 export function useTallyFull(options: { includeVouchers?: boolean } = {}) {
+  const { choice, setChoice, dates } = useTallyPeriod();
   const [data, setData] = useState<TallyFull | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   /** "unreachable" | "timeout" | "choose-company" | "company-not-open" | … */
   const [errorCode, setErrorCode] = useState<string | null>(null);
+  const [progress, setProgress] = useState<TallyProgressInfo | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const { fromDate, toDate } = dates;
 
-  const reload = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    setErrorCode(null);
-    try {
-      const s = getTallySettings();
-      const res = await fetch("/api/tally/full", {
-        method: "POST",
-        cache: "no-store",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          mode: s.mode,
-          host: s.host,
-          port: s.port,
-          agentUrl: s.agentUrl,
-          agentApiKey: s.agentApiKey,
-          company: s.companyName,
-          includeVouchers: options.includeVouchers !== false,
-        }),
-      });
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        const e = new Error(json.error || `Request failed (${res.status}).`) as Error & { code?: string };
-        e.code = json.code;
-        throw e;
-      }
-      setData(json);
-    } catch (err) {
-      // Never keep the previous figures on screen after a failed refresh —
-      // old numbers that look current are worse than a clear blank.
-      setError((err as Error).message);
-      setErrorCode((err as any).code ?? null);
+  const load = useCallback(
+    async (fresh: boolean) => {
+      abortRef.current?.abort();
+      const ctrl = new AbortController();
+      abortRef.current = ctrl;
+      setLoading(true);
+      setError(null);
+      setErrorCode(null);
+      setProgress(null);
+      // Figures for another period must not stay on screen under the new one.
       setData(null);
-    } finally {
-      setLoading(false);
-    }
-  }, [options.includeVouchers]);
+      try {
+        const s = getTallySettings();
+        const { ok, status, json } = await postTallyStream<TallyFull>(
+          "/api/tally/full",
+          {
+            mode: s.mode,
+            host: s.host,
+            port: s.port,
+            agentUrl: s.agentUrl,
+            agentApiKey: s.agentApiKey,
+            company: s.companyName,
+            includeVouchers: options.includeVouchers !== false,
+            fromDate,
+            toDate,
+            fresh,
+          },
+          { onProgress: (p) => !ctrl.signal.aborted && setProgress(p), signal: ctrl.signal }
+        );
+        if (ctrl.signal.aborted) return;
+        if (!ok) {
+          const e = new Error(json.error || `Request failed (${status}).`) as Error & { code?: string };
+          e.code = json.code;
+          throw e;
+        }
+        setData(json);
+      } catch (err) {
+        if (ctrl.signal.aborted || (err as Error)?.name === "AbortError") return;
+        // Never keep the previous figures on screen after a failed refresh —
+        // old numbers that look current are worse than a clear blank.
+        setError((err as Error).message);
+        setErrorCode((err as any).code ?? null);
+        setData(null);
+      } finally {
+        if (abortRef.current === ctrl) {
+          setLoading(false);
+          setProgress(null);
+        }
+      }
+    },
+    [options.includeVouchers, fromDate, toDate]
+  );
+
+  // Called from a Refresh button (gets the click event): always a fresh read.
+  const reload = useCallback((fresh?: unknown) => load(fresh !== false), [load]);
 
   useEffect(() => {
-    reload();
-  }, [reload]);
+    load(false);
+    return () => abortRef.current?.abort();
+  }, [load]);
 
-  return { data, loading, error, errorCode, reload };
+  return { data, loading, error, errorCode, reload, progress, periodChoice: choice, setPeriodChoice: setChoice };
 }

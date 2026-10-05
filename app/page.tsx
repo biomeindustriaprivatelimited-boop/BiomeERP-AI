@@ -6,6 +6,7 @@ import { motion } from "framer-motion";
 import { useSession } from "@/lib/session";
 import { TiltCard, Scramble, SplitText, SPRING } from "@/components/motion/kit";
 import HomeReports from "@/components/home/HomeReports";
+import TallyPeriodBar from "@/components/tally/TallyPeriodBar";
 import {
   Wallet,
   ArrowDownLeft,
@@ -86,7 +87,15 @@ export default function DashboardPage() {
   }, []);
 
   // Balances only — the KPIs never depend on the (slower) voucher pull.
-  const { data: full, loading: tallyLoading, error: fullError, reload } = useTallyFull({ includeVouchers: false });
+  const {
+    data: full,
+    loading: tallyLoading,
+    error: fullError,
+    reload,
+    progress: tallyProgress,
+    periodChoice,
+    setPeriodChoice,
+  } = useTallyFull({ includeVouchers: false });
   const load = reload;
 
   useEffect(() => {
@@ -103,13 +112,17 @@ export default function DashboardPage() {
   }, []);
 
   const s = data?.summary;
+  // Every KPI says which period it is for: balances "as on" the end date,
+  // sales/purchases for the period.
+  const asOn = full?.period?.asOn ? `as on ${full.period.asOn}` : "";
+  const inPeriod = full?.period?.label ?? "";
   const stats = [
-    { label: "Cash in Hand", value: s?.cashInHand, icon: Wallet, tint: "text-emerald-600 bg-emerald-100" },
-    { label: "Bank Balance", value: s?.bankBalance, icon: Landmark, tint: "text-blue-600 bg-blue-100" },
-    { label: "Receivables", value: s?.receivables, icon: ArrowDownLeft, tint: "text-teal-600 bg-teal-100" },
-    { label: "Payables", value: s?.payables, icon: ArrowUpRight, tint: "text-rose-600 bg-rose-100" },
-    { label: "Sales", value: s?.sales, icon: FileClock, tint: "text-violet-600 bg-violet-100" },
-    { label: "Purchases", value: s?.purchases, icon: FileWarning, tint: "text-amber-600 bg-amber-100" },
+    { label: "Cash in Hand", value: s?.cashInHand, sub: asOn, icon: Wallet, tint: "text-emerald-600 bg-emerald-100" },
+    { label: "Bank Balance", value: s?.bankBalance, sub: asOn, icon: Landmark, tint: "text-blue-600 bg-blue-100" },
+    { label: "Receivables", value: s?.receivables, sub: asOn, icon: ArrowDownLeft, tint: "text-teal-600 bg-teal-100" },
+    { label: "Payables", value: s?.payables, sub: asOn, icon: ArrowUpRight, tint: "text-rose-600 bg-rose-100" },
+    { label: "Sales", value: s?.sales, sub: inPeriod, icon: FileClock, tint: "text-violet-600 bg-violet-100" },
+    { label: "Purchases", value: s?.purchases, sub: inPeriod, icon: FileWarning, tint: "text-amber-600 bg-amber-100" },
   ];
 
   return (
@@ -155,6 +168,15 @@ export default function DashboardPage() {
         </button>
       </div>
 
+      {/* ================= Period ================= */}
+      <TallyPeriodBar
+        choice={periodChoice}
+        onChange={setPeriodChoice}
+        period={full?.period}
+        loading={tallyLoading}
+        progress={tallyProgress}
+      />
+
       {/* ================= Stat strip ================= */}
       <div className="glass grid grid-cols-2 gap-px overflow-hidden rounded-2xl bg-biome-line/60 sm:grid-cols-3 xl:grid-cols-6">
         {stats.map((t, i) => (
@@ -179,6 +201,11 @@ export default function DashboardPage() {
                     <Scramble value={inrShort(t.value)} />
                   )}
                 </p>
+                {!loading && t.sub ? (
+                  <p className="truncate text-[10px] text-biome-muted" title={t.sub} data-testid="kpi-period">
+                    {t.sub}
+                  </p>
+                ) : null}
               </div>
             </div>
           </TiltCard>
@@ -243,7 +270,7 @@ export default function DashboardPage() {
         {/* Working capital */}
         <section className="glass rounded-2xl p-5">
           <h2 className="font-display text-[15px] font-semibold text-biome-text">Working capital</h2>
-          <p className="mb-4 text-[11px] text-biome-muted">Money in vs money out</p>
+          <p className="mb-4 text-[11px] text-biome-muted">Money in vs money out{asOn ? `, ${asOn}` : ""}</p>
           {s && (s.receivables !== null || s.payables !== null) ? (
             <div className="space-y-3.5">
               <Donut receivables={s.receivables ?? 0} payables={s.payables ?? 0} />

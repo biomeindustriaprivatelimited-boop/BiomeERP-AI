@@ -24,12 +24,18 @@
  *     SVTODATE. Without them Tally answers for whatever company is active
  *     on its screen and whatever period was last chosen with Alt+F2 —
  *     which is how one financial year's sales turn into three years' worth.
- *     Default period = current Indian financial year (1 April) to today.
- *     Sales/Purchase/Expense ledgers are P&L ledgers, so their closing
- *     balance for that period IS the year-to-date movement.
+ *     Default period = current Indian financial year (1 April) to today;
+ *     any other From–To can be asked for (resolvePeriod validates it).
+ *     A reading never crosses 31 March: a long period is read one FY at a
+ *     time and P&L movements are added up (fetchTallyFinance explains how).
+ *     Balance-sheet figures are closing balances AS ON the To date.
  *
- *  4. NO STALE NUMBERS. Nothing is cached. If Tally can't be read the
- *     caller gets an error, never yesterday's figures dressed up as today's.
+ *  4. NO STALE NUMBERS. Anything that touches the current month is read
+ *     live every time; only readings of CLOSED past months are cached
+ *     (a few hours), the company list is always read live, and Refresh
+ *     bypasses the cache. Each piece of a long read is retried (busy or
+ *     slow Tally). If Tally can't be read the caller gets an error, never
+ *     old figures.
  */
 
 export interface TallyRequestSettings {
@@ -572,40 +578,305 @@ export const prettyDate = (isoDate: string) => {
   return `${d}-${MON[Number(m) - 1]}-${y}`;
 };
 
+/** "2026-04-01" + n days, calendar arithmetic (no time-zone drift). */
+export function addDays(isoDate: string, n: number): string {
+  const [y, m, d] = isoDate.split("-").map(Number);
+  const t = new Date(Date.UTC(y, m - 1, d + n));
+  return `${t.getUTCFullYear()}-${String(t.getUTCMonth() + 1).padStart(2, "0")}-${String(t.getUTCDate()).padStart(2, "0")}`;
+}
+
+/** 1 April of the Indian financial year the date falls in. */
+export function fyStartOf(isoDate: string): string {
+  const [y, m] = isoDate.split("-").map(Number);
+  return `${m >= 4 ? y : y - 1}-04-01`;
+}
+
+/** "2026-04-01" -> "2026-27" */
+export function fyName(isoDate: string): string {
+  const y = Number(fyStartOf(isoDate).slice(0, 4));
+  return `${y}-${String((y + 1) % 100).padStart(2, "0")}`;
+}
+
+const lastDayOfMonth = (isoDate: string) => {
+  const [y, m] = isoDate.split("-").map(Number);
+  return addDays(`${m === 12 ? y + 1 : y}-${String(m === 12 ? 1 : m + 1).padStart(2, "0")}-01`, -1);
+};
+
 export interface TallyPeriod {
   from: string; // YYYY-MM-DD
   to: string;
-  /** e.g. "FY 2026-27 till today" */
+  /** e.g. "FY 2026-27 till today", "FY 2025-26", "Sep 2026",
+   *  "FY 2024-25 to today", "15-May-2026 to 20-Jun-2026" */
   label: string;
   /** e.g. "01-Apr-2026 to 04-Oct-2026" */
   range: string;
-  fy: string; // "2026-27"
+  /** FY of the "to" date, e.g. "2026-27" */
+  fy: string;
+  /** Balance-sheet figures (cash, bank, receivables, payables) are closing
+   *  balances on this date: "as on 04-Oct-2026". */
+  asOn: string;
+  /** Opening balances are as at the start of this date. */
+  openingOn: string;
+  /** Financial years the range touches (1 = within one FY). */
+  fyCount: number;
+  /** What was changed from the request, in plain words (dates clamped to
+   *  the books beginning / today). Empty when nothing was changed. */
+  notes: string[];
+  /** The dates exactly as asked for (null = default). */
+  requested: { from: string | null; to: string | null };
 }
 
-/** Current Indian FY (1 April) up to today, unless dates are given. The
- *  start is moved forward to the company's books-beginning date if the
- *  books started later in the year. */
-export function resolvePeriod(opts: { fromDate?: string; toDate?: string; booksFrom?: string | null; today?: Date }): TallyPeriod {
+function parseDateInput(raw: string | undefined, which: "From" | "To"): string | null {
+  if (raw === undefined || raw === null || String(raw).trim() === "") return null;
+  const t = String(raw).trim();
+  const s = fromTallyDate(/^\d{4}-\d{2}-\d{2}T/.test(t) ? t.slice(0, 10) : t);
+  const ok = s && /^\d{4}-\d{2}-\d{2}$/.test(s) && addDays(s, 0) === s;
+  if (!ok) throw new TallyFetchError("bad-range", `${which} date "${raw}" isn't a valid date (use YYYY-MM-DD).`, 400);
+  return s as string;
+}
+
+/**
+ * The period to read, validated:
+ *  - nothing given  -> current Indian FY (1 April, or the books beginning
+ *    if the books started later that year) up to today;
+ *  - From after To  -> error (nothing is guessed);
+ *  - dates after today -> today, with a note;
+ *  - From before the company's books beginning -> books beginning, with a note;
+ *  - the whole range before the books beginning -> error.
+ */
+export function resolvePeriod(opts: {
+  fromDate?: string;
+  toDate?: string;
+  booksFrom?: string | null;
+  today?: Date;
+}): TallyPeriod {
   const today = opts.today ?? new Date();
   const todayIso = iso(today);
-  const toIn = opts.toDate ? fromTallyDate(toTallyDate(opts.toDate)) : null;
-  const to = toIn || todayIso;
-  const [ty, tm] = to.split("-").map(Number);
-  const fyStartYear = tm >= 4 ? ty : ty - 1;
-  const fyStart = `${fyStartYear}-04-01`;
-  const fromIn = opts.fromDate ? fromTallyDate(toTallyDate(opts.fromDate)) : null;
-  let from = fromIn || fyStart;
-  if (!fromIn && opts.booksFrom && opts.booksFrom > from && opts.booksFrom <= to) from = opts.booksFrom;
-  const fy = `${fyStartYear}-${String((fyStartYear + 1) % 100).padStart(2, "0")}`;
-  const isDefault = !fromIn && to === todayIso;
+  const notes: string[] = [];
+  // "books" = from the company's books beginning (the "Since books
+  // beginning" preset — the screen doesn't know that date, Tally does).
+  const sinceBooks = String(opts.fromDate ?? "").trim().toLowerCase() === "books";
+  const fromIn = sinceBooks ? null : parseDateInput(opts.fromDate, "From");
+  const toIn = parseDateInput(opts.toDate, "To");
+  if (fromIn && toIn && fromIn > toIn) {
+    throw new TallyFetchError(
+      "bad-range",
+      `The From date (${prettyDate(fromIn)}) is after the To date (${prettyDate(toIn)}). Pick a From date on or before the To date.`,
+      400
+    );
+  }
+
+  let to = toIn || todayIso;
+  if (to > todayIso) {
+    notes.push(`The end date ${prettyDate(to)} is in the future, so figures run up to today (${prettyDate(todayIso)}).`);
+    to = todayIso;
+  }
+
+  const books = opts.booksFrom || null;
+  let from: string;
+  if (fromIn) {
+    from = fromIn;
+    if (from > todayIso) {
+      notes.push(`The start date ${prettyDate(from)} is in the future, so the period is just today.`);
+      from = todayIso;
+    }
+    if (books && from < books) {
+      if (to < books) {
+        throw new TallyFetchError(
+          "bad-range",
+          `The whole period (${prettyDate(from)} to ${prettyDate(to)}) is before this company's books begin in Tally (${prettyDate(books)}). Pick dates from ${prettyDate(books)} onwards.`,
+          400
+        );
+      }
+      notes.push(`This company's books in Tally begin on ${prettyDate(books)}, so the period starts there (you asked from ${prettyDate(from)}).`);
+      from = books;
+    }
+  } else if (sinceBooks) {
+    if (books && books <= to) {
+      from = books;
+    } else {
+      from = fyStartOf(to);
+      if (!books) notes.push(`Tally didn't give this company's books-beginning date, so the period starts at the beginning of the financial year (${prettyDate(from)}).`);
+    }
+  } else {
+    from = fyStartOf(to);
+    if (books && books > from && books <= to) from = books;
+  }
+
+  const fyFirst = Number(fyStartOf(from).slice(0, 4));
+  const fyLast = Number(fyStartOf(to).slice(0, 4));
+  const fy = fyName(to);
+  const startsFy = from.endsWith("-04-01") || (books !== null && from === books);
+  const endsFy = to.endsWith("-03-31");
+  const range = `${prettyDate(from)} to ${prettyDate(to)}`;
+
+  let label: string;
+  if (sinceBooks && books && from === books) {
+    label = `Since books beginning (${prettyDate(books)}) to ${to === todayIso ? "today" : prettyDate(to)}`;
+  } else if (startsFy && to === todayIso) {
+    label = fyFirst === fyLast ? `FY ${fy} till today` : `FY ${fyName(from)} to today`;
+  } else if (startsFy && endsFy) {
+    label = fyFirst === fyLast ? `FY ${fy}` : `FY ${fyName(from)} to FY ${fy}`;
+  } else if (from.endsWith("-01") && from.slice(0, 7) === to.slice(0, 7) && (to === lastDayOfMonth(to) || to === todayIso)) {
+    const [y, m] = from.split("-");
+    label = `${MON[Number(m) - 1]} ${y}${to === todayIso && to !== lastDayOfMonth(to) ? " till today" : ""}`;
+  } else {
+    label = range;
+  }
+
   return {
     from,
     to,
     fy,
-    label: isDefault ? `FY ${fy} till today` : `${prettyDate(from)} to ${prettyDate(to)}`,
-    range: `${prettyDate(from)} to ${prettyDate(to)}`,
+    label,
+    range,
+    asOn: prettyDate(to),
+    openingOn: prettyDate(from),
+    fyCount: fyLast - fyFirst + 1,
+    notes,
+    requested: { from: sinceBooks ? "books" : fromIn, to: toIn },
   };
 }
+
+/** One piece of a period that sits inside a single financial year.
+ *  `fyFrom` is what Tally gets as SVFROMDATE (1 April or the books
+ *  beginning) — P&L ledgers start again from nil each FY, so a reading
+ *  never crosses a year end. */
+export interface FySegment {
+  fyFrom: string;
+  from: string;
+  to: string;
+}
+
+export function fySegments(from: string, to: string, booksFrom?: string | null): FySegment[] {
+  const out: FySegment[] = [];
+  let s = from;
+  while (s <= to) {
+    let fyFrom = fyStartOf(s);
+    if (booksFrom && booksFrom > fyFrom && booksFrom <= s) fyFrom = booksFrom;
+    const fyEnd = `${Number(fyStartOf(s).slice(0, 4)) + 1}-03-31`;
+    const e = fyEnd < to ? fyEnd : to;
+    out.push({ fyFrom, from: s, to: e });
+    s = addDays(e, 1);
+  }
+  return out;
+}
+
+/** Calendar months covering the period (first/last may be partial). */
+export function monthChunks(from: string, to: string): { from: string; to: string }[] {
+  const out: { from: string; to: string }[] = [];
+  let s = from;
+  while (s <= to) {
+    const end = lastDayOfMonth(s);
+    const e = end < to ? end : to;
+    out.push({ from: s, to: e });
+    s = addDays(e, 1);
+  }
+  return out;
+}
+
+const monthName = (isoDate: string) => `${MON[Number(isoDate.slice(5, 7)) - 1]}-${isoDate.slice(0, 4)}`;
+
+/* ------------------------------------------------------------------ */
+/* Short-lived cache                                                   */
+/* ------------------------------------------------------------------ */
+
+/** Readings are cached per (Tally address, company, kind, from, to):
+ *   - a reading that ends before the current month (a CLOSED period) is
+ *     kept for TALLY_CLOSED_TTL_MS, so a multi-year range doesn't pull
+ *     every past month again each time a page opens;
+ *   - a reading that touches the current month is NEVER cached — it is
+ *     always read from Tally, so today's figures are always today's;
+ *   - "Refresh" (fresh: true) skips the cache entirely and re-reads all.
+ *  The company list is never cached, so if Tally is closed the caller
+ *  still gets an error, not remembered figures. */
+export const TALLY_CLOSED_TTL_MS = 6 * 60 * 60 * 1000;
+/** Group tree (structure, not figures). */
+const GROUPS_TTL_MS = 2 * 60 * 1000;
+const CACHE_MAX = 600;
+type CacheEntry = { at: number; ttl: number; value: unknown };
+const tallyCache: Map<string, CacheEntry> =
+  ((globalThis as any).__biomeTallyCache as Map<string, CacheEntry>) ||
+  ((globalThis as any).__biomeTallyCache = new Map<string, CacheEntry>());
+
+function cacheKey(target: TallyRequestSettings, company: string, kind: string, from: string, to: string) {
+  return [resolveTallyTarget(target).url, norm(company), kind, from, to].join("|");
+}
+/** True when `to` is before the first day of the current month. */
+export function isClosedPeriod(to: string, today: Date = new Date()): boolean {
+  return to < `${iso(today).slice(0, 7)}-01`;
+}
+function cacheGet<T>(key: string, fresh?: boolean): T | undefined {
+  if (fresh) return undefined;
+  const hit = tallyCache.get(key);
+  if (!hit) return undefined;
+  if (Date.now() - hit.at > hit.ttl) {
+    tallyCache.delete(key);
+    return undefined;
+  }
+  return hit.value as T;
+}
+function cachePut(key: string, value: unknown, ttl: number) {
+  if (ttl <= 0) return;
+  tallyCache.delete(key);
+  tallyCache.set(key, { at: Date.now(), ttl, value });
+  while (tallyCache.size > CACHE_MAX) {
+    const oldest = tallyCache.keys().next().value;
+    if (oldest === undefined) break;
+    tallyCache.delete(oldest);
+  }
+}
+/** Cache time for a reading ending on `to` (0 = don't cache). */
+const ttlFor = (to: string, today?: Date) => (isClosedPeriod(to, today) ? TALLY_CLOSED_TTL_MS : 0);
+/** For tests / "clear". */
+export function clearTallyCache() {
+  tallyCache.clear();
+}
+
+/** Errors worth asking Tally again for: it was busy, slow, or briefly
+ *  unreachable. A "company not open" or bad TDL won't fix itself. */
+const RETRYABLE = new Set<TallyErrorCode>(["timeout", "unreachable", "http", "not-tally"]);
+export const TALLY_CHUNK_ATTEMPTS = 3;
+
+/** Time limit for ONE piece of a long read (a FY of balances, a month of
+ *  vouchers) — generous, because a big month can take Tally a while.
+ *  BIOME_TALLY_CHUNK_TIMEOUT_MS overrides it (tests, very slow servers). */
+function chunkTimeoutMs(fallback: number): number {
+  const env = Number(process.env.BIOME_TALLY_CHUNK_TIMEOUT_MS);
+  return Number.isFinite(env) && env > 0 ? env : fallback;
+}
+
+/** Run one Tally reading, retrying up to `attempts` times with a short
+ *  pause (Tally serves one request at a time; a busy moment passes). */
+export async function withRetry<T>(
+  run: (attempt: number) => Promise<T>,
+  opts: { attempts?: number; onRetry?: (attempt: number, err: TallyFetchError) => void; delayMs?: number } = {}
+): Promise<T> {
+  const attempts = Math.max(1, opts.attempts ?? TALLY_CHUNK_ATTEMPTS);
+  let last: unknown;
+  for (let a = 1; a <= attempts; a++) {
+    try {
+      return await run(a);
+    } catch (err) {
+      last = err;
+      if (!(err instanceof TallyFetchError) || !RETRYABLE.has(err.code) || a === attempts) throw err;
+      opts.onRetry?.(a + 1, err);
+      const wait = (opts.delayMs ?? Number(process.env.BIOME_TALLY_RETRY_DELAY_MS ?? 1500)) * a;
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    }
+  }
+  throw last;
+}
+
+/** Progress of a multi-part read, for the loading bar. */
+export interface TallyProgress {
+  phase: "company" | "balances" | "vouchers";
+  done: number;
+  total: number;
+  /** "Balances 01-Apr-2024 to 31-Mar-2025" */
+  label: string;
+}
+export type ProgressFn = (p: TallyProgress) => void;
 
 /* ------------------------------------------------------------------ */
 /* Transport                                                           */
@@ -620,6 +891,7 @@ export type TallyErrorCode =
   | "no-company"
   | "company-not-open"
   | "choose-company"
+  | "bad-range"
   | "empty";
 
 export class TallyFetchError extends Error {
@@ -725,38 +997,164 @@ export interface TallyFinanceOptions extends TallyTargetOptions {
   fromDate?: string;
   toDate?: string;
   today?: Date;
+  /** Skip the short-lived cache (the Refresh button). */
+  fresh?: boolean;
+  onProgress?: ProgressFn;
 }
 
 export interface TallyFinance {
   fetchedAt: string;
   company: string;
   companies: string[];
+  /** Books beginning of the company in Tally (YYYY-MM-DD) if known. */
+  booksFrom: string | null;
   period: TallyPeriod;
+  /** Per ledger: openingBalance = balance as on period.from (start of day),
+   *  closingBalance = balance as on period.to for balance-sheet ledgers and
+   *  the movement within the period for P&L ledgers (Sales, Purchase,
+   *  Expenses, Incomes). Tally sign: Dr negative, Cr positive. */
   ledgers: ClassifiedLedger[];
   buckets: Record<TallyCategory, CategoryBucket>;
   summary: TallySummary;
   classifier: GroupClassifier;
   warnings: string[];
+  /** How many separate Tally readings the balances needed. */
+  readings: number;
+  /** Readings that needed more than one try. */
+  retried: number;
+  /** True when every reading came from the cache (closed months only). */
+  fromCache: boolean;
+  /** Balance-sheet figures at the START of the period (as on period.from). */
+  opening: OpeningSummary;
 }
 
+export interface OpeningSummary {
+  asOn: string;
+  cashInHand: number | null;
+  bankBalance: number | null;
+  bankOverdraft: number | null;
+  receivables: number | null;
+  payables: number | null;
+}
+
+/** Ledgers whose balance is a period movement (they restart each FY). */
+export const PL_CATEGORIES = new Set<TallyCategory>([
+  "sales",
+  "purchases",
+  "directExpenses",
+  "indirectExpenses",
+  "directIncomes",
+  "indirectIncomes",
+]);
+
+/** Re-throw a Tally error with which part of a long period failed. */
+function chunkError(err: unknown, what: string, i: number, n: number): never {
+  if (err instanceof TallyFetchError) {
+    const where = n > 1 ? ` (${what}, part ${i + 1} of ${n})` : "";
+    const msg =
+      err.code === "timeout" && n > 1
+        ? `${err.message.replace(/\.$/, "")}${where}. Long periods are read one piece at a time — try Refresh, or a shorter period.`
+        : `${err.message.replace(/\.$/, "")}${where}.`;
+    throw new TallyFetchError(err.code, msg, err.status, err.companies);
+  }
+  throw err;
+}
+
+/** One reading of every ledger's balance, SVFROMDATE..SVTODATE. */
+async function ledgerSnapshot(
+  target: TallyTargetOptions,
+  company: string,
+  svFrom: string,
+  svTo: string,
+  fresh: boolean | undefined,
+  today: Date | undefined,
+  onRetry?: (attempt: number, err: TallyFetchError) => void
+): Promise<{ rows: TallyLedgerRow[]; cached: boolean; attempts: number }> {
+  const key = cacheKey(target, company, "ledgers", svFrom, svTo);
+  const hit = cacheGet<TallyLedgerRow[]>(key, fresh);
+  if (hit) return { rows: hit, cached: true, attempts: 0 };
+  let attempts = 0;
+  const xml = await withRetry(
+    (a) => {
+      attempts = a;
+      return postToTally(target, buildLedgerBalancesRequest(company, svFrom, svTo));
+    },
+    { onRetry }
+  );
+  const err = tallyLineError(xml);
+  if (err) throw new TallyFetchError("tally-error", `Tally reported: "${err}"`);
+  const rows = parseLedgerBalances(xml);
+  if (!rows.length) {
+    throw new TallyFetchError("empty", `Tally answered but returned no ledgers for "${company}".`);
+  }
+  cachePut(key, rows, ttlFor(svTo, today));
+  return { rows, cached: false, attempts };
+}
+
+/**
+ * Balances for ANY period, the way Tally computes them:
+ *
+ *  - The period is split at each 31 March. For each financial-year piece
+ *    [s, e] Tally is asked for SVFROMDATE = 1 April (or books beginning)
+ *    up to e, and — if s is after 1 April — up to the day before s.
+ *  - P&L ledgers (Sales, Purchase, Expenses, Incomes): movement of a piece
+ *    = closing at e − closing at (s − 1); pieces are added up. So "15 May to
+ *    20 June" is exactly that, and "FY 2023-24 to today" is the sum of each
+ *    year, never one year's figure.
+ *  - Balance-sheet ledgers (cash, bank, debtors, creditors, taxes, …):
+ *    closing = balance on the "to" date (as on); opening = balance at the
+ *    start of the "from" date.
+ *
+ * Pieces are read one after another (Tally serves one request at a time)
+ * with progress reported. A piece that fails (slow / busy Tally) is asked
+ * for again up to TALLY_CHUNK_ATTEMPTS times; if it still fails the read
+ * stops with a message saying which piece — partial balances are never
+ * shown. Pieces that end before the current month are cached (closed).
+ */
 export async function fetchTallyFinance(opts: TallyFinanceOptions): Promise<TallyFinance> {
+  const progress = opts.onProgress ?? (() => {});
+  // A bad range (From after To, not a date) is answered before Tally is asked.
+  resolvePeriod({ fromDate: opts.fromDate, toDate: opts.toDate, today: opts.today });
+  progress({ phase: "company", done: 0, total: 1, label: "Checking the company in Tally" });
   const loaded = await listCompanies(opts);
   const company = chooseCompany(loaded, opts.company);
+  const booksFrom = company.booksFrom || company.startingFrom || null;
   const period = resolvePeriod({
     fromDate: opts.fromDate,
     toDate: opts.toDate,
-    booksFrom: company.booksFrom,
+    booksFrom,
     today: opts.today,
   });
   const warnings: string[] = [];
 
+  // Plan the readings. The LAST one is always (FY start of "to") .. "to".
+  const segs = fySegments(period.from, period.to, booksFrom);
+  type Step = { seg: number; kind: "before" | "end"; svFrom: string; svTo: string };
+  const steps: Step[] = [];
+  segs.forEach((g, i) => {
+    if (g.from > g.fyFrom) steps.push({ seg: i, kind: "before", svFrom: g.fyFrom, svTo: addDays(g.from, -1) });
+    steps.push({ seg: i, kind: "end", svFrom: g.fyFrom, svTo: g.to });
+  });
+  const total = steps.length + 1;
+  // Each reading gets its own, longer, time limit when the period is long.
+  const target: TallyTargetOptions = {
+    ...opts,
+    timeoutMs: chunkTimeoutMs(Math.max(opts.timeoutMs ?? 45000, 60000)),
+  };
+
   // Group tree first — small, and it decides what every ledger is.
+  progress({ phase: "balances", done: 0, total, label: "Reading the group list" });
   let groups: TallyGroupRow[] | null = null;
   try {
-    const gxml = await postToTally(opts, buildGroupTreeRequest(company.name));
-    const err = tallyLineError(gxml);
-    if (err) throw new Error(err);
-    groups = parseGroups(gxml);
+    const gkey = cacheKey(opts, company.name, "groups", "", "");
+    groups = cacheGet<TallyGroupRow[]>(gkey, opts.fresh) ?? null;
+    if (!groups) {
+      const gxml = await postToTally(opts, buildGroupTreeRequest(company.name));
+      const err = tallyLineError(gxml);
+      if (err) throw new Error(err);
+      groups = parseGroups(gxml);
+      cachePut(gkey, groups, GROUPS_TTL_MS);
+    }
   } catch (e: any) {
     if (e instanceof TallyFetchError && (e.code === "unreachable" || e.code === "timeout")) throw e;
     warnings.push(
@@ -765,32 +1163,92 @@ export async function fetchTallyFinance(opts: TallyFinanceOptions): Promise<Tall
   }
   const classifier = buildGroupClassifier(groups);
 
-  const lxml = await postToTally(opts, buildLedgerBalancesRequest(company.name, period.from, period.to));
-  const lerr = tallyLineError(lxml);
-  if (lerr) throw new TallyFetchError("tally-error", `Tally reported: "${lerr}"`);
-  const raw = parseLedgerBalances(lxml);
-  if (!raw.length) {
-    throw new TallyFetchError("empty", `Tally answered but returned no ledgers for "${company.name}".`);
+  const snaps: TallyLedgerRow[][] = [];
+  let allCached = true;
+  let retried = 0;
+  for (let i = 0; i < steps.length; i++) {
+    const st = steps[i];
+    const what = `balances ${prettyDate(st.svFrom)} to ${prettyDate(st.svTo)}`;
+    progress({ phase: "balances", done: i + 1, total, label: `Reading ${what}` });
+    try {
+      const r = await ledgerSnapshot(target, company.name, st.svFrom, st.svTo, opts.fresh, opts.today, (a) =>
+        progress({ phase: "balances", done: i + 1, total, label: `Tally was slow — asking again for ${what} (try ${a} of ${TALLY_CHUNK_ATTEMPTS})` })
+      );
+      snaps.push(r.rows);
+      if (!r.cached) allCached = false;
+      if (r.attempts > 1) retried += 1;
+    } catch (e) {
+      chunkError(e, what, i, steps.length);
+    }
   }
+  progress({ phase: "balances", done: total, total, label: "Balances read" });
+
+  // ---- Merge the readings ----
+  const byName = (rows: TallyLedgerRow[]) => new Map(rows.map((r) => [norm(r.name), r] as const));
+  const maps = snaps.map(byName);
+  const last = snaps[snaps.length - 1];
+  const order: TallyLedgerRow[] = [...last];
+  const seen = new Set(last.map((r) => norm(r.name)));
+  for (const s of snaps) for (const r of s) if (!seen.has(norm(r.name))) { seen.add(norm(r.name)); order.push(r); }
+
+  const firstStep = steps[0];
+  const raw: TallyLedgerRow[] = order.map((r) => {
+    const key = norm(r.name);
+    const latest = maps[maps.length - 1].get(key) ?? r;
+    const { category } = classifier.classify(latest.group);
+    if (PL_CATEGORIES.has(category)) {
+      let mv = 0;
+      segs.forEach((_, si) => {
+        steps.forEach((st, k) => {
+          if (st.seg !== si) return;
+          const v = maps[k].get(key)?.closingBalance ?? 0;
+          mv += st.kind === "end" ? v : -v;
+        });
+      });
+      return { name: r.name, group: latest.group, openingBalance: 0, closingBalance: round2(mv) };
+    }
+    const closing = maps[maps.length - 1].get(key)?.closingBalance ?? 0;
+    const opening =
+      firstStep.kind === "before"
+        ? maps[0].get(key)?.closingBalance ?? 0
+        : maps[0].get(key)?.openingBalance ?? 0;
+    return { name: r.name, group: latest.group, openingBalance: round2(opening), closingBalance: round2(closing) };
+  });
 
   const ledgers = classifyLedgers(raw, classifier);
   const buckets = bucketize(ledgers);
   const summary = summarise(buckets);
+  const openSum = summarise(
+    bucketize(classifyLedgers(raw.map((r) => ({ ...r, closingBalance: r.openingBalance })), classifier))
+  );
+  const opening: OpeningSummary = {
+    asOn: period.openingOn,
+    cashInHand: openSum.cashInHand,
+    bankBalance: openSum.bankBalance,
+    bankOverdraft: openSum.bankOverdraft,
+    receivables: openSum.receivables,
+    payables: openSum.payables,
+  };
 
   if (summary.cashInHand !== null && summary.cashInHand < 0) {
     warnings.push("Cash-in-Hand shows a credit (negative) balance in Tally — check cash entries.");
   }
 
   return {
+    opening,
     fetchedAt: new Date().toISOString(),
     company: company.name,
     companies: loaded.map((c) => c.name),
+    booksFrom,
     period,
     ledgers,
     buckets,
     summary,
     classifier,
     warnings,
+    readings: steps.length,
+    retried,
+    fromCache: allCached,
   };
 }
 
@@ -960,4 +1418,128 @@ export async function fetchVouchers(
           : `Transactions couldn't be fetched: ${err?.message ?? "unknown error"}. Balances are unaffected.`,
     };
   }
+}
+
+export interface VoucherChunkFailure {
+  from: string;
+  to: string;
+  error: string;
+}
+
+export interface VoucherRangeFetch extends VoucherFetch {
+  /** How the period was split and which pieces couldn't be read. */
+  chunks: { total: number; read: number; failed: VoucherChunkFailure[]; retried: number; cached: number };
+}
+
+async function voucherChunk(
+  target: TallyTargetOptions,
+  company: string,
+  from: string,
+  to: string,
+  source: "bridge" | "legacy" | null,
+  fresh: boolean | undefined,
+  today?: Date
+): Promise<{ vouchers: TallyVoucher[]; source: "bridge" | "legacy" | null; missingTdl: boolean; cached?: boolean }> {
+  const key = cacheKey(target, company, `vouchers:${source ?? "auto"}`, from, to);
+  const hit = cacheGet<{ vouchers: TallyVoucher[]; source: "bridge" | "legacy" }>(key, fresh);
+  if (hit) return { ...hit, missingTdl: false, cached: true };
+  const put = (v: TallyVoucher[], src: "bridge" | "legacy") => {
+    cachePut(key, { vouchers: v, source: src }, ttlFor(to, today));
+    return { vouchers: v, source: src, missingTdl: false };
+  };
+  if (source !== "legacy") {
+    const xml = await postToTally(target, bridgeVoucherRequest(company, from, to));
+    if (!tallyLineError(xml)) return put(parseBridgeVouchers(xml), "bridge");
+    if (source === "bridge") throw new TallyFetchError("tally-error", `Tally reported: "${tallyLineError(xml)}"`);
+  }
+  const legacy = await postToTally(target, legacyVoucherRequest(company, from, to));
+  if (!tallyLineError(legacy)) return put(parseLegacyVouchers(legacy), "legacy");
+  if (source === "legacy") throw new TallyFetchError("tally-error", `Tally reported: "${tallyLineError(legacy)}"`);
+  return { vouchers: [], source: null, missingTdl: true };
+}
+
+/**
+ * Transactions for any period, read ONE MONTH AT A TIME (a multi-year
+ * voucher export in one request is what makes Tally time out). Each month
+ * gets its own, longer time limit; months that fail are listed and the
+ * rest are still returned. Balances never depend on this.
+ */
+export async function fetchVouchersRange(
+  target: TallyTargetOptions,
+  company: string,
+  from: string,
+  to: string,
+  opts: { fresh?: boolean; onProgress?: ProgressFn; today?: Date } = {}
+): Promise<VoucherRangeFetch> {
+  const progress = opts.onProgress ?? (() => {});
+  const chunks = monthChunks(from, to);
+  const t: TallyTargetOptions = { ...target, timeoutMs: chunkTimeoutMs(Math.max(target.timeoutMs ?? 45000, 90000)) };
+  const failed: VoucherChunkFailure[] = [];
+  const vouchers: TallyVoucher[] = [];
+  let source: "bridge" | "legacy" | null = null;
+  let read = 0;
+  let retried = 0;
+  let cached = 0;
+
+  for (let i = 0; i < chunks.length; i++) {
+    const c = chunks[i];
+    const name = chunks.length > 1 ? monthName(c.from) : `${prettyDate(c.from)} to ${prettyDate(c.to)}`;
+    progress({ phase: "vouchers", done: i, total: chunks.length, label: `Reading transactions ${name}` });
+    try {
+      let tries = 0;
+      const r = await withRetry(
+        (a) => {
+          tries = a;
+          return voucherChunk(t, company, c.from, c.to, source, opts.fresh, opts.today);
+        },
+        {
+          onRetry: (a) =>
+            progress({
+              phase: "vouchers",
+              done: i,
+              total: chunks.length,
+              label: `Tally was slow — asking again for ${name} (try ${a} of ${TALLY_CHUNK_ATTEMPTS})`,
+            }),
+        }
+      );
+      if (tries > 1) retried += 1;
+      if (r.cached) cached += 1;
+      if (r.missingTdl) {
+        return {
+          vouchers: [],
+          source: null,
+          error:
+            "Transactions need the Biome bridge loaded in Tally (Settings → Tally → Download BiomeBridge.tdl). Balances are unaffected.",
+          chunks: { total: chunks.length, read: 0, failed: [], retried, cached },
+        };
+      }
+      source = r.source;
+      vouchers.push(...r.vouchers);
+      read += 1;
+    } catch (err: any) {
+      const msg =
+        err?.code === "timeout"
+          ? `Tally didn't answer within ${Math.round((t.timeoutMs ?? 0) / 1000)}s`
+          : err?.message || "unknown error";
+      failed.push({ from: c.from, to: c.to, error: msg });
+      if (err?.code === "unreachable") {
+        // Tally went away — no point asking for the remaining months.
+        for (const rest of chunks.slice(i + 1)) failed.push({ from: rest.from, to: rest.to, error: "not read (Tally stopped answering)" });
+        break;
+      }
+    }
+  }
+  progress({ phase: "vouchers", done: chunks.length, total: chunks.length, label: "Transactions read" });
+
+  let error: string | null = null;
+  if (failed.length && !read) {
+    error = failed[0].error.includes("didn't answer")
+      ? `Transactions took too long to fetch (${failed[0].error}). Try a shorter period. Balances are unaffected.`
+      : `Transactions couldn't be fetched: ${failed[0].error}. Balances are unaffected.`;
+  } else if (failed.length) {
+    const names = failed.slice(0, 6).map((f) => `${chunks.length > 1 ? monthName(f.from) : `${prettyDate(f.from)} to ${prettyDate(f.to)}`} (${f.error})`);
+    error = `${failed.length} of ${chunks.length} months couldn't be read from Tally: ${names.join("; ")}${failed.length > 6 ? "; …" : ""}. Transactions for those months are missing from the chart and list — press Refresh to try again. Balances are unaffected.`;
+  }
+  vouchers.sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+  return { vouchers, source, error, chunks: { total: chunks.length, read, failed, retried, cached } };
 }

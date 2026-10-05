@@ -22,11 +22,18 @@
  *
  * The fixture and the hand-computed expected figures live in
  * tools/tally-fixture.mjs.
+ *
+ * Failure injection (period tests): `faults` is a list of
+ *   { kind: "ledgers" | "vouchers", from?: "YYYY-MM-DD", to?: "YYYY-MM-DD",
+ *     times: n, how: "http" | "slow", delayMs?: n }
+ * The first `times` matching requests fail (HTTP 503 "busy", or answered
+ * only after delayMs — slower than the app's time limit); later ones are
+ * answered normally. times: Infinity = always fails.
  */
 
 import http from "node:http";
 import { pathToFileURL } from "node:url";
-import { COMPANY_A, COMPANY_B, buildCompanyA, fyStart, isoDate } from "./tally-fixture.mjs";
+import { COMPANY_A, COMPANY_B, COMPANY_C, buildCompanyA, buildCompanyC, fyStart, isoDate } from "./tally-fixture.mjs";
 
 const esc = (s) =>
   String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -59,7 +66,8 @@ const parseTDate = (s) => (s ? `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8
 export function startMockTally(opts) {
   const today = opts.today ?? new Date();
   const A = buildCompanyA(today);
-  const all = { [COMPANY_A]: A, [COMPANY_B]: COMPANY_B_DATA };
+  const all = { [COMPANY_A]: A, [COMPANY_B]: COMPANY_B_DATA, [COMPANY_C]: buildCompanyC(today) };
+  const faults = (opts.faults || []).map((f) => ({ ...f, hits: 0 }));
   const loaded = opts.companies ?? [COMPANY_A, COMPANY_B];
   const active = opts.active ?? loaded[loaded.length - 1];
   const log = [];
@@ -69,10 +77,39 @@ export function startMockTally(opts) {
     req.on("data", (c) => (body += c));
     req.on("end", () => {
       log.push(body);
-      res.setHeader("Content-Type", "text/xml; charset=utf-8");
-      res.end(answer(body));
+      const fault = findFault(body);
+      if (fault && fault.how === "http") {
+        res.statusCode = 503;
+        res.end("Tally is busy");
+        return;
+      }
+      const send = () => {
+        if (res.destroyed) return;
+        res.setHeader("Content-Type", "text/xml; charset=utf-8");
+        res.end(answer(body));
+      };
+      if (fault && fault.how === "slow") setTimeout(send, fault.delayMs ?? 5000);
+      else send();
     });
   });
+
+  function findFault(xml) {
+    if (!faults.length) return null;
+    const isLedger = /<COLLECTION[^>]*>[\s\S]*?<TYPE>\s*Ledger\s*<\/TYPE>/i.test(xml);
+    const isVoucher = /BiomeVouchers|Biome Voucher Export/.test(xml);
+    const from = parseTDate(tag(xml, "SVFROMDATE"));
+    const to = parseTDate(tag(xml, "SVTODATE"));
+    for (const f of faults) {
+      if (f.kind === "ledgers" && !isLedger) continue;
+      if (f.kind === "vouchers" && !isVoucher) continue;
+      if (f.from && f.from !== from) continue;
+      if (f.to && f.to !== to) continue;
+      if (f.hits >= f.times) continue;
+      f.hits += 1;
+      return f;
+    }
+    return null;
+  }
 
   function answer(xml) {
     const id = tag(xml, "ID") || tag(xml, "REPORTNAME") || "";
@@ -186,7 +223,16 @@ ${v.entries
 
   return new Promise((resolve) => {
     server.listen(opts.port, "127.0.0.1", () =>
-      resolve({ server, log, close: () => new Promise((r) => server.close(() => r())) })
+      resolve({
+        server,
+        log,
+        faults,
+        close: () =>
+          new Promise((r) => {
+            server.closeAllConnections?.();
+            server.close(() => r());
+          }),
+      })
     );
   });
 }
