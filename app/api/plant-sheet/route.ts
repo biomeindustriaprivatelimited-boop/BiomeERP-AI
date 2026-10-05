@@ -9,8 +9,8 @@ import { sheetPlant, sheetPlants } from "@/lib/plantRegistry";
 import { resolvePlantScope } from "@/lib/plantScope";
 import { loadPlants } from "@/lib/plants";
 import { slugForCode } from "@/lib/plantRegistry";
-import fs from "fs";
-import path from "path";
+import { readRows } from "@/lib/plantSheetStore";
+import { buildPlantSheetWorkbook } from "@/lib/plantSheetExcel";
 
 /**
  * Export a biomass or transport sheet.
@@ -29,9 +29,12 @@ const nodeRequire: NodeRequire = eval("require");
 interface ExportRequest {
   kind: "biomass" | "transport";
   plant?: PlantId;
+  /** Ignored — the export reads the stored rows. Kept for old callers. */
   rows?: Record<string, any>[];
-  /** Restrict to one vendor — "kisi bhi biomass vendor ka data". */
+  /** Restrict to one vendor (transporter on the transport sheet). */
   vendorCode?: string;
+  from?: string;
+  to?: string;
   title?: string;
 }
 
@@ -55,13 +58,20 @@ export async function POST(req: NextRequest) {
   const columns: SheetColumn[] =
     body.kind === "transport" ? TRANSPORT_COLUMNS : plant.biomass;
 
-  let rows = Array.isArray(body.rows) ? body.rows : [];
+  // The plant's rows as stored — the server's copy, never the browser's, so
+  // the file carries each row's real submit / freeze status.
+  let rows: Record<string, any>[] = readRows(body.kind === "transport" ? "transport" : "biomass", scoped.scope.slug);
+  const notes: string[] = [];
   if (body.vendorCode) {
     const want = String(body.vendorCode).trim().toUpperCase();
-    rows = rows.filter(
-      (r) => String(r.vendorCode ?? "").trim().toUpperCase() === want
-    );
+    const field = body.kind === "transport" ? "transporterCode" : "vendorCode";
+    rows = rows.filter((r) => String(r[field] ?? "").trim().toUpperCase().includes(want));
+    notes.push(`${body.kind === "transport" ? "Transporter" : "Vendor"} code: ${want}`);
   }
+  const from = /^\d{4}-\d{2}-\d{2}$/.test(String(body.from || "")) ? String(body.from) : "";
+  const to = /^\d{4}-\d{2}-\d{2}$/.test(String(body.to || "")) ? String(body.to) : "";
+  if (from) rows = rows.filter((r) => String(r.date || "").slice(0, 10) >= from);
+  if (to) rows = rows.filter((r) => String(r.date || "").slice(0, 10) <= to);
 
   let ExcelJS: any;
   try {
@@ -73,123 +83,19 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const workbook = new ExcelJS.Workbook();
-  workbook.creator = "Biome Industria Private Limited";
-  workbook.created = new Date();
-
-  const sheetName =
-    body.kind === "transport" ? "TRANSPORT" : `BIOMASS ${plant.name.toUpperCase()}`;
-  const sheet = workbook.addWorksheet(sheetName.slice(0, 31));
-
-  // ---- Letterhead: company, plant, sheet title — above the plant's own columns ----
-  const colIndex = (letters: string) => letters.split("").reduce((n, ch) => n * 26 + (ch.charCodeAt(0) - 64), 0);
-  const colLetter = (n: number) => { let s = ""; while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s; };
-  const idx = Array.from(new Set(columns.map((c) => colIndex(c.cell)))).sort((a, b) => a - b);
-  // The main block of columns (a few sit far to the right on purpose — the
-  // heading spans the block people actually read).
-  let lastIdx = idx[0];
-  for (const n of idx) { if (n - lastIdx > 1) break; lastIdx = n; }
-  const firstCol = colLetter(idx[0]);
-  const lastCol = colLetter(lastIdx);
   const master = loadPlants().find((p) => slugForCode(p.code) === scoped.scope.slug);
-  const dates = rows.map((r) => String(r.date || "").slice(0, 10)).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
-  const fmt = (d: string) => d.split("-").reverse().join("-");
-  const title = body.kind === "transport" ? "TRANSPORT SHEET — VEHICLE DISPATCH REGISTER" : "BIOMASS SHEET — RAW MATERIAL PURCHASE REGISTER";
-  const lines: { text: string; size: number; bold: boolean; color: string; fill?: string; height: number }[] = [
-    { text: "BIOME INDUSTRIA PRIVATE LIMITED", size: 18, bold: true, color: "FFFFFFFF", fill: "FF1F5130", height: 32 },
-    { text: `${plant.name.toUpperCase()}${master?.location ? `  ·  ${master.location}` : ""}`, size: 12, bold: true, color: "FF1F5130", fill: "FFE8F0E3", height: 22 },
-    {
-      text: `${title}${body.vendorCode ? `  ·  Vendor ${String(body.vendorCode).toUpperCase()}` : ""}${dates.length ? `  ·  ${fmt(dates[0])} to ${fmt(dates[dates.length - 1])}` : ""}`,
-      size: 11, bold: true, color: "FF2E2E2E", height: 20,
-    },
-    { text: `All weights in kg  ·  Exported ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })} by ${scoped.scope.userName}`, size: 9, bold: false, color: "FF6B7280", height: 16 },
-  ];
-  lines.forEach((l, i) => {
-    const r = i + 1;
-    if (lastCol !== firstCol) sheet.mergeCells(`${firstCol}${r}:${lastCol}${r}`);
-    const cell = sheet.getCell(`${firstCol}${r}`);
-    cell.value = l.text;
-    cell.font = { name: "Calibri", size: l.size, bold: l.bold, color: { argb: l.color } };
-    cell.alignment = { vertical: "middle", horizontal: "center" };
-    if (l.fill) cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: l.fill } };
-    sheet.getRow(r).height = l.height;
-  });
-  // Company logo in the corner of the first line, when the file is there.
-  try {
-    const logo = path.join(process.cwd(), "public", "assets", "logo.png");
-    if (fs.existsSync(logo)) {
-      const id = workbook.addImage({ buffer: fs.readFileSync(logo), extension: "png" });
-      sheet.addImage(id, { tl: { col: idx[0] - 1 + 0.1, row: 0.1 }, ext: { width: 40, height: 40 } });
-    }
-  } catch { /* the heading reads fine without it */ }
-  sheet.pageSetup = { orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0, printTitlesRow: "1:5", paperSize: 9 };
-  sheet.headerFooter = { oddFooter: `&L${plant.name} — ${body.kind === "transport" ? "Transport" : "Biomass"} sheet&RPage &P of &N` };
-
-  // ---- Header row, at the plant's own column letters ----
-  const HEADER_ROW = 5;
-  for (const col of columns) {
-    const cell = sheet.getCell(`${col.cell}${HEADER_ROW}`);
-    cell.value = col.label;
-    cell.font = { bold: true, size: 10, color: { argb: "FFFFFFFF" } };
-    cell.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
-    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF3F7D4E" } };
-    cell.border = {
-      top: { style: "thin" }, left: { style: "thin" },
-      bottom: { style: "thin" }, right: { style: "thin" },
-    };
-    sheet.getColumn(col.cell).width = Math.max(10, Math.round((col.width || 110) / 8));
-  }
-  sheet.getRow(HEADER_ROW).height = 36;
-  sheet.views = [{ state: "frozen", ySplit: HEADER_ROW }];
-
-  // ---- Data ----
-  rows.forEach((row, i) => {
-    const r = HEADER_ROW + 1 + i;
-    for (const col of columns) {
-      const cell = sheet.getCell(`${col.cell}${r}`);
-
-      if (col.kind === "derived" && col.formula) {
-        // A live formula, so the exported sheet recalculates like theirs.
-        cell.value = { formula: col.formula.replace(/\{row\}/g, String(r)).replace(/^=/, "") };
-      } else if (col.type === "number") {
-        const n = Number(row[col.key]);
-        cell.value = Number.isFinite(n) && row[col.key] !== "" ? n : null;
-      } else {
-        cell.value = row[col.key] ?? null;
-      }
-
-      if (col.type === "number") cell.numFmt = "#,##0.00";
-      cell.border = {
-        top: { style: "hair" }, left: { style: "hair" },
-        bottom: { style: "hair" }, right: { style: "hair" },
-      };
-      cell.alignment = { vertical: "middle", horizontal: col.type === "number" ? "right" : "left" };
-      // Zebra rows, so a long register reads across without a ruler.
-      if (i % 2 === 1) cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF6F9F4" } };
-    }
+  const buffer = await buildPlantSheetWorkbook(ExcelJS, {
+    kind: body.kind === "transport" ? "transport" : "biomass",
+    plantName: plant.name,
+    plantLocation: master?.location || plant.state,
+    columns,
+    rows,
+    generatedBy: scoped.scope.userName,
+    filterNote: notes.join("   ·   "),
   });
 
-  // ---- Totals, also as formulas ----
-  if (rows.length) {
-    const totalRow = HEADER_ROW + 1 + rows.length;
-    const first = HEADER_ROW + 1;
-    const last = totalRow - 1;
-    for (const col of columns) {
-      if (col.type !== "number" || col.key === "srNo" || /pct|allowance|rate/i.test(col.key)) continue;
-      const cell = sheet.getCell(`${col.cell}${totalRow}`);
-      cell.value = { formula: `SUM(${col.cell}${first}:${col.cell}${last})` };
-      cell.font = { bold: true };
-      cell.numFmt = "#,##0.00";
-      cell.border = { top: { style: "double" }, bottom: { style: "thin" } };
-      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE8F0E3" } };
-    }
-    const label = sheet.getCell(`${columns[0].cell}${totalRow}`);
-    label.value = "TOTAL";
-    label.font = { bold: true };
-  }
-
-  const buffer = await workbook.xlsx.writeBuffer();
-  const who = body.vendorCode ? ` - ${body.vendorCode}` : "";
+  const sheetName = body.kind === "transport" ? "Transport Sheet" : "Biomass Sheet";
+  const who = body.vendorCode ? ` - ${String(body.vendorCode).toUpperCase()}` : "";
   // The plant goes in the filename. Two managers exporting the same month
   // otherwise produce two identically named files, and whichever lands in
   // the folder second silently replaces the first.
@@ -233,7 +139,7 @@ export async function GET(req: NextRequest) {
     columns: (kind === "transport" ? TRANSPORT_COLUMNS : plant.biomass).map((c) => ({
       cell: c.cell, key: c.key, label: c.label, kind: c.kind,
       type: c.type || "text", width: c.width, hint: c.hint,
-      suggest: c.suggest, suggestField: c.suggestField, pairKey: c.pairKey,
+      suggest: c.suggest, suggestField: c.suggestField, pairKey: c.pairKey, required: !!c.required,
     })),
   });
 }

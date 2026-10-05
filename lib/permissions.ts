@@ -46,6 +46,9 @@ export type Permission =
   // Control) never reads a plant sheet, and a plant manager never needs
   // "operations" and so never reaches coordination or PO data.
   | "plant"
+  // Approve a plant manager's request to edit a submitted plant-sheet row
+  // after it froze (5 days after submission). Accounts / admin / developer.
+  | "plant.unlock"
   // Supply coordination — its own key rather than riding on "operations".
   // A plant manager needs plant and transport entry but must NOT see the
   // coordination register, and the two were sharing one permission.
@@ -108,6 +111,7 @@ const ALL: Permission[] = [
   "operations",
   "operations.entry",
   "plant",
+  "plant.unlock",
   "coordination",
   "reco",
   "vendors",
@@ -174,6 +178,7 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "assistant",
     "operations",
     "plant",
+    "plant.unlock",
     "coordination",
     "reco",
     "vendors",
@@ -557,6 +562,7 @@ export const PERMISSION_INFO: Record<string, { label: string; what: string; why:
   finance: { label: "Finance", what: "Ledgers, reconciliation, payments, GST, billing SOP, delivery challans, PO override.", why: "Accounts only — it exposes money and Tally.", risk: "high" },
   operations: { label: "Operations (PO Control)", what: "Vendor and client purchase orders and their balances.", why: "Coordinators and accounts.", risk: "medium" },
   reco: { label: "Plant ↔ coordination mismatches", what: "Both sides' figures for every vehicle/weight mismatch, the 3-day red flags, and notices to the teams.", why: "Accounts, admin, developer.", risk: "medium" },
+  "plant.unlock": { label: "Plant sheets — unlock frozen rows", what: "Approve or reject a plant manager's request to edit a biomass / transport row that froze 5 days after submission.", why: "Accounts, admin, developer.", risk: "medium" },
   plant: { label: "Plant sheets", what: "Biomass sheet, transport sheet and weight-slip checks — own plant only for a plant manager.", why: "Plant managers; accounts to verify.", risk: "medium" },
   "imprest.viewPlant": { label: "Imprest — my plant", what: "Read every imprest holder's entries at the plant the person is signed in for.", why: "Plant managers.", risk: "medium" },
   coordination: { label: "Coordination", what: "Create and track supply trips, weights, receivings.", why: "Coordinators.", risk: "medium" },

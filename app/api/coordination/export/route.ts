@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/lib/authServer";
-import { loadTrips, shortageFor, derivedStatus, summarise, byParty, lockStateFor } from "@/lib/coordination";
+import { loadTrips, shortageFor, derivedStatus, summarise, byParty, lockStateFor, TRIP_STATUS } from "@/lib/coordination";
+import {
+  addLogo, buildTableSheet, buildSummarySheet, groupSum, monthLabel, TONES,
+  type XlColumn, type XlTone,
+} from "@/lib/excelStyle";
+import { logoPng } from "@/lib/excelLogo";
 
 /** "Tax Invoice" reads better in a workbook than "tax_invoice". */
 function docLabel(v: string): string {
@@ -44,140 +49,149 @@ export async function GET(req: NextRequest) {
   let trips = loadTrips().filter((t) => t.business === business);
   if (month) trips = trips.filter((t) => (t.vehicleEntryDate || "").slice(0, 7) === month);
 
-  const INK = "FF0B1F27", LEAF = "FF1F7A4C", RED = "FFB3261E", SOFT = "FFEFF4F2", BAND = "FFF8FAF9";
   const wb = new ExcelJS.Workbook();
-  wb.creator = "Biome Industria";
+  wb.creator = "Biome Industria Private Limited";
+  wb.company = "Biome Industria Private Limited";
   wb.created = new Date();
+  const logoId = addLogo(wb, logoPng());
 
   const label = month
     ? new Date(month + "-01").toLocaleDateString("en-IN", { month: "long", year: "numeric" })
     : "All months";
+  const registerName = business === "manufacturing" ? "Manufacturing" : "Trading";
+  const s = summarise(trips);
+  const meta = {
+    title: `${registerName} Coordination Register`,
+    period: label,
+    generatedBy: auth.session.name || "",
+    note:
+      `${s.trips} trips · dispatched ${s.dispatchedKg.toLocaleString("en-IN")} kg · received ${s.receivedKg.toLocaleString("en-IN")} kg · ` +
+      `shortfall ${s.shortfallKg.toLocaleString("en-IN")} kg across ${s.shortageTrips} trip(s) · ${s.pendingReceiving} awaiting receiving`,
+  };
 
   /* ---- the register ---- */
-  const ws = wb.addWorksheet("Coordination", {
-    views: [{ state: "frozen", xSplit: 3, ySplit: 4 }],
-    pageSetup: { orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0 },
-  });
-
-  const COLS = [
-    ["S.No", 7], ["Client", 26], ["Location", 16], ["PO No", 14],
-    ["Supplier", 26], ["Vehicle No", 14], ["Entry Date", 12],
-    ["Vendor Doc Type", 14], ["Vendor Challan No", 18], ["Challan Date", 12], ["Vendor Invoice No", 18],
-    ["Dispatch Wt (KG)", 15],
-    ["Our Doc Type", 14], ["Our Doc No", 20], ["Our Doc Date", 12], ["Challan Amount", 15],
-    ["Receiving Date", 13], ["Receiving Qty (KG)", 16], ["CC Weight", 12],
-    ["Difference (KG)", 15], ["Difference %", 12], ["Allowance (KG)", 14],
-    ["Beyond Allowance", 16],
-    ["Invoice Wt (KG)", 15], ["Taxable", 14], ["Tax", 12], ["Invoice Total", 15],
-    ["Status", 13], ["Frozen", 10], ["Reason / Remarks", 34],
-  ] as const;
-
-  ws.mergeCells(1, 1, 1, COLS.length);
-  const title = ws.getCell(1, 1);
-  title.value = "BIOME INDUSTRIA PRIVATE LIMITED";
-  title.font = { size: 16, bold: true, color: { argb: "FFFFFFFF" } };
-  title.alignment = { horizontal: "center" };
-  title.fill = { type: "pattern", pattern: "solid", fgColor: { argb: INK } };
-  ws.getRow(1).height = 26;
-
-  ws.mergeCells(2, 1, 2, COLS.length);
-  const sub = ws.getCell(2, 1);
-  sub.value = `${business === "manufacturing" ? "Manufacturing" : "Trading"} coordination register — ${label}`;
-  sub.font = { size: 11, bold: true, color: { argb: "FFFFFFFF" } };
-  sub.alignment = { horizontal: "center" };
-  sub.fill = { type: "pattern", pattern: "solid", fgColor: { argb: LEAF } };
-
-  const s = summarise(trips);
-  ws.mergeCells(3, 1, 3, COLS.length);
-  const meta = ws.getCell(3, 1);
-  meta.value =
-    `${s.trips} trips · dispatched ${s.dispatchedKg.toLocaleString("en-IN")} kg · received ${s.receivedKg.toLocaleString("en-IN")} kg · ` +
-    `shortfall ${s.shortfallKg.toLocaleString("en-IN")} kg across ${s.shortageTrips} trip(s) · ${s.pendingReceiving} awaiting receiving`;
-  meta.font = { size: 9.5, italic: true, color: { argb: "FF5A6B66" } };
-  meta.alignment = { horizontal: "center" };
-
-  const head = ws.getRow(4);
-  COLS.forEach(([name], i) => {
-    const c = head.getCell(i + 1);
-    c.value = name;
-    c.font = { size: 9.5, bold: true, color: { argb: INK } };
-    c.alignment = { horizontal: i < 2 ? "left" : "center", vertical: "middle", wrapText: true };
-    c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: SOFT } };
-    c.border = { bottom: { style: "medium", color: { argb: INK } } };
-  });
-  head.height = 30;
-  COLS.forEach(([, w], i) => { ws.getColumn(i + 1).width = w; });
-
-  trips
+  const COLS: XlColumn[] = [
+    { key: "serial", header: "S.No", type: "int", width: 7 },
+    { key: "client", header: "Client", width: 24 },
+    { key: "location", header: "Location", width: 15 },
+    { key: "poNumber", header: "PO No", width: 14 },
+    { key: "supplier", header: "Supplier", width: 24 },
+    { key: "vehicleNumber", header: "Vehicle No", width: 14 },
+    { key: "vehicleEntryDate", header: "Entry Date", type: "date", width: 12 },
+    { key: "vendorDocType", header: "Vendor Doc Type", width: 14 },
+    { key: "vendorChallanNo", header: "Vendor Challan No", width: 16 },
+    { key: "vendorChallanDate", header: "Challan Date", type: "date", width: 12 },
+    { key: "vendorInvoiceNo", header: "Vendor Invoice No", width: 16 },
+    { key: "dispatchKg", header: "Dispatch Wt (kg)", type: "kg", total: true, width: 14 },
+    { key: "docType", header: "Our Doc Type", width: 14 },
+    { key: "ourDocNo", header: "Our Doc No", width: 18 },
+    { key: "ourDocDate", header: "Our Doc Date", type: "date", width: 12 },
+    { key: "challanAmount", header: "Challan Amount", type: "money", total: true, width: 15 },
+    { key: "receivingDate", header: "Receiving Date", type: "date", width: 12 },
+    { key: "receivingQty", header: "Receiving Qty (kg)", type: "kg", total: true, width: 15 },
+    { key: "ccWeight", header: "CC Weight", type: "kg", total: true, width: 12 },
+    { key: "differenceKg", header: "Difference (kg)", type: "kg", total: true, width: 14 },
+    { key: "differencePct", header: "Difference %", type: "pct", width: 11 },
+    { key: "allowanceKg", header: "Allowance (kg)", type: "kg", total: true, width: 13 },
+    { key: "excessKg", header: "Beyond Allowance (kg)", type: "kg", total: true, width: 15 },
+    { key: "invoiceKg", header: "Invoice Wt (kg)", type: "kg", total: true, width: 14 },
+    { key: "taxable", header: "Taxable", type: "money", total: true, width: 15 },
+    { key: "tax", header: "Tax", type: "money", total: true, width: 13 },
+    { key: "invoiceTotal", header: "Invoice Total", type: "money", total: true, width: 15 },
+    { key: "status", header: "Status", width: 12 },
+    { key: "frozen", header: "Frozen", width: 9 },
+    { key: "remarks", header: "Reason / Remarks", width: 34 },
+  ];
+  const statusLabel = (id: string) => TRIP_STATUS.find((x) => x.id === id)?.label || id;
+  const rows = trips
+    .slice()
     .sort((a, b) => (a.vehicleEntryDate || "").localeCompare(b.vehicleEntryDate || ""))
-    .forEach((t, i) => {
+    .map((t) => {
       const sh = shortageFor(t);
       const lock = lockStateFor(t);
-      const row = ws.addRow([
-        t.serial, t.client, t.location, t.poNumber,
-        t.supplier || (business === "manufacturing" ? "BIOME (own material)" : ""),
-        t.vehicleNumber, t.vehicleEntryDate,
-        docLabel(t.vendorDocType), t.vendorChallanNo, t.vendorChallanDate, t.vendorInvoiceNo,
-        t.vendorChallanWeight || null,
-        docLabel(t.docType), t.ourDocNo, t.ourDocDate, t.vendorChallanAmount || null,
-        t.receivingDate, t.receivingQty || null, t.ccWeight || null,
-        sh.verdict === "pending" ? null : sh.differenceKg,
-        sh.verdict === "pending" ? null : sh.differencePct / 100,
-        sh.verdict === "pending" ? null : sh.allowanceKg,
-        sh.excessKg || null,
-        t.billing?.invoiceWeightKg || null,
-        t.billing?.taxableAmount || null,
-        t.billing?.taxAmount || null,
-        t.billing?.totalAmount || null,
-        derivedStatus(t),
-        lock.locked ? "Frozen" : "",
-        [t.cancellationReason, t.remarks, t.checklistRemarks].filter(Boolean).join(" · "),
-      ]);
-
-      row.eachCell((c: any, col: number) => {
-        c.font = { size: 10 };
-        if ([12, 16, 18, 19, 20, 22, 23, 24, 25, 26, 27].includes(col)) c.numFmt = '#,##0;[Red]-#,##0';
-        if (col === 21) c.numFmt = '0.00%';
-        if (i % 2 === 1) c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: BAND } };
-      });
-
-      // The whole point of the export: a shortage row is impossible to miss.
-      if (sh.verdict === "shortage") {
-        [20, 21, 23, 28].forEach((col) => {
-          row.getCell(col).font = { size: 10, bold: true, color: { argb: RED } };
-        });
-      }
+      const pending = sh.verdict === "pending";
+      return {
+        serial: t.serial, client: t.client, location: t.location, poNumber: t.poNumber,
+        supplier: t.supplier || (business === "manufacturing" ? "BIOME (own material)" : ""),
+        vehicleNumber: t.vehicleNumber, vehicleEntryDate: t.vehicleEntryDate,
+        vendorDocType: docLabel(t.vendorDocType), vendorChallanNo: t.vendorChallanNo,
+        vendorChallanDate: t.vendorChallanDate, vendorInvoiceNo: t.vendorInvoiceNo,
+        dispatchKg: t.vendorChallanWeight || null,
+        docType: docLabel(t.docType), ourDocNo: t.ourDocNo, ourDocDate: t.ourDocDate,
+        challanAmount: t.vendorChallanAmount || null,
+        receivingDate: t.receivingDate, receivingQty: t.receivingQty || null, ccWeight: t.ccWeight || null,
+        differenceKg: pending ? null : sh.differenceKg,
+        differencePct: pending ? null : sh.differencePct / 100,
+        allowanceKg: pending ? null : sh.allowanceKg,
+        excessKg: sh.excessKg || null,
+        invoiceKg: t.billing?.invoiceWeightKg || null,
+        taxable: t.billing?.taxableAmount || null,
+        tax: t.billing?.taxAmount || null,
+        invoiceTotal: t.billing?.totalAmount || null,
+        status: statusLabel(derivedStatus(t)),
+        __status: derivedStatus(t),
+        __verdict: sh.verdict,
+        frozen: lock.locked ? "Frozen" : "",
+        remarks: [t.cancellationReason, t.remarks, t.checklistRemarks].filter(Boolean).join(" · "),
+      };
     });
 
-  if (trips.length) {
-    ws.autoFilter = { from: { row: 4, column: 1 }, to: { row: 4 + trips.length, column: COLS.length } };
-  }
+  const STATUS_TONE: Record<string, XlTone> = {
+    planned: TONES.grey, dispatched: TONES.blue, received: TONES.green, accepted: TONES.green,
+    shortage: TONES.red, rejected: TONES.red, cancelled: TONES.grey,
+  };
+  buildTableSheet(wb, "Coordination", {
+    meta,
+    columns: COLS,
+    rows,
+    logoId,
+    freezeCols: 3,
+    footerLeft: `${registerName} coordination register — ${label}`,
+    rowTone: (r) => (r.__status === "cancelled" ? TONES.grey : null),
+    cellTone: (key, value, r) => {
+      if (key === "status") return STATUS_TONE[r.__status] || null;
+      if (key === "frozen" && value) return TONES.indigo;
+      // The whole point of the export: a shortage row is impossible to miss.
+      if (r.__verdict === "shortage" && (key === "differenceKg" || key === "differencePct" || key === "excessKg")) return TONES.red;
+      if (r.__verdict === "excess" && key === "differenceKg") return TONES.amber;
+      return null;
+    },
+  });
 
-  /* ---- shortage by supplier, then by client ---- */
-  for (const [sheetName, key] of [["Shortage by supplier", "supplier"], ["Shortage by client", "client"]] as const) {
-    const w2 = wb.addWorksheet(sheetName);
-    w2.addRow(["Name", "Trips", "Dispatched (KG)", "Received (KG)", "Shortfall (KG)", "Shortfall %", "Trips short"])
-      .eachCell((c: any) => {
-        c.font = { bold: true, size: 10 };
-        c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: SOFT } };
-      });
-    for (const p2 of byParty(trips, key)) {
-      const r = w2.addRow([p2.name, p2.trips, p2.dispatchedKg, p2.receivedKg, p2.shortfallKg, p2.shortfallPct / 100, p2.shortageTrips]);
-      r.eachCell((c: any, col: number) => {
-        if ([3, 4, 5].includes(col)) c.numFmt = '#,##0';
-        if (col === 6) c.numFmt = '0.00%';
-      });
-    }
-    w2.getColumn(1).width = 30;
-    for (let i = 2; i <= 7; i++) w2.getColumn(i).width = 16;
-  }
+  /* ---- summary: shortage by supplier and by client, and by month ---- */
+  const partyCols = (name: string): XlColumn[] => [
+    { key: "name", header: name },
+    { key: "trips", header: "Trips", type: "int", total: true },
+    { key: "dispatchedKg", header: "Dispatched (kg)", type: "kg", total: true },
+    { key: "receivedKg", header: "Received (kg)", type: "kg", total: true },
+    { key: "shortfallKg", header: "Shortfall (kg)", type: "kg", total: true },
+    { key: "shortfallPct", header: "Shortfall %", type: "pct" },
+    { key: "shortageTrips", header: "Trips Short", type: "int", total: true },
+  ];
+  const party = (key: "supplier" | "client") => byParty(trips, key).map((p2) => ({ ...p2, shortfallPct: p2.shortfallPct / 100 }));
+  const months = groupSum(
+    rows.filter((r) => r.__status !== "cancelled"),
+    (r) => String(r.vehicleEntryDate || "").slice(0, 7),
+    ["dispatchKg", "receivingQty", "invoiceTotal"]
+  ).sort((a, b) => a.group.localeCompare(b.group)).map((g) => ({ ...g, month: monthLabel(g.group) }));
+  buildSummarySheet(wb, "Summary", { ...meta, title: `${registerName} Coordination — Summary` }, [
+    { title: "Shortage by supplier", columns: partyCols("Supplier"), rows: party("supplier") },
+    { title: "Shortage by client", columns: partyCols("Client"), rows: party("client") },
+    {
+      title: "By month",
+      columns: [
+        { key: "month", header: "Month" },
+        { key: "count", header: "Trips", type: "int", total: true },
+        { key: "dispatchKg", header: "Dispatched (kg)", type: "kg", total: true },
+        { key: "receivingQty", header: "Received (kg)", type: "kg", total: true },
+        { key: "invoiceTotal", header: "Invoiced (₹)", type: "money", total: true },
+      ],
+      rows: months,
+    },
+  ], logoId);
 
   /* ---- what needs chasing today ---- */
-  const w3 = wb.addWorksheet("Needs attention");
-  w3.addRow(["S.No", "Date", "Supplier", "Client", "Vehicle", "Problem"]).eachCell((c: any) => {
-    c.font = { bold: true, size: 10, color: { argb: "FFFFFFFF" } };
-    c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: RED } };
-  });
+  const attention: Record<string, any>[] = [];
   for (const t of trips) {
     const sh = shortageFor(t);
     const problems: string[] = [];
@@ -191,9 +205,27 @@ export async function GET(req: NextRequest) {
       problems.push("Accepted but not yet billed — no figures imported from Tally.");
     }
     if (!problems.length) continue;
-    w3.addRow([t.serial, t.vehicleEntryDate, t.supplier, t.client, t.vehicleNumber, problems.join(" ")]);
+    attention.push({
+      serial: t.serial, date: t.vehicleEntryDate, supplier: t.supplier, client: t.client,
+      vehicle: t.vehicleNumber, problem: problems.join(" "), __short: sh.verdict === "shortage",
+    });
   }
-  [8, 12, 26, 26, 14, 70].forEach((w, i) => { w3.getColumn(i + 1).width = w; });
+  buildTableSheet(wb, "Needs attention", {
+    meta: { ...meta, title: `${registerName} Coordination — Needs attention`, note: `${attention.length} trip(s) to chase` },
+    columns: [
+      { key: "serial", header: "S.No", type: "int", width: 8 },
+      { key: "date", header: "Date", type: "date", width: 12 },
+      { key: "supplier", header: "Supplier", width: 26 },
+      { key: "client", header: "Client", width: 26 },
+      { key: "vehicle", header: "Vehicle", width: 14 },
+      { key: "problem", header: "Problem", width: 70 },
+    ],
+    rows: attention,
+    logoId,
+    totals: false,
+    tabColor: "FFB42318",
+    cellTone: (key, _v, r) => (key === "problem" && r.__short ? TONES.red : null),
+  });
 
   const buffer = await wb.xlsx.writeBuffer();
   const fileName = `Coordination-${business}-${month || "all"}.xlsx`;
