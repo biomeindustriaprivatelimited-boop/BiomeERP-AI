@@ -98,12 +98,28 @@ function toAgentMessage(m) {
 }
 
 /** Downloads the media of a converted message. */
-async function downloadWebMedia(msg) {
+async function downloadWebMedia(msg, { log } = {}) {
   const m = msg && msg.__wweb;
   if (!m) throw new Error("not a WhatsApp Web message");
-  const media = await m.downloadMedia();
-  if (!media || !media.data) throw new Error("WhatsApp no longer has this file (media expired or not downloadable)");
-  return Buffer.from(media.data, "base64");
+  // Right after a message arrives WhatsApp Web often has not fetched the
+  // file yet and downloadMedia() returns nothing (or throws) — a document
+  // posted from a phone on a slow network was then recorded as "expired"
+  // although it was fine a few seconds later. Try a few times, waiting
+  // longer each time, before calling it lost.
+  const waits = [0, 3000, 8000, 20000];
+  let lastErr = null;
+  for (let i = 0; i < waits.length; i++) {
+    if (waits[i]) await new Promise((r) => setTimeout(r, waits[i]));
+    try {
+      const media = await m.downloadMedia();
+      if (media && media.data) return Buffer.from(media.data, "base64");
+      lastErr = new Error("WhatsApp returned no file data");
+    } catch (err) {
+      lastErr = err;
+    }
+    if (log && i < waits.length - 1) log(`download attempt ${i + 1} for a ${m.type || "media"} message failed (${lastErr && lastErr.message}) — retrying`);
+  }
+  throw new Error(`WhatsApp could not deliver this file after ${waits.length} tries (${lastErr ? lastErr.message : "no data"}). Media from older chats may have expired — forward it into the group again.`);
 }
 
 /**

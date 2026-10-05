@@ -46,6 +46,7 @@ const staging = require("./lib/staging");
 const patterns = require("./lib/patterns");
 const { parseFileName, applyFileNameHints } = require("./lib/fileNameParser");
 const verify = require("./lib/verify");
+const gemini = require("./lib/gemini");
 
 const HOST = "127.0.0.1";
 const PORT = Number(process.env.BIOME_WA_AGENT_PORT || 4174);
@@ -263,6 +264,7 @@ const diag = {
   processed: 0, // read and recorded (filed / review / not-a-document)
   failed: 0, // download or reading error
   lastDocumentAt: null,
+  lastMessageAt: null, // any message at all — proves WhatsApp is delivering
 };
 
 function setStatus(next, extra = {}) {
@@ -341,6 +343,7 @@ function afterConnected() {
 /** One incoming message, whichever engine delivered it. */
 function onIncoming(msg, { live = true } = {}) {
   diag.messagesSeen += 1;
+  diag.lastMessageAt = new Date().toISOString();
   if (msg?.key?.id && msg.message) {
     recentMessages.set(msg.key.id, msg);
     if (recentMessages.size > 1000) recentMessages.delete(recentMessages.keys().next().value);
@@ -1194,6 +1197,27 @@ function withinBackfillRange(tsSeconds) {
   return true;
 }
 
+/**
+ * Is this chat in a selected list? Compared on ONE spelling of the JID
+ * (@c.us vs @s.whatsapp.net), on the bare number when one side is a
+ * phone JID and the other the same number, and — for lists saved by an
+ * older build or typed by hand — on the chat's name.
+ */
+function inScope(list, jid) {
+  if (!Array.isArray(list) || !list.length || !jid) return false;
+  const j = normChatJid(jid);
+  const bare = (x) => String(x || "").split("@")[0].split(":")[0];
+  const name = String(knownChats.get(j)?.name || "").trim().toLowerCase();
+  return list.some((entry) => {
+    const e = normChatJid(entry);
+    if (!e) return false;
+    if (e === j) return true;
+    if (!e.includes("@")) return Boolean(name) && e.trim().toLowerCase() === name;
+    // Same group/person under a different suffix (old @g.us copies, @lid vs phone).
+    return e.endsWith("@g.us") === j.endsWith("@g.us") && bare(e) === bare(j) && bare(e).length >= 8;
+  });
+}
+
 function enqueue(msg) {
   const cfg = settings();
   if (!msg?.key?.id) return;
@@ -1211,9 +1235,9 @@ function enqueue(msg) {
   // defaults to false and never applies to a document.
   if (cfg.ignoreOwnMessages && msg.key.fromMe && !describeMedia(msg)) return;
 
-  const jid = msg.key.remoteJid || "";
+  const jid = normChatJid(msg.key.remoteJid || "");
   if (jid === "status@broadcast") return; // WhatsApp Status posts
-  const workflowChat = cfg.allowedChats.includes(jid) || cfg.receivingChats.includes(jid) || cfg.labChats.includes(jid);
+  const workflowChat = inScope(cfg.allowedChats, jid) || inScope(cfg.receivingChats, jid) || inScope(cfg.labChats, jid);
   if (!cfg.watchAllChats && !workflowChat) {
     if (!describeMedia(msg) || !jid.endsWith("@g.us")) return;
     const nothingChosenYet = !cfg.allowedChats.length && !cfg.receivingChats.length && !cfg.labChats.length;
@@ -1775,7 +1799,7 @@ async function handleMedia(msg, media) {
   // upload or a test) rather than from WhatsApp — same path from here on.
   let buffer = media.buffer || null;
   if (!buffer) try {
-    buffer = msg.__wweb ? await webEngine.downloadWebMedia(msg) : await downloadMediaMessage(
+    buffer = msg.__wweb ? await webEngine.downloadWebMedia(msg, { log }) : await downloadMediaMessage(
       msg,
       "buffer",
       {},
@@ -1858,8 +1882,10 @@ async function handleMedia(msg, media) {
   const ai = await classifyDocument(buffer, media.mimeType, {
     geminiKey: aiKeys().gemini,
     anthropicKey: aiKeys().anthropic,
-    vendors: vendorList.map((v) => ({ code: v.code, name: v.name })),
+    vendors: vendorList.map((v) => ({ code: v.code, name: v.name, gstin: v.gstin || null })),
     clients: loadClients().map((c) => ({ name: c.name, shortName: c.shortName, aliases: c.aliases })),
+    companyCodes: cfg.companyCodes,
+    plantCodes: loadPlants().map((p) => p.code),
     chatContext,
     caption: media.caption,
     fileName: media.fileName,
@@ -2457,6 +2483,12 @@ async function recheckWaitingOnStart() {
       // clearest one on it. Most recent 200 only, to keep start-up quick.
       ...store.all().filter((r) => r.bucket === "filed" && r.filePath && r.reference && /^biome_/.test(r.extracted?.documentType || "") &&
         !/pdf_text$/.test(r.extracted?.readMethod || "") && !r.extracted?.issuerSide).slice(0, 200),
+      // Photos and scans the old OCR could not make sense of ("other",
+      // set aside or sent for review): the new reader (bilinear upscale,
+      // table-line removal, tiled reading, OCR-slip repair) reads most.
+      ...store.all().filter((r) => r.filePath && !r.reference && r.bucket !== "filed" && r.bucket !== "_Staged" &&
+        (!r.extracted || r.extracted.documentType === "other") &&
+        /image|pdf/.test(r.mimeType || "") && !/pdf_text$/.test(r.extracted?.readMethod || "")).slice(-200),
     ];
     const seen = new Set();
     let changed = 0;
@@ -2612,6 +2644,180 @@ async function reprocess(id) {
   return serialized(() => rerunRecord(rec));
 }
 
+
+// ---------------------------------------------------------------------
+// "Why?" — everything the agent decided about one document, in words
+// ---------------------------------------------------------------------
+const SIDE_WORDS = { biome: "OURS (issued by Biome)", vendor: "the VENDOR's (Biome is the buyer)", shared: "shared by both sides (same paper for vendor and us)", client: "the CLIENT's (their weighbridge / lab)", other: "not supply paperwork" };
+
+function explainDocument(rec) {
+  const ex = rec.extracted || {};
+  const { DOC_TYPE_SIDE } = require("./lib/classify");
+  const type = ex.documentType || null;
+  const side = type ? DOC_TYPE_SIDE[type] || "other" : null;
+  const reasons = [];
+  const read = [];
+
+  if (ex.readMethod) read.push(`Read with ${ex.readMethod.replace(/_/g, " ")}${ex.ocrConfidence != null ? ` — OCR confidence ${ex.ocrConfidence}%` : ""}.`);
+  if (ex.aiModel) read.push(`Gemini (${ex.aiModel}) gave a second opinion.`);
+  if (ex.aiError) read.push(`AI second opinion FAILED: ${ex.aiError}`);
+  if (rec.aiStatus === "error" && rec.aiMessage) read.push(`Reading failed: ${rec.aiMessage}`);
+  if (Array.isArray(ex.ocrRepairs) && ex.ocrRepairs.length) read.push(`${ex.ocrRepairs.length} OCR slip(s) corrected: ${ex.ocrRepairs.slice(0, 6).map((r) => `${r.field} "${r.from}" → ${r.to}`).join("; ")}.`);
+  if (!ex.transcription || ex.transcription.replace(/\s/g, "").length < 40) read.push("Almost no text could be read from this file.");
+
+  if (type) reasons.push(`Type: ${DOC_TYPE_LABEL[type] || type} (${ex.confidence ?? "?"}% sure).`);
+  if (ex.ruleReason) reasons.push(`Rule: ${ex.ruleReason}.`);
+  if (ex.documentTypeFromReader && ex.documentTypeFromReader !== type) reasons.push(`The text reader first said ${DOC_TYPE_LABEL[ex.documentTypeFromReader] || ex.documentTypeFromReader}; overruled.`);
+  if (ex.issuerReason) reasons.push(`Who issued it: ${ex.issuerReason}.`);
+  if (ex.learnedRuleId) reasons.push(`A correction you made earlier decided the type (rule ${ex.learnedRuleId}).`);
+  if (Array.isArray(ex.learnedReasons) && ex.learnedReasons.length) reasons.push(`Learned: ${ex.learnedReasons.slice(0, 3).join("; ")}.`);
+  if (ex.captionHints) reasons.push(`Caption "${ex.captionHints.caption}" supplied: ${ex.captionHints.found.join(", ")}.`);
+  if (Array.isArray(ex.fileNameHints) && ex.fileNameHints.length) reasons.push(`File name supplied: ${ex.fileNameHints.slice(0, 4).join("; ")}.`);
+  if (ex.sampleMatch) reasons.push(`Looks like a taught example (${Math.round((ex.sampleMatch.similarity || 0) * 100)}% similar).`);
+
+  let status = "";
+  let waitingFor = null;
+  if (rec.bucket === "filed" && rec.reference?.canonical) {
+    status = `Filed in supply set ${rec.reference.canonical}.`;
+    if (rec.reference.how) reasons.push(`Reference found by: ${rec.reference.how}.`);
+    if (Array.isArray(rec.autoFiledReasons) && rec.autoFiledReasons.length) reasons.push(`Matched because: ${rec.autoFiledReasons.join("; ")}.`);
+  } else if (rec.bucket === "_Staged") {
+    status = "Waiting to match.";
+    waitingFor = side === "vendor" || side === "shared"
+      ? "OUR invoice / delivery challan for this supply has not been filed yet (or does not share a vehicle no., our invoice no., e-way bill no., LR no. or weight with this paper). It joins the set automatically the moment ours arrives."
+      : "No coordination reference or matching supply set was found for it yet.";
+  } else if (rec.bucket === "_Duplicate") {
+    status = `Not filed twice — same document as ${rec.duplicateOfPath || rec.duplicateOf || "an earlier one"}.`;
+  } else if (rec.bucket === "unmatched") {
+    status = rec.reviewReason ? `Needs a person: ${rec.reviewReason}` : "Saved for review — no supply could be matched.";
+  } else if (rec.bucket) {
+    status = `Set aside (${rec.bucket}) — not supply paperwork.`;
+  }
+
+  // Which supply sets it could belong to, scored the same way the matcher does.
+  let candidates = [];
+  try {
+    const anchors = supplyAnchors();
+    candidates = anchors
+      .map((a) => ({ a, m: staging.scoreMatch({ extracted: ex, match: null }, a) }))
+      .filter((x) => x.m && x.m.score > 0)
+      .sort((x, y) => y.m.score - x.m.score)
+      .slice(0, 5)
+      .map((x) => ({ reference: x.a.reference?.canonical, score: x.m.score, reasons: x.m.reasons || [], vehicleNo: x.a.extracted?.vehicleNo || null, date: x.a.extracted?.documentDate || null }));
+  } catch {
+    /* candidates are an aid */
+  }
+
+  const fields = {
+    "Document type": type ? DOC_TYPE_LABEL[type] || type : null,
+    "Whose paper": side ? SIDE_WORDS[side] : null,
+    Reference: ex.referenceNo || rec.reference?.canonical || null,
+    "Our invoice / challan no.": ex.biomeDocNo || null,
+    "Vendor document no.": ex.vendorDocNo || ex.vendorOwnDocNo || null,
+    Vendor: ex.vendorName || null,
+    "Vendor GSTIN": ex.vendorGstin || null,
+    Client: ex.clientName || null,
+    Date: ex.documentDate || null,
+    "Vehicle no.": ex.vehicleNo || null,
+    "E-way bill no.": ex.ewayBillNo || null,
+    "LR / GR no.": ex.grNumber || null,
+    "Quantity (kg)": ex.quantityKg || null,
+    "Net weight": ex.netWeight || null,
+    Amount: ex.totalAmount || null,
+  };
+
+  return {
+    id: rec.id,
+    originalName: rec.originalName,
+    receivedAt: rec.receivedAt,
+    sender: rec.sender || null,
+    caption: rec.caption || null,
+    bucket: rec.bucket,
+    status,
+    waitingFor,
+    side,
+    read,
+    reasons,
+    fields,
+    candidates,
+    transcription: ex.transcription || "",
+    aiHealth: { ...gemini.health },
+  };
+}
+
+// ---------------------------------------------------------------------
+// Health check — every link in the chain, each with a plain verdict
+// ---------------------------------------------------------------------
+let ocrCheckCache = null;
+let geminiCheckCache = null;
+
+async function healthCheck({ force } = {}) {
+  const checks = [];
+  const add = (key, label, ok, detail, extra) => checks.push({ key, label, ok, detail, ...(extra || {}) });
+
+  add("engine", "WhatsApp engine connected", state.status === "connected",
+    state.status === "connected"
+      ? `Linked as ${state.me?.name || state.me?.id || "the company account"} via ${state.engine === "web" ? "WhatsApp Web" : "Baileys"}.`
+      : `Status: ${state.status}${state.lastError ? ` — ${state.lastError}` : ""}. Open Connection & chats and scan the QR code.`);
+
+  const cfg = settings();
+  const chosen = cfg.watchAllChats ? ["(all chats)"] : [...new Set([...cfg.allowedChats, ...cfg.receivingChats, ...cfg.labChats])];
+  add("groups", "Groups selected", chosen.length > 0,
+    chosen.length ? `${chosen.length} chat(s): ${chosen.slice(0, 4).map((j) => knownChats.get(normChatJid(j))?.name || j).join(", ")}` : "No group is selected — nothing will be saved. Switch on Watch for the supply group.");
+
+  const lastMsg = diag.lastMessageAt;
+  const ageMin = lastMsg ? Math.round((Date.now() - new Date(lastMsg).getTime()) / 60000) : null;
+  add("lastMessage", "Last message received", Boolean(lastMsg),
+    lastMsg ? `${ageMin < 1 ? "just now" : `${ageMin} min ago`} (${new Date(lastMsg).toLocaleString("en-IN")})${diag.lastDocumentAt ? ` · last document ${new Date(diag.lastDocumentAt).toLocaleString("en-IN")}` : ""}` : "No message has arrived since the agent started.",
+    { warn: !lastMsg });
+
+  const today = new Date().toISOString().slice(0, 10);
+  const todays = store.all().filter((r) => String(r.receivedAt || "").slice(0, 10) === today);
+  add("today", "Documents received today", true,
+    `${todays.length} today — ${todays.filter((r) => r.bucket === "filed").length} filed, ${todays.filter((r) => r.bucket === "_Staged").length} waiting, ${todays.filter((r) => r.aiStatus === "error").length} unreadable. Failed downloads/reads since start: ${diag.failed}.`,
+    { warn: diag.failed > 0 });
+
+  // OCR engine: read a known image.
+  if (force || !ocrCheckCache || Date.now() - ocrCheckCache.at > 10 * 60 * 1000) {
+    const t0 = Date.now();
+    try {
+      const img = fs.readFileSync(path.join(__dirname, "fixtures", "ocr-check.png"));
+      const r = await require("./lib/ocrWorker").recognizeFull(img, { psm: 6 });
+      const ok = /4471/.test(r.text) && /BIOME/i.test(r.text);
+      ocrCheckCache = { at: Date.now(), ok, detail: ok ? `Tesseract read the test image correctly in ${Date.now() - t0} ms.` : `Tesseract ran but misread the test image ("${r.text.trim().slice(0, 60)}").` };
+    } catch (err) {
+      ocrCheckCache = { at: Date.now(), ok: false, detail: `The offline OCR engine failed: ${err.message}` };
+    }
+  }
+  add("ocr", "Offline OCR engine", ocrCheckCache.ok, ocrCheckCache.detail);
+
+  const keys = aiKeys();
+  if (!keys.gemini && !keys.anthropic) {
+    add("gemini", "Gemini key", true, "No AI key set — documents are read offline only. Add the free Gemini key in Settings → AI for hard photos.", { warn: true });
+  } else if (keys.gemini) {
+    if (force || !geminiCheckCache || Date.now() - geminiCheckCache.at > 10 * 60 * 1000) {
+      geminiCheckCache = { at: Date.now(), ...(await gemini.liveTest(keys.gemini)) };
+    }
+    add("gemini", "Gemini key (live test)", geminiCheckCache.ok, geminiCheckCache.message + (gemini.health.lastError && gemini.health.lastErrorAt && (!gemini.health.lastOkAt || gemini.health.lastErrorAt > gemini.health.lastOkAt) ? ` Last document error: ${gemini.health.lastError}` : ""), { code: geminiCheckCache.code || null });
+  } else {
+    add("gemini", "AI key", true, "An Anthropic key is set (no Gemini key).");
+  }
+
+  try {
+    ensureDir(PATHS.inbox);
+    const probe = path.join(PATHS.inbox, `.write-test-${process.pid}`);
+    fs.writeFileSync(probe, "ok");
+    fs.unlinkSync(probe);
+    add("disk", "Document folder writable", true, PATHS.inbox);
+  } catch (err) {
+    add("disk", "Document folder writable", false, `${PATHS.inbox}: ${err.message}`);
+  }
+
+  add("queue", "Processing queue", state.queueDepth < 20, `${state.queueDepth} waiting, ${state.processing} being read now.`);
+
+  return { at: new Date().toISOString(), ok: checks.every((c) => c.ok), checks, build: BUILD };
+}
+
 // ---------------------------------------------------------------------
 // Local HTTP control API
 // ---------------------------------------------------------------------
@@ -2670,6 +2876,9 @@ const server = http.createServer(async (req, res) => {
         // this process's environment — checking process.env alone made the
         // page say "add a Gemini key" while a key was set and in use.
         hasAiKey: Boolean(aiKeys().gemini || aiKeys().anthropic),
+        // The last Gemini outcome — "key rejected", "quota used up" — so a
+        // key that is set but not working is visible, not silent.
+        aiHealth: { ...gemini.health, hasGeminiKey: Boolean(aiKeys().gemini), hasAnthropicKey: Boolean(aiKeys().anthropic) },
         engine: state.engine || chooseEngine(),
         diag: {
           ...diag,
@@ -2879,6 +3088,13 @@ const server = http.createServer(async (req, res) => {
 
       const buffer = fs.readFileSync(recPath);
       const saved = saveFile(plan, buffer);
+      // A paper a person placed by hand leaves the waiting list for good —
+      // otherwise the next sweep would try to move a file that is gone.
+      try {
+        if (staging.pending().some((e) => e.id === rec.id)) staging.markConsumed(rec.id, normalisedRef?.canonical || null, saved.filePath, "manual");
+      } catch {
+        /* the ledger row below is the record that counts */
+      }
       if (saved.filePath !== recPath) {
         try {
           fs.unlinkSync(recPath);
@@ -2998,7 +3214,9 @@ const server = http.createServer(async (req, res) => {
           vendors: vendorList.map((v) => ({ code: v.code, name: v.name })),
           clients: clientList.map((c) => ({ name: c.name, shortName: c.shortName, aliases: c.aliases })),
           companyCodes: cfg.companyCodes,
+          plantCodes: loadPlants().map((p) => p.code),
           fileName,
+          caption: body.caption || "",
         });
       } catch (err) {
         step("Reading the document", false, err.message);
@@ -3020,6 +3238,17 @@ const server = http.createServer(async (req, res) => {
           : `Only ${textLen} characters found — the page may be a scan this reader can't handle.`,
         { sample: (ex.transcription || "").slice(0, 600) }
       );
+
+      if (Array.isArray(ex.ocrRepairs) && ex.ocrRepairs.length) {
+        step("OCR slips corrected", true, ex.ocrRepairs.slice(0, 8).map((r) => `${r.field}: "${r.from}" → ${r.to}`).join("\n"));
+      }
+      {
+        const k = aiKeys();
+        if (ex.aiError) step("AI second opinion (Gemini)", false, ex.aiError);
+        else if (ex.aiModel) step("AI second opinion (Gemini)", true, `Used ${ex.aiModel}.`);
+        else if (!k.gemini && !k.anthropic) step("AI second opinion", true, "No AI key set — read offline only.");
+        else step("AI second opinion", true, "Not needed — the offline read was clear enough.");
+      }
 
       step(
         "Document identified",
@@ -3111,6 +3340,20 @@ const server = http.createServer(async (req, res) => {
         });
       }
 
+      // ---- Which supply set would it join? ----
+      if (!isOurs) {
+        const why = explainDocument({ id: "test", originalName: fileName, extracted: ex, bucket: null });
+        const top = why.candidates[0];
+        step(
+          "Matching supply sets",
+          Boolean(top && top.score >= 45),
+          top
+            ? why.candidates.slice(0, 3).map((c) => `${c.reference}: score ${c.score} — ${c.reasons.join(", ")}`).join("\n")
+            : "No filed supply set shares a vehicle, invoice no., e-way bill no., LR no. or weight with this paper yet.",
+          { candidates: why.candidates }
+        );
+      }
+
       const failed = steps.filter((s) => !s.ok);
       return json(res, 200, {
         steps,
@@ -3118,6 +3361,18 @@ const server = http.createServer(async (req, res) => {
         problems: failed.map((f) => `${f.name}: ${f.detail}`),
         extracted: ex,
       });
+    }
+
+
+    if (route === "/health-check" && req.method === "GET") {
+      return json(res, 200, await healthCheck({ force: url.searchParams.get("force") === "1" }));
+    }
+
+    if (route === "/why" && req.method === "GET") {
+      const id = url.searchParams.get("id");
+      const rec = id ? store.byId(id) : null;
+      if (!rec) return json(res, 404, { error: "That document is not in the ledger." });
+      return json(res, 200, explainDocument(rec));
     }
 
     if (route === "/chats" && req.method === "GET") {

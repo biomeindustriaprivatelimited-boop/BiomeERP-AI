@@ -50,6 +50,8 @@ const MOBILE_RE = /(?:\+?91[\s-]?)?\b([6-9]\d{9})\b/g;
 
 const PAN_RE = /\b[A-Z]{5}\d{4}[A-Z]\b/g;
 
+const STATE_CODES = new Set(["AN","AP","AR","AS","BR","CG","CH","DD","DL","DN","GA","GJ","HP","HR","JH","JK","KA","KL","LA","LD","MH","ML","MN","MP","MZ","NL","OD","OR","PB","PY","RJ","SK","TN","TR","TS","UK","UP","WB","BH"]);
+
 /** Biome's own invoice and challan numbering. */
 // OCR reads the I of "BI" as 1, l or | often enough that it must be allowed.
 const BIOME_INVOICE_RE = /\b(B[I1l|][\s\-\/]?\d{2}[\s\-\/]?\d{2}[\s\-\/]?[A-Z]{2}\s?(?=[0-9OSB]*\d[0-9OSB]*\d)[0-9OSB]{3,5})\b/g;
@@ -603,6 +605,8 @@ function extractOffline(text, ctx = {}) {
     while ((m = standalone.exec(upper))) {
       const v = m[1].replace(/\s/g, "");
       if (!/^[A-Z]{2}\d{1,2}[A-Z]{1,3}\d{3,4}$/.test(v)) continue;
+      // Only real state/UT series — "OB0M3412" is OCR noise, not a plate.
+      if (!STATE_CODES.has(v.slice(0, 2))) continue;
       if (gstins.some((g) => g.includes(v))) continue;
       if (biomeDocNoRaw && biomeDocNoRaw.toUpperCase().includes(v)) continue;
       if (!vehicles.includes(v)) vehicles.push(v);
@@ -655,7 +659,19 @@ function extractOffline(text, ctx = {}) {
     companyCodes: ctx.companyCodes || ["BDC"],
     vendorCodes: (ctx.vendors || []).map((v) => v.code),
   });
-  const reference = references[0] || null;
+  // On OUR document the reference's second segment IS our document
+  // number. A reference-shaped string that disagrees with the number
+  // printed in the Invoice No. box (by more than one misread digit) is
+  // OCR noise from another cell, not the reference.
+  const ourCore = biomeDocNoRaw ? ((cleanOurDocNo(biomeDocNoRaw) || "").match(/(\d+)$/) || [])[1] : null;
+  const agrees = (r) => {
+    if (!ourCore || !r || !/^\d+$/.test(r.biomeDocNo || "")) return true;
+    const a = ourCore.replace(/^0+(?=\d)/, "");
+    const b = r.biomeDocNo.replace(/^0+(?=\d)/, "");
+    if (a === b) return true;
+    return a.length === b.length && [...a].filter((c, i) => c !== b[i]).length <= 1;
+  };
+  const reference = references.find(agrees) || null;
 
   // Our document number and the reference's second segment are the same
   // number. When OCR misread one digit of the printed invoice number

@@ -68,7 +68,7 @@ async function getWorker(lang = "eng") {
       gzip: false,
       // Without this, a worker error is thrown as an uncaught exception
       // and the caller's promise hangs forever.
-      errorHandler: (err) => { failed = err; workers.delete(lang); },
+      errorHandler: (err) => { failed = err; workers.delete(lang); psmOf.delete(lang); },
     }),
     60_000,
     "Starting the OCR engine"
@@ -82,6 +82,7 @@ async function getWorker(lang = "eng") {
 async function discard(lang) {
   const p = workers.get(lang);
   workers.delete(lang);
+  psmOf.delete(lang);
   if (p) { try { (await p).terminate(); } catch { /* already gone */ } }
 }
 
@@ -100,10 +101,25 @@ async function recognize(image, options = {}, lang = "eng") {
   }
 }
 
-/** Read one image and return the text with Tesseract's mean confidence (0-100). */
+/** Last page-segmentation mode set on each worker (setParameters is not free). */
+const psmOf = new Map();
+
+/**
+ * Read one image and return the text with Tesseract's mean confidence (0-100).
+ * `options.psm` picks Tesseract's page-segmentation mode: 3 = automatic
+ * page layout (default), 6 = one uniform block (best for a cropped tile of
+ * a table), 11 = sparse text (labels and values scattered in boxes).
+ */
 async function recognizeFull(image, options = {}, lang = "eng") {
   const worker = await getWorker(lang);
+  const { psm, ...rest } = options || {};
+  options = rest;
   try {
+    const want = String(psm || 3);
+    if (psmOf.get(lang) !== want) {
+      await withTimeout(worker.setParameters({ tessedit_pageseg_mode: want }), 15_000, "Setting up the reader");
+      psmOf.set(lang, want);
+    }
     const result = await withTimeout(worker.recognize(image, options), 90_000, "Reading the page");
     const data = (result && result.data) || {};
     return { text: data.text || "", confidence: Number(data.confidence) || 0 };

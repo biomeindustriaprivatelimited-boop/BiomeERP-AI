@@ -248,6 +248,22 @@ function issuerSide(text) {
     }
   }
   const firstBuyerLabel = labels.find((l) => l.role === "buyer");
+  // A "GSTIN" label whose number is NOT ours, printed above our first
+  // mention: that block is someone else's letterhead, even when OCR
+  // garbled the number itself (so foreignHead above could not see it)
+  // and the "Consignee" label above our name.
+  let foreignGstinLabel = -1;
+  {
+    const re = /g\s?s\s?t\s?[i1l|]?\s?n|gst\s*(?:no|reg)/gi;
+    let m;
+    while ((m = re.exec(src))) {
+      const after = src.slice(m.index, m.index + 48);
+      if (ourMarks(after).some((k) => k.kind === "pan")) continue;
+      if (!/[0-9OQ]{2}\s?[A-Z0-9]{5}/i.test(after.slice(m[0].length))) continue;
+      foreignGstinLabel = m.index;
+      break;
+    }
+  }
 
   marks.forEach((mk, n) => {
     const weight = n === 0 ? 1.5 : 1;
@@ -262,6 +278,7 @@ function issuerSide(text) {
       // Letterhead = the top of the page, before any other party. A name
       // floating mid-page with its label lost to OCR proves nothing.
       else if ((foreignHead === -1 || mk.pos < foreignHead) && (!firstBuyerLabel || mk.pos < firstBuyerLabel.pos) &&
+        (foreignGstinLabel === -1 || mk.pos < foreignGstinLabel) &&
         mk.pos < Math.max(450, src.length * 0.3)) { role = "seller"; why = "letterhead"; }
     }
     if (role === "seller") score += 3 * weight;
@@ -339,7 +356,26 @@ function byStructure(text, knownClients = [], knownVendors = []) {
     /e[\s\-.]*way\s*bill\s*details/.test(full) ||
     (/e[\s\-.]*way\s*bill\s*(?:no|date)\.?\s*[:.]?\s*\d/.test(full) && /valid\s*(?:upto|up\s*to|until|from)/.test(full)) ||
     (/gstin\s*of\s*supplier/.test(full) && /gstin\s*of\s*recipient/.test(full) && /e[\s\-.]*way\s*bill/.test(full));
-  if (ewayStructure && /e[\s\-.]*way\s*bill/.test(strip) && !/tax\s*invo[il]ce|delivery\s*(?:note|challan)/.test(strip)) {
+  // OCR of a phone photo reads "E-Way Bill" as "&-Way Bat", "Valid Upto"
+  // as "Valk Upto" and "GSTIN of Supplier" as "GST of Supplier" — the
+  // exact phrases above then all miss and the printout was typed as the
+  // tax invoice it lists under Document Details. Count the printout's
+  // distinctive labels instead, each tolerant of a misread letter.
+  const ewaySignals = [
+    /\b[e&c€][\s\-.]*way\b/,
+    /val\w{0,3}\s*up\s*to|valid\s*(?:until|from)/,
+    /gen\w{2,8}\s*by/,
+    /\bpart\s*[-–]?\s*[ab8]\b/,
+    /gst\w{0,3}\s*of\s*(?:supp|recip|rec)/,
+    /appro\w*\s*d\w{2,6}nce/,
+    /document\s*det/,
+    /transaction\s*type/,
+    /place\s*of\s*(?:dispatch|d\w{2,4}atch|delivery|d\w{2,4}very)/,
+    /vehicle\s*\/?\s*trans/,
+  ].filter((re) => re.test(full)).length;
+  const ewayTitle = /\b[e&c€][\s\-.]*way\s*b\w{0,3}l?/.test(strip);
+  const ewayPrintout = (ewayStructure && /e[\s\-.]*way\s*bill/.test(strip)) || (ewayTitle && ewaySignals >= 4);
+  if (ewayPrintout && !/tax\s*invo[il]ce|delivery\s*(?:note|challan)/.test(strip)) {
     return {
       documentType: side(us, "biome_eway_bill", "vendor_eway_bill"),
       confidence: 96,

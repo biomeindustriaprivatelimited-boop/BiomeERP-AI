@@ -223,37 +223,16 @@ function safeParse(raw) {
 }
 
 async function callGemini(apiKey, buffer, mimeType, systemPrompt, userText) {
-  const model = "gemini-flash-latest";
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(
-      apiKey
-    )}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: systemPrompt }] },
-        contents: [
-          {
-            role: "user",
-            parts: [
-              { inline_data: { mime_type: mimeType, data: buffer.toString("base64") } },
-              { text: userText },
-            ],
-          },
-        ],
-        generationConfig: { maxOutputTokens: 8192, temperature: 0, responseMimeType: "application/json" },
-      }),
-    }
-  );
-
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Gemini API error ${res.status}: ${body.slice(0, 300)}`);
-  }
-  const data = await res.json();
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
-  return safeParse(text);
+  // Model list, fallback and plain-language errors live in gemini.js.
+  const { generate } = require("./gemini");
+  const r = await generate(apiKey, {
+    system: systemPrompt,
+    parts: [{ mime: mimeType, base64: buffer.toString("base64") }, { text: userText }],
+    json: true,
+  });
+  const parsed = safeParse(r.text);
+  parsed.aiModel = r.model;
+  return parsed;
 }
 
 async function callAnthropic(apiKey, buffer, mimeType, systemPrompt, userText) {
@@ -367,6 +346,14 @@ function coerce(result, ctx) {
   if (result?.readMethod) out.readMethod = result.readMethod;
   if (Number.isFinite(Number(result?.ocrConfidence))) out.ocrConfidence = Number(result.ocrConfidence);
   if (Array.isArray(result?.fileNameHints)) out.fileNameHints = result.fileNameHints;
+  if (Array.isArray(result?.ocrRepairs)) out.ocrRepairs = result.ocrRepairs.slice(0, 30);
+  if (result?.aiError) out.aiError = String(result.aiError).slice(0, 400);
+  if (result?.aiModel) out.aiModel = String(result.aiModel);
+  if (result?.sampleMatch) out.sampleMatch = result.sampleMatch;
+  if (result?.ruleReason && !out.ruleReason) out.ruleReason = result.ruleReason;
+  if (Array.isArray(result?.learnedReasons)) out.learnedReasons = result.learnedReasons;
+  if (result?.engine) out.engine = String(result.engine);
+  if (result?.captionHints) out.captionHints = result.captionHints;
   out.transcription = typeof result?.transcription === "string" ? result.transcription : "";
   return out;
 }
@@ -400,10 +387,16 @@ async function classifyDocument(buffer, mimeType, ctx = {}) {
   const rawAnthropic = (ctx.anthropicKey || "").trim();
   // Google issues Gemini keys in two shapes — "AIza..." and "AQ..." —
   // and both are valid. Rejecting the second cost a user a working key.
-  const geminiKey =
-    /^AIza[0-9A-Za-z_\-]{20,}$/.test(rawGemini) || /^AQ\.[0-9A-Za-z_\-]{20,}$/.test(rawGemini)
-      ? rawGemini
-      : "";
+  // Any key-shaped value is TRIED; Google's answer decides, and a rejected
+  // key is reported (gemini.health → WhatsApp page) instead of being
+  // silently ignored for not matching a pattern.
+  const gem = require("./gemini");
+  const geminiKey = gem.plausibleKey(rawGemini) ? gem.cleanKey(rawGemini) : "";
+  if (rawGemini && !geminiKey) {
+    gem.health.lastError = "The Gemini key saved in Settings does not look like a key (too short or contains spaces). Paste it again from aistudio.google.com/apikey.";
+    gem.health.lastErrorCode = "INVALID_KEY";
+    gem.health.lastErrorAt = new Date().toISOString();
+  }
   const anthropicKey = /^sk-ant-[0-9A-Za-z_\-]{20,}$/.test(rawAnthropic) ? rawAnthropic : "";
 
   // ---- 0: the filename, which is free and often the most reliable
@@ -412,6 +405,11 @@ async function classifyDocument(buffer, mimeType, ctx = {}) {
     vendors: ctx.vendors || [],
     companyCodes: ctx.companyCodes || ["BDC"],
   });
+  // The caption a person typed with the file ("JPL weight slip HR55AB1234",
+  // "BDC/912/AAT/338 bilty") is the same kind of evidence as a filename.
+  const captionHints = ctx.caption
+    ? parseFileName(String(ctx.caption).slice(0, 200), { vendors: ctx.vendors || [], companyCodes: ctx.companyCodes || ["BDC"] })
+    : null;
 
   // ---- 1 & 2: read and extract, entirely offline ----
   let ocrText = ctx.ocrText || (Array.isArray(ctx.pages) ? ctx.pages.join("\n\n") : "");
@@ -432,6 +430,28 @@ async function classifyDocument(buffer, mimeType, ctx = {}) {
     }
   }
 
+  // Put back the characters OCR swapped inside the identifiers that drive
+  // matching (GSTIN, reference, our invoice number, vehicle) — see
+  // ocrRepair.js. Done in place so positions on the page still count.
+  let ocrRepairs = [];
+  if (ocrText && readMethod !== "provided") {
+    try {
+      const fixed = require("./ocrRepair").repairText(ocrText, {
+        companyCodes: ctx.companyCodes || ["BDC"],
+        vendorCodes: (ctx.vendors || []).map((v) => v.code).filter(Boolean),
+        plantCodes: ctx.plantCodes || [],
+        knownGstins: (ctx.vendors || []).map((v) => v.gstin).filter(Boolean),
+      });
+      if (fixed.repairs.length) {
+        ocrRepairs = fixed.repairs;
+        ocrText = fixed.text;
+        pages = pages.map((p) => require("./ocrRepair").repairText(p, { companyCodes: ctx.companyCodes || ["BDC"], vendorCodes: (ctx.vendors || []).map((v) => v.code).filter(Boolean), plantCodes: ctx.plantCodes || [] }).text);
+      }
+    } catch {
+      /* repairs are an aid, never a reason to fail the read */
+    }
+  }
+
   const extractCtx = {
     vendors: ctx.vendors || [],
     clients: ctx.clients || [],
@@ -448,6 +468,7 @@ async function classifyDocument(buffer, mimeType, ctx = {}) {
         : extractOffline(ocrText, extractCtx);
     offline.readMethod = readMethod;
     if (ocrConfidence != null) offline.ocrConfidence = Math.round(ocrConfidence);
+    if (ocrRepairs.length) offline.ocrRepairs = ocrRepairs;
 
     // ---- 3: a local model, if one happens to be running ----
     if (offline.confidence < 70) {
@@ -471,6 +492,20 @@ async function classifyDocument(buffer, mimeType, ctx = {}) {
   // a weight slip with an illegible plate into one with the right
   // vehicle number attached.
   if (offline) offline = applyFileNameHints(offline, nameHints);
+  if (offline && captionHints) {
+    const before = { ...offline };
+    // Caption fills only what the page and filename left empty.
+    const withCaption = applyFileNameHints({ ...offline, fileNameOverrode: true }, captionHints);
+    for (const k of ["vehicleNo", "referenceNo", "biomeDocNo", "vendorDocNo", "clientName", "documentDate"]) {
+      if (!before[k] && withCaption[k]) offline[k] = withCaption[k];
+    }
+    if ((!offline.documentType || offline.documentType === "other") && withCaption.documentType && withCaption.documentType !== "other") {
+      offline.documentType = withCaption.documentType;
+      offline.confidence = Math.max(Number(offline.confidence) || 0, 60);
+    }
+    const used = Object.keys(captionHints).filter((k) => captionHints[k] && !["raw", "hints"].includes(k));
+    if (used.length) offline.captionHints = { caption: String(ctx.caption).slice(0, 200), found: used };
+  }
 
   // ---- What do the TAUGHT documents say this looks like? ----
   // Uploaded exemplars are the strongest evidence about LAYOUT: the same
@@ -633,9 +668,13 @@ async function classifyDocument(buffer, mimeType, ctx = {}) {
     }
   }
 
-  // Cloud failed — the offline answer is still better than nothing.
-  if (offline) return { ok: true, data: coerce(offline, ctx), provider: offline.engine, lowConfidence: true };
-  return { ok: false, reason: "AI_FAILED", message: lastErr ? lastErr.message : "All readers failed." };
+  // Cloud failed — the offline answer is still better than nothing, but
+  // the reason is kept on the document so the "Why?" view can show it.
+  if (offline) {
+    const why = lastErr ? lastErr.message : "AI reading failed.";
+    return { ok: true, data: coerce({ ...offline, aiError: why }, ctx), provider: offline.engine, lowConfidence: true, aiError: why, aiErrorCode: lastErr?.code || null };
+  }
+  return { ok: false, reason: "AI_FAILED", message: lastErr ? lastErr.message : "All readers failed.", aiError: lastErr ? lastErr.message : null, aiErrorCode: lastErr?.code || null };
 }
 
 /**

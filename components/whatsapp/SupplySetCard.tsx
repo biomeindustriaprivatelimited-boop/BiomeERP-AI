@@ -22,6 +22,7 @@ import {
   Eye,
 } from "lucide-react";
 import DocumentViewer from "./DocumentViewer";
+import WhyPanel from "./WhyPanel";
 import GlassCard from "@/components/GlassCard";
 import {
   DOC_TYPE_LABEL,
@@ -66,6 +67,7 @@ export function DocumentRow({
   const isImage = doc.mimeType?.startsWith("image/");
   const busy = rescanningId === doc.id;
   const [viewing, setViewing] = useState(false);
+  const [explaining, setExplaining] = useState(false);
 
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-biome-line/60 bg-biome-hover px-3 py-2.5">
@@ -97,6 +99,23 @@ export function DocumentRow({
       <span className="shrink-0 font-mono text-[10px] text-biome-muted/70">
         {formatWhen(doc.receivedAt)}
       </span>
+
+      <button
+        type="button"
+        onClick={() => setExplaining(true)}
+        title="Why? — what the agent read and decided, and why it is filed or waiting"
+        data-testid="doc-why"
+        className="shrink-0 rounded-lg px-1.5 py-0.5 text-[10.5px] font-semibold text-biome-muted transition-colors hover:bg-biome-hover hover:text-biome-leafBright"
+      >
+        Why?
+      </button>
+      {explaining && (
+        <WhyPanel
+          doc={doc}
+          onClose={() => setExplaining(false)}
+          onAssign={onIdentify ? (d) => { setExplaining(false); onIdentify(d); } : undefined}
+        />
+      )}
 
       {onIdentify && (
         <button

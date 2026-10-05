@@ -42,7 +42,9 @@ export function isPlausibleGeminiKey(key: string | undefined | null): boolean {
   // Accept both issued formats. Anything shorter than 20 characters, or
   // containing whitespace, is a paste accident rather than a key.
   if (!k || /\s/.test(k) || k.length < 20) return false;
-  return /^AIza[0-9A-Za-z_\-]{20,}$/.test(k) || /^AQ\.[0-9A-Za-z_\-]{20,}$/.test(k);
+  // Any key-shaped value is tried; Google's answer (verifyGeminiKey and
+  // the error text of a failed call) is what decides, and is shown.
+  return /^AIza[0-9A-Za-z_\-]{20,}$/.test(k) || /^AQ\.[0-9A-Za-z_\-.]{20,}$/.test(k) || /^[A-Za-z0-9_\-.]{30,}$/.test(k);
 }
 
 /** Anthropic keys start with "sk-ant-". */
@@ -139,38 +141,85 @@ export class AiError extends Error {
 
 const IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif", "image/gif"];
 
+/**
+ * Current Gemini models, best first. The 1.0 / 1.5 / "gemini-pro" names
+ * are retired and answer 404; one fixed name meant one retirement (or one
+ * key without access to that model) silently broke every read. Each model
+ * is tried in turn; a bad key stops at once with a plain reason.
+ * Mirrored in whatsapp-agent/lib/gemini.js.
+ */
+export const GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-flash-lite", "gemini-flash-latest"];
+
+/** Google's error → a reason a non-programmer can act on. */
+export function describeGeminiError(status: number, bodyText: string): { code: string; message: string } {
+  let reason = "";
+  let gStatus = "";
+  try {
+    const j = JSON.parse(bodyText);
+    reason = j?.error?.message || "";
+    gStatus = `${j?.error?.status || ""} ${(j?.error?.details || []).map((d: any) => d.reason).filter(Boolean).join(",")}`;
+  } catch {
+    reason = String(bodyText || "").slice(0, 200);
+  }
+  const r = `${reason} ${gStatus}`;
+  if (!gStatus.trim() && /allowlist|egress|proxy|firewall|blocked|<html/i.test(`${reason} ${bodyText}`))
+    return { code: "NETWORK", message: `This PC cannot reach Google Gemini — a firewall or proxy blocked it (${reason.slice(0, 120) || status}). Allow generativelanguage.googleapis.com, or rely on the offline reader.` };
+  if (/API_KEY_INVALID|API key not valid|API key expired/i.test(r) || (status === 400 && /key/i.test(r)))
+    return { code: "INVALID_KEY", message: `Google rejected the Gemini key (${reason || "invalid key"}). Copy a fresh key from aistudio.google.com/apikey into Settings → AI.` };
+  if (status === 401 || status === 403 || /PERMISSION_DENIED|SERVICE_DISABLED|is disabled/i.test(r))
+    return { code: "PERMISSION", message: `This Gemini key is not allowed to use the API (${reason || status}). Create the key in Google AI Studio (aistudio.google.com/apikey).` };
+  if (status === 429 || /RESOURCE_EXHAUSTED|quota/i.test(r))
+    return { code: "QUOTA", message: `Gemini's free limit is used up for now (${reason || "quota exceeded"}). It resets automatically; the offline reader keeps working meanwhile.` };
+  if (status === 404 || /not found|is not supported/i.test(r))
+    return { code: "MODEL_NOT_FOUND", message: `Gemini model not available for this key (${reason || "404"}).` };
+  if (status >= 500) return { code: "SERVER", message: `Google's Gemini service had an error (${status}). Try again shortly.` };
+  return { code: "BAD_REQUEST", message: `Gemini refused the request (${status}): ${reason || "no reason given"}` };
+}
+
 async function callGemini(key: string, opts: AiCallOptions): Promise<string> {
-  const model = "gemini-flash-latest";
   const parts: any[] = opts.parts.map((p) => ({
     inline_data: { mime_type: p.mediaType, data: p.data },
   }));
   parts.push({ text: opts.userText });
 
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: opts.system }] },
-        contents: [{ role: "user", parts }],
-        generationConfig: {
-          maxOutputTokens: opts.maxTokens || 8192,
-          temperature: 0,
-          responseMimeType: "application/json",
-        },
-      }),
+  let last: AiError | null = null;
+  for (const model of GEMINI_MODELS) {
+    let res: Response;
+    try {
+      res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: opts.system }] },
+          contents: [{ role: "user", parts }],
+          generationConfig: {
+            maxOutputTokens: opts.maxTokens || 8192,
+            temperature: 0,
+            responseMimeType: "application/json",
+            ...(/2\.5/.test(model) ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
+          },
+        }),
+      });
+    } catch (err) {
+      throw new AiError(`Could not reach Google Gemini: ${(err as Error).message}. Check the internet connection on the server PC.`, 503, "gemini");
     }
-  );
-
-  if (!res.ok) {
-    const body = await res.text();
-    throw new AiError(`Gemini API error (${res.status}): ${body.slice(0, 300)}`, res.status, "gemini");
+    if (!res.ok) {
+      const body = await res.text();
+      const d = describeGeminiError(res.status, body);
+      last = new AiError(d.message, res.status === 429 ? 429 : res.status >= 500 ? 502 : 400, "gemini");
+      (last as any).code = d.code;
+      if (d.code === "INVALID_KEY" || d.code === "PERMISSION") throw last;
+      continue;
+    }
+    const data = await res.json();
+    const text = (data?.candidates?.[0]?.content?.parts || []).filter((p: any) => !p.thought).map((p: any) => p.text || "").join("");
+    if (!text) {
+      last = new AiError(`Gemini (${model}) returned an empty response.`, 502, "gemini");
+      continue;
+    }
+    return text;
   }
-  const data = await res.json();
-  const text = data?.candidates?.[0]?.content?.parts?.map((p: any) => p.text || "").join("") ?? "";
-  if (!text) throw new AiError("Gemini returned an empty response.", 502, "gemini");
-  return text;
+  throw last || new AiError("Every Gemini model failed.", 502, "gemini");
 }
 
 async function callAnthropic(key: string, opts: AiCallOptions): Promise<string> {
@@ -287,35 +336,34 @@ export { IMAGE_TYPES };
  */
 export async function verifyGeminiKey(
   key: string
-): Promise<{ ok: boolean; message: string }> {
+): Promise<{ ok: boolean; message: string; code?: string; model?: string }> {
   const k = (key || "").trim();
-  if (!k) return { ok: false, message: "No Gemini key is set." };
+  if (!k) return { ok: false, message: "No Gemini key is set.", code: "NO_KEY" };
 
-  try {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(k)}`,
-      { method: "GET" }
-    );
-
-    if (res.ok) {
-      const data = await res.json().catch(() => ({}));
-      const count = Array.isArray(data?.models) ? data.models.length : 0;
-      return { ok: true, message: `Key works — Google returned ${count} available model(s).` };
+  // A real (tiny) generation, not just "list models": listing works on a
+  // key whose free quota is used up or whose project has generation
+  // switched off — exactly the cases that looked fine and read nothing.
+  for (const model of GEMINI_MODELS) {
+    try {
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": k },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [{ text: "Reply with the single word OK." }] }],
+          generationConfig: { maxOutputTokens: 20, temperature: 0, ...(/2\.5/.test(model) ? { thinkingConfig: { thinkingBudget: 0 } } : {}) },
+        }),
+      });
+      if (res.ok) return { ok: true, model, message: `Key works — Gemini answered (${model}).` };
+      const d = describeGeminiError(res.status, await res.text());
+      if (d.code === "INVALID_KEY" || d.code === "PERMISSION") return { ok: false, code: d.code, message: d.message };
+      if (model === GEMINI_MODELS[GEMINI_MODELS.length - 1]) return { ok: d.code === "QUOTA", code: d.code, message: d.message };
+    } catch (err) {
+      return {
+        ok: false,
+        code: "NETWORK",
+        message: `Couldn't reach Google to check the key: ${(err as Error).message}. If this machine is offline, the offline reader still works without any key.`,
+      };
     }
-
-    const body = await res.text();
-    const reason = (() => {
-      try {
-        return JSON.parse(body)?.error?.message || body.slice(0, 200);
-      } catch {
-        return body.slice(0, 200);
-      }
-    })();
-    return { ok: false, message: `Google rejected the key (${res.status}): ${reason}` };
-  } catch (err) {
-    return {
-      ok: false,
-      message: `Couldn't reach Google to check the key: ${(err as Error).message}. If this machine is offline, the offline reader still works without any key.`,
-    };
   }
+  return { ok: false, code: "UNKNOWN", message: "Gemini did not answer." };
 }

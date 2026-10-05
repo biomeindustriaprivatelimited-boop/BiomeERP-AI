@@ -35,6 +35,8 @@ import GroupPicker from "@/components/whatsapp/GroupPicker";
 import LearningHeader from "@/components/whatsapp/LearningHeader";
 import TrainAgentPanel from "@/components/whatsapp/TrainAgentPanel";
 import ManualIngestPanel from "@/components/whatsapp/ManualIngestPanel";
+import HealthPanel from "@/components/whatsapp/HealthPanel";
+import TestUploadPanel from "@/components/whatsapp/TestUploadPanel";
 import { useNotifications } from "@/lib/notifications";
 import type { AgentState, SupplySet, WhatsappDocument } from "@/lib/whatsapp";
 
@@ -493,6 +495,7 @@ export default function WhatsappPage() {
                 hideDiagnostics
               />
               <GroupPicker connected={linked} onChanged={refresh} />
+              <HealthPanel />
               <HistoricalScan backfill={(state as any)?.backfill ?? null} connected={linked} onDone={refresh} />
             </>
           )}
@@ -592,6 +595,7 @@ export default function WhatsappPage() {
                 body="Papers that came by email, were scanned at the office, or arrived while WhatsApp was not linked go through exactly the WhatsApp path."
               />
               <ManualIngestPanel />
+              <TestUploadPanel />
               <div className="bmx-card flex items-start gap-3 rounded-2xl border border-biome-leaf/25 bg-biome-leaf/[.06] px-5 py-4">
                 <FolderTree size={16} className="mt-0.5 shrink-0 text-biome-leafBright" />
                 <p className="text-[11.5px] leading-relaxed text-biome-muted">
@@ -620,6 +624,8 @@ export default function WhatsappPage() {
                 title="Diagnostics & data"
                 body="Where each message stopped, the agent's live log, and tools to clear scanned data or what was learned from it."
               />
+              <HealthPanel />
+              <TestUploadPanel />
               <div className="bmx-card rounded-2xl border border-biome-line bg-biome-bgSoft p-5">
                 <div className="flex flex-wrap items-center gap-2 text-[11px] text-biome-muted">
                   <Stethoscope size={15} className="text-biome-leafBright" />

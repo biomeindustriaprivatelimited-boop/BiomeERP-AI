@@ -1,7 +1,19 @@
 /** Build stamp — shown in the UI so the running version is never a guess. */
 module.exports = {
-  BUILD: "20261004-wa-sets",
+  BUILD: "20261005-wa-ocr-real-photos",
   FEATURES: [
+    "photo-ocr-native-resolution-bilinear-upscale",
+    "table-lines-removed-tiled-reading",
+    "ocr-slip-repair-gstin-reference-invoice-vehicle",
+    "eway-printout-tolerant-of-ocr",
+    "gemini-model-fallback-and-plain-errors",
+    "why-view-per-document",
+    "health-check-panel",
+    "upload-to-test-on-whatsapp-page",
+    "caption-hints-and-reference",
+    "media-download-retries",
+    "chat-scope-matching-jid-name",
+    "ocr-scanner-uses-server-reader",
     "issuer-by-party-labels-seller-vs-buyer",
     "our-invoice-never-waits-provisional-set",
     "reference-repair-from-ocr",

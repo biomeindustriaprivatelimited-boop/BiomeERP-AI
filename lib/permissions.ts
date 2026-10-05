@@ -299,6 +299,7 @@ export const ROUTE_PERMISSIONS: { prefix: string; permission: Permission }[] = [
   { prefix: "/api/assistant", permission: "assistant" },
   { prefix: "/api/extract-document", permission: "ocr" },
   { prefix: "/api/test-document", permission: "ocr" },
+  { prefix: "/api/ocr-read", permission: "ocr" },
   { prefix: "/api/vendors", permission: "vendors" },
   { prefix: "/api/clients", permission: "customers" },
   { prefix: "/api/company-documents", permission: "company" },

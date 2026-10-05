@@ -166,6 +166,20 @@ function stage({ id, messageId, buffer, fileName, mimeType, receivedAt, sender, 
 // Normalisation
 // ---------------------------------------------------------------------
 
+/** Same length, exactly one position different (or one dropped character). */
+function plateNearMiss(a, b) {
+  if (!a || !b || a === b) return false;
+  if (a.length === b.length) {
+    let d = 0;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) d++;
+    return d === 1 && a.slice(0, 2) === b.slice(0, 2);
+  }
+  const [s, l] = a.length < b.length ? [a, b] : [b, a];
+  if (l.length - s.length !== 1) return false;
+  for (let i = 0; i < l.length; i++) if (l.slice(0, i) + l.slice(i + 1) === s) return s.slice(0, 2) === l.slice(0, 2);
+  return false;
+}
+
 function normPlate(v) {
   const s = String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
   return /^[A-Z]{2}\d{1,2}[A-Z]{0,3}\d{3,4}$/.test(s) ? s : null;
@@ -337,6 +351,14 @@ function scoreMatch(staged, ours) {
         score -= 30;
         reasons.push(`same truck but ${Math.round(days)} days apart — another trip`);
       }
+    } else if (plateNearMiss(ourVehicle, f.vehicleNo)) {
+      // One character apart (HR55AB1234 vs HR55AB1294): an OCR slip on a
+      // photographed slip, not another truck. Counted, but less than an
+      // exact read, so it cannot win alone against a real same-plate set.
+      score += 28;
+      reasons.push(`vehicle ${f.vehicleNo} ≈ ${ourVehicle} (one character misread)`);
+      const days = dayDiff(ex.documentDate, f.date);
+      if (days != null && days <= 4) { score += 10; reasons.push(days === 0 ? "same day" : `${days} day(s) apart`); }
     } else {
       // One truck carries one consignment.
       score -= 40;

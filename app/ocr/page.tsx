@@ -63,6 +63,51 @@ function mapAiFields(ai: AiExtractionResult): Record<string, ExtractedField> {
   return out;
 }
 
+
+/** Server-side offline read (app/api/ocr-read). Returns null when the
+ *  server reader is unavailable, so the browser pipeline can take over. */
+async function readOnServer(file: File): Promise<{ result: OcrResult; fields: Record<string, ExtractedField> } | null> {
+  try {
+    const dataUrl = await fileToDataUrl(file);
+    const res = await fetch("/api/ocr-read", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fileBase64: String(dataUrl).split(",")[1] || "", fileName: file.name, mimeType: file.type || undefined }),
+    });
+    if (!res.ok) return null;
+    const j = await res.json();
+    const text: string = j.text || "";
+    if (!text.replace(/\s/g, "")) return null;
+    const conf = Number(j.confidence) || 0;
+    const rawLines = text.split(/\r?\n/).map((t) => t.trim()).filter((t) => t && t !== "----");
+    const result: OcrResult = {
+      text,
+      confidence: conf,
+      lines: rawLines.map((t, i) => ({ text: t, confidence: conf, y: i * 20, height: 18 })),
+      wordCount: text.split(/\s+/).filter(Boolean).length,
+      lowConfidenceWordCount: 0,
+    };
+    // Biome's own fields first (type, reference, invoice no., vehicle,
+    // GSTIN, weights…), then any other "Label: value" pairs on the page.
+    const fields: Record<string, ExtractedField> = {};
+    for (const f of j.fields || []) {
+      let key = slugifyLabel(f.label);
+      let n = 2;
+      while (fields[key]) key = `${slugifyLabel(f.label)}_${n++}`;
+      fields[key] = { label: f.label, value: String(f.value), confidence: Number(f.confidence) || conf };
+    }
+    const generic = extractDocumentFields(result);
+    for (const [k, f] of Object.entries(generic)) {
+      if (Object.values(fields).some((x) => x.value === f.value)) continue;
+      if (Object.keys(fields).length >= 40) break;
+      fields[fields[k] ? `${k}_2` : k] = f;
+    }
+    return { result, fields };
+  } catch {
+    return null;
+  }
+}
+
 export default function OcrScannerPage() {
   const [docs, setDocs] = useState<QueuedDoc[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -215,6 +260,21 @@ export default function OcrScannerPage() {
                 `AI reading failed for "${doc.file.name}" (${aiErr?.message || "unknown error"}) — used offline OCR instead for this document.`
               );
             }
+          }
+        }
+
+        // The offline reader on the server — the same one WhatsApp uses
+        // (photo clean-up, orientation, table-line removal, OCR-slip repair,
+        // Biome field rules). The in-browser pass below is only a fallback.
+        if (!result) {
+          setProgress(doc.id, "Reading offline (straightening, cleaning, reading every cell)…");
+          const server = await readOnServer(doc.file);
+          if (server) {
+            engine = "tesseract";
+            result = server.result;
+            fields = server.fields;
+            const detected = detectTableInResult(result);
+            table = detected.headers.length >= 2 && detected.rows.length >= 1 ? detected : null;
           }
         }
 
