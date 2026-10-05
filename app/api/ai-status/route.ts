@@ -11,6 +11,8 @@ export const dynamic = "force-dynamic";
  * working when a key is present but malformed (the exact case that used
  * to fail silently). Never returns a key itself.
  */
+let liveCache: { key: string; at: number; result: { ok: boolean; message: string } } | null = null;
+
 export async function GET(req: NextRequest) {
   const auth = await requirePermission(req, "release.read");
   if ("response" in auth) return auth.response;
@@ -21,7 +23,13 @@ export async function GET(req: NextRequest) {
   let geminiLive: { ok: boolean; message: string } | null = null;
   const geminiKey = (process.env.GEMINI_API_KEY || "").trim();
   if (geminiKey) {
-    geminiLive = await verifyGeminiKey(geminiKey);
+    // A live call costs quota; the verdict is reused for five minutes
+    // unless ?force=1 (the Settings "Test" button).
+    const fresh = liveCache && liveCache.key === geminiKey && Date.now() - liveCache.at < 5 * 60 * 1000;
+    if (!fresh || req.nextUrl.searchParams.get("force") === "1") {
+      liveCache = { key: geminiKey, at: Date.now(), result: await verifyGeminiKey(geminiKey) };
+    }
+    geminiLive = liveCache!.result;
   }
 
 return NextResponse.json({
@@ -43,10 +51,15 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
   const { saveAiKeys } = await import("@/lib/aiKeys");
   const gemini = typeof body.gemini === "string" ? body.gemini.trim() : undefined;
+  let warning: string | null = null;
   if (gemini) {
     const live = await verifyGeminiKey(gemini);
-    if (!live.ok) return NextResponse.json({ error: `Google did not accept that key: ${live.message}` }, { status: 400 });
+    // A key Google REJECTS is refused; a key that simply could not be
+    // checked (no internet / firewall right now) is saved with a warning.
+    if (!live.ok && live.code !== "NETWORK") return NextResponse.json({ error: `Google did not accept that key: ${live.message}`, code: live.code }, { status: 400 });
+    if (!live.ok) warning = live.message;
   }
   saveAiKeys({ gemini, anthropic: typeof body.anthropic === "string" ? body.anthropic : undefined });
-  return NextResponse.json({ ok: true });
+  liveCache = null;
+  return NextResponse.json({ ok: true, warning });
 }

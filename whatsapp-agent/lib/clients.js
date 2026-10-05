@@ -297,6 +297,8 @@ function fuzzyKey(s) {
  * check both ways — real invoices print "JHAJJAR POWER LIMITED, KHANPUR"
  * and "Jhajjar Power Ltd" for the same plant.
  */
+const GENERIC_WORDS = new Set(["shree", "shri", "sri", "jai", "maa", "the", "power", "limited", "private", "ltd", "pvt", "plant", "station", "thermal", "energy", "india", "company", "industries", "new", "super"]);
+
 function matchClient(rawName, clients = loadClients()) {
   const target = normalise(rawName);
   if (!target) return null;
@@ -334,6 +336,13 @@ function matchClient(rawName, clients = loadClients()) {
     const candidates = [c.name, c.shortName, ...(c.aliases || [])].map(normalise).filter(Boolean);
     for (const alias of candidates) {
       if (alias.length < 4) continue;
+      // "Shree" (the seeded short name of Shree Shyaam Electrosystem) is
+      // on half the dharam-kanta slips in Haryana — "SHREE BALAJI DHARAM
+      // KANTA" made every weight slip a Shree Shyaam document. Honorifics
+      // and generic words never identify a client on their own, and a
+      // single word must match as a whole word.
+      if (GENERIC_WORDS.has(alias)) continue;
+      if (!alias.includes(" ") && !new RegExp(`(?:^| )${alias}(?: |$)`).test(target) && !alias.includes(target)) continue;
       if (!target.includes(alias) && !alias.includes(target)) continue;
       // A full company name beats a bare place name of the same length.
       const specificity = alias.length + (/(?:power|limited|ltd|industries|company|ntpc)/.test(alias) ? 10 : 0);

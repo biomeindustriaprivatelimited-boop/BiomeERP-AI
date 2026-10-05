@@ -47,6 +47,10 @@ const ALLOWED: Record<string, ("GET" | "POST")[]> = {
   // A document uploaded by hand goes through exactly the WhatsApp path —
   // read, match, hold or file — for papers that arrived by email or on paper.
   ingest: ["POST"],
+  // "Why?" — everything the agent decided about one document.
+  why: ["GET"],
+  // Engine, groups, last message, OCR engine, Gemini live test, disk.
+  "health-check": ["GET"],
 };
 
 function unavailable(err: AgentUnavailableError) {
@@ -75,7 +79,8 @@ async function proxy(req: NextRequest, segments: string[], method: "GET" | "POST
       body,
       headers: body ? { "Content-Type": "application/json" } : undefined,
       // Re-scanning a document runs a fresh AI call, which can be slow.
-      timeoutMs: route === "reprocess" ? 120000 : route === "chats/refresh" ? 60000 : 30000,
+      // Reading a phone photo takes 10-40 s offline, plus a Gemini call.
+      timeoutMs: ["reprocess", "test", "ingest", "classify"].includes(route) ? 240000 : route === "health-check" ? 90000 : route === "chats/refresh" ? 60000 : 30000,
     });
 
     // /file streams the actual PDF or image back to the browser.

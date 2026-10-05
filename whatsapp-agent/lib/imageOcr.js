@@ -73,10 +73,17 @@ function grayFromPixmap(pix) {
   const stride = pix.getStride();
   const n = pix.getNumberOfComponents() + (pix.getAlpha() ? 1 : 0);
   const src = pix.getPixels();
+  const nc = pix.getNumberOfComponents();
   const out = new Uint8ClampedArray(w * h);
   for (let y = 0; y < h; y++) {
     const row = y * stride;
-    for (let x = 0; x < w; x++) out[y * w + x] = src[row + x * n];
+    if (nc >= 3) {
+      // Luminance, not the red channel: a blue-ink stamp or a pink carbon
+      // copy disappears entirely in red alone.
+      for (let x = 0; x < w; x++) { const i = row + x * n; out[y * w + x] = (src[i] * 299 + src[i + 1] * 587 + src[i + 2] * 114) / 1000; }
+    } else {
+      for (let x = 0; x < w; x++) out[y * w + x] = src[row + x * n];
+    }
   }
   return { w, h, data: out };
 }
@@ -119,6 +126,7 @@ function flatten(img) {
   const gw = Math.ceil(img.w / B);
   const gh = Math.ceil(img.h / B);
   const grid = new Float32Array(gw * gh);
+  const spread = new Float32Array(gw * gh);
   const hist = new Uint32Array(256);
   for (let gy = 0; gy < gh; gy++) {
     for (let gx = 0; gx < gw; gx++) {
@@ -131,9 +139,14 @@ function flatten(img) {
         }
       }
       // 90th percentile: the paper, not the ink.
-      let target = n * 0.9, acc = 0, v = 255;
-      for (let i = 0; i < 256; i++) { acc += hist[i]; if (acc >= target) { v = i; break; } }
+      let target = n * 0.9, acc = 0, v = 255, lo = null;
+      for (let i = 0; i < 256; i++) {
+        acc += hist[i];
+        if (lo === null && acc >= n * 0.1) lo = i;
+        if (acc >= target) { v = i; break; }
+      }
       grid[gy * gw + gx] = Math.max(v, 40);
+      spread[gy * gw + gx] = v - (lo || 0);
     }
   }
   // Smooth the envelope (two 3x3 box passes) so text-dense blocks don't dip.
@@ -152,6 +165,18 @@ function flatten(img) {
     }
     g = next;
   }
+  // The table / floor around a photographed page: blocks far darker than
+  // the paper. Dividing them by their own "background" turns them into
+  // grey noise that Tesseract reads as text and that wrecks its layout
+  // analysis — they are painted white instead.
+  const sorted = Array.from(grid).sort((a, b) => a - b);
+  const paper = sorted[Math.floor(sorted.length * 0.75)] || 255;
+  // Only flat dark blocks (no ink on them) — a page corner that is merely
+  // in shadow still has text contrast and is kept.
+  const isBackground = (gx, gy) => {
+    const i = Math.min(gh - 1, gy) * gw + Math.min(gw - 1, gx);
+    return grid[i] < paper * 0.55 && spread[i] < 22;
+  };
   const out = new Uint8ClampedArray(img.w * img.h);
   for (let y = 0; y < img.h; y++) {
     const fy = Math.min(gh - 1.001, Math.max(0, y / B - 0.5));
@@ -162,7 +187,7 @@ function flatten(img) {
       const bg =
         g[y0 * gw + x0] * (1 - tx) * (1 - ty) + g[y0 * gw + x1] * tx * (1 - ty) +
         g[y1 * gw + x0] * (1 - tx) * ty + g[y1 * gw + x1] * tx * ty;
-      out[y * img.w + x] = (img.data[y * img.w + x] / bg) * 255;
+      out[y * img.w + x] = isBackground((x / B) | 0, (y / B) | 0) ? 255 : (img.data[y * img.w + x] / bg) * 255;
     }
   }
   return { w: img.w, h: img.h, data: out };
@@ -277,89 +302,230 @@ function textScore(text, confidence) {
   return sig * 10 + Math.min(20, words / 10) + (Number(confidence) || 0) / 5;
 }
 
+/* ------------------------------------------------------------------ */
+/* Geometry: one bilinear warp does rotation, deskew and scaling        */
+/* ------------------------------------------------------------------ */
+
 /**
- * Render a page (image file or PDF page) to gray pixels at a sensible
- * size, optionally rotated by `deg`.
+ * Rotate by `deg` (any angle) and scale by `scale`, sampling the ORIGINAL
+ * pixels bilinearly. MuPDF's own renderer upscales a photo block-by-block
+ * (nearest neighbour), which turns 9 px WhatsApp text into staircases
+ * Tesseract cannot read; smooth interpolation is what makes upscaling help
+ * instead of hurt.
  */
-function renderPage(mupdf, page, deg, targetLong) {
-  const b = page.getBounds();
-  const longPt = Math.max(b[2] - b[0], b[3] - b[1]);
-  const scale = Math.max(0.5, Math.min(4, targetLong / longPt));
-  const m = mupdf.Matrix.concat(mupdf.Matrix.scale(scale, scale), mupdf.Matrix.rotate(deg));
-  return grayFromPixmap(page.toPixmap(m, mupdf.ColorSpace.DeviceGray, false, true));
+function warp(img, deg, scale) {
+  const a = (deg * Math.PI) / 180;
+  const c = Math.cos(a), s = Math.sin(a);
+  const W = Math.max(1, Math.round((Math.abs(img.w * c) + Math.abs(img.h * s)) * scale));
+  const H = Math.max(1, Math.round((Math.abs(img.w * s) + Math.abs(img.h * c)) * scale));
+  const out = new Uint8ClampedArray(W * H);
+  const cx = img.w / 2, cy = img.h / 2, ox = W / 2, oy = H / 2;
+  const d = img.data, iw = img.w, ih = img.h;
+  // Shrinking a lot: average first so thin strokes don't alias away.
+  if (scale < 0.6) {
+    const f = Math.max(1, Math.floor(1 / scale));
+    if (f > 1) return warp(downsample(img, f), deg, scale * f);
+  }
+  for (let y = 0; y < H; y++) {
+    const dy = (y - oy) / scale;
+    for (let x = 0; x < W; x++) {
+      const dx = (x - ox) / scale;
+      const sx = dx * c + dy * s + cx;
+      const sy = -dx * s + dy * c + cy;
+      const x0 = Math.floor(sx), y0 = Math.floor(sy);
+      if (x0 < 0 || y0 < 0 || x0 >= iw - 1 || y0 >= ih - 1) { out[y * W + x] = 255; continue; }
+      const tx = sx - x0, ty = sy - y0, i = y0 * iw + x0;
+      out[y * W + x] = (d[i] * (1 - tx) + d[i + 1] * tx) * (1 - ty) + (d[i + iw] * (1 - tx) + d[i + iw + 1] * tx) * ty;
+    }
+  }
+  return { w: W, h: H, data: out };
 }
 
-/** How big the page should be for Tesseract: ~2200 px on the long side. */
-function targetLongFor(page) {
-  const b = page.getBounds();
-  const longPt = Math.max(b[2] - b[0], b[3] - b[1]);
-  // A small receipt photo or a WhatsApp-compressed 800 px image is
-  // upscaled; a 4000 px phone photo is brought down (faster, no loss).
-  const px = (longPt * 96) / 72;
-  if (px < 1800) return 2200;
-  if (px > 3200) return 2800;
-  return px;
+function crop(img, x0, y0, x1, y1) {
+  x0 = Math.max(0, Math.floor(x0)); y0 = Math.max(0, Math.floor(y0));
+  x1 = Math.min(img.w, Math.ceil(x1)); y1 = Math.min(img.h, Math.ceil(y1));
+  const w = Math.max(1, x1 - x0), h = Math.max(1, y1 - y0);
+  const out = new Uint8ClampedArray(w * h);
+  for (let y = 0; y < h; y++) out.set(img.data.subarray((y0 + y) * img.w + x0, (y0 + y) * img.w + x0 + w), y * w);
+  return { w, h, data: out };
 }
 
-async function recognizeImg(mupdf, img) {
+/**
+ * Erase the ruling lines of a table (Tally invoices are one big grid).
+ * Tesseract's layout analysis treats a boxed cell as a picture and
+ * silently drops the bold values inside it — the invoice number, the
+ * "Other References" and the vehicle number were exactly what went
+ * missing. Long horizontal / vertical dark runs are painted white.
+ */
+function removeLines(img) {
+  const t = Math.min(otsu(img), 180);
+  const minH = Math.max(40, Math.round(img.w / 22));
+  const minV = Math.max(40, Math.round(img.h / 22));
+  const kill = new Uint8Array(img.w * img.h);
+  const dark = (x, y) => img.data[y * img.w + x] < t;
+  for (let y = 0; y < img.h; y++) {
+    let run = 0;
+    for (let x = 0; x <= img.w; x++) {
+      if (x < img.w && dark(x, y)) { run++; continue; }
+      if (run >= minH) for (let k = x - run; k < x; k++) kill[y * img.w + k] = 1;
+      run = 0;
+    }
+  }
+  for (let x = 0; x < img.w; x++) {
+    let run = 0;
+    for (let y = 0; y <= img.h; y++) {
+      if (y < img.h && dark(x, y)) { run++; continue; }
+      if (run >= minV) for (let k = y - run; k < y; k++) kill[k * img.w + x] = 1;
+      run = 0;
+    }
+  }
+  const out = new Uint8ClampedArray(img.data);
+  for (let y = 1; y < img.h - 1; y++) {
+    for (let x = 1; x < img.w - 1; x++) {
+      const i = y * img.w + x;
+      // the line itself plus its anti-aliased fringe
+      if (kill[i] || kill[i - 1] || kill[i + 1] || kill[i - img.w] || kill[i + img.w]) out[i] = 255;
+    }
+  }
+  return { w: img.w, h: img.h, data: out };
+}
+
+/** A photo, decoded at its real pixel size (MuPDF's page view of an image is scaled by its DPI tag). */
+function decodeImage(mupdf, buffer) {
+  const image = new mupdf.Image(buffer);
+  return grayFromPixmap(image.toPixmap());
+}
+
+/** A PDF page rendered at roughly scanner resolution (~200 dpi). */
+function renderPdfPage(mupdf, page, longPx = 2300) {
+  const b = page.getBounds();
+  const longPt = Math.max(b[2] - b[0], b[3] - b[1]) || 842;
+  const scale = Math.max(0.5, Math.min(4, longPx / longPt));
+  return grayFromPixmap(page.toPixmap(mupdf.Matrix.scale(scale, scale), mupdf.ColorSpace.DeviceGray, false, true));
+}
+
+/**
+ * How much to enlarge: Tesseract reads best when lowercase letters are
+ * ~20-30 px tall. A whole A4 page in a WhatsApp photo (1000-1600 px)
+ * carries 8-10 px letters, so it is enlarged ~2.5x; a 4000 px camera
+ * original is left about as it is.
+ */
+function scaleFor(img) {
+  const long = Math.max(img.w, img.h);
+  const target = long < 1300 ? long * 3 : long < 2000 ? long * 2.2 : Math.min(3600, long * 1.25);
+  return Math.max(0.5, Math.min(3.2, Math.min(target, 3600) / long));
+}
+
+async function recognizeImg(mupdf, img, psm = 3) {
   const png = toPng(mupdf, img);
-  const r = await ocr.recognizeFull(png);
+  const r = await ocr.recognizeFull(png, { psm });
   return { ...r, score: textScore(r.text, r.confidence) };
 }
 
 /**
- * OCR one MuPDF page (an image document's page, or a scanned PDF page).
- * @returns {Promise<{text, confidence, rotation, skew, variant}>}
+ * Read the page in overlapping tiles (2 x 2, then 2 x 3 on tall pages),
+ * each as one block of text. Tesseract's whole-page layout analysis
+ * skips boxed table cells; a tile has no layout to get wrong, and a
+ * label and its value land on the same line ("Invoice No. BI26-27-HR0912")
+ * which is exactly how the field reader looks for them.
  */
-async function ocrMupdfPage(mupdf, page, options = {}) {
+async function readTiles(mupdf, img, budgetLeft) {
   const started = Date.now();
-  const target = options.targetLong || targetLongFor(page);
-  const first = renderPage(mupdf, page, 0, Math.min(target, 1400));
-  const layout = analyseLayout(first);
-
-  // Candidate orientations: the layout says upright-ish or sideways; the
-  // OCR decides which way up.
-  const quickTargets = layout.sideways ? [90, 270] : [0, 180];
-  let rotation = quickTargets[0];
-  let best = null;
-
-  const prepare = (deg, size) => stretch(flatten(renderPage(mupdf, page, deg - layout.skew, size)));
-
-  // Full-size read at the most likely orientation.
-  let fullImg = prepare(rotation, target);
-  best = { ...(await recognizeImg(mupdf, fullImg)), rotation, variant: "flattened" };
-
-  // Upside down / the other sideways way? Only checked when the first read
-  // is weak — a clean page doesn't pay for it.
-  const weak = (r) => r.score < 55 || r.confidence < 55;
-  if (weak(best)) {
-    for (const deg of [quickTargets[1], ...(layout.sideways ? [0, 180] : [90, 270])]) {
-      const quick = await recognizeImg(mupdf, prepare(deg, 1300));
-      if (quick.score > best.score + 8) {
-        const img = prepare(deg, target);
-        const full = await recognizeImg(mupdf, img);
-        const cand = full.score >= quick.score ? full : quick;
-        if (cand.score > best.score) { best = { ...cand, rotation: deg, variant: "flattened" }; fullImg = img; }
+  const rows = img.h > img.w * 1.2 ? 3 : 2;
+  const cols = 2;
+  const ov = 0.1;
+  const texts = [];
+  const confs = [];
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      if (Date.now() - started > budgetLeft) break;
+      const tile = crop(
+        img,
+        (c / cols - ov / 2) * img.w, (r / rows - ov / 2) * img.h,
+        ((c + 1) / cols + ov / 2) * img.w, ((r + 1) / rows + ov / 2) * img.h
+      );
+      try {
+        const t = await ocr.recognizeFull(toPng(mupdf, tile), { psm: 6 });
+        if (t.text && t.text.trim()) { texts.push(t.text.trim()); confs.push(t.confidence || 0); }
+      } catch {
+        /* one tile is not worth the page */
       }
-      if (!weak(best)) break;
-      if (Date.now() - started > (options.budgetMs || 45000)) break;
+    }
+  }
+  return {
+    text: texts.join("\n"),
+    confidence: confs.length ? confs.reduce((a, b) => a + b, 0) / confs.length : 0,
+  };
+}
+
+/**
+ * OCR one page given as gray pixels (a decoded photo or a rendered PDF page).
+ * @returns {Promise<{text, confidence, rotation, skew, variant, passes, ms}>}
+ */
+async function ocrGrayPage(mupdf, base, options = {}) {
+  const started = Date.now();
+  const budget = options.budgetMs || 75000;
+  const layout = analyseLayout(base);
+  const scale = options.scale || scaleFor(base);
+
+  const prepare = (deg, sc = scale) => stretch(flatten(warp(base, deg - layout.skew, sc)));
+
+  // Which way up? Decided on a central crop at full reading size — cheap,
+  // and unlike a shrunken whole page the letters are big enough to read.
+  const candidates = layout.sideways ? [90, 270, 0, 180] : [0, 180, 90, 270];
+  let rotation = candidates[0];
+  let page = prepare(rotation);
+  let first = await recognizeImg(mupdf, page, 3);
+  const weak = (r) => r.score < 55 || r.confidence < 55;
+  if (weak(first)) {
+    const probe = (img) => crop(img, img.w * 0.12, img.h * 0.1, img.w * 0.88, img.h * 0.55);
+    let bestProbe = await recognizeImg(mupdf, probe(page), 6);
+    for (const deg of candidates.slice(1)) {
+      if (Date.now() - started > budget * 0.5) break;
+      const img = prepare(deg);
+      const p = await recognizeImg(mupdf, probe(img), 6);
+      if (p.score > bestProbe.score + 6) { bestProbe = p; rotation = deg; page = img; }
+    }
+    if (rotation !== candidates[0]) first = await recognizeImg(mupdf, page, 3);
+  }
+
+  // Pass 2: table lines erased, read in tiles. Always run on anything that
+  // looks like a form (it is where the numbers are), unless pass 1 was
+  // already crisp and complete.
+  const passes = ["page"];
+  const parts = [first.text || ""];
+  let confidence = first.confidence || 0;
+  const crisp = first.confidence >= 85 && first.score >= 70;
+  if (!crisp && Date.now() - started < budget) {
+    const clean = removeLines(page);
+    const tiles = await readTiles(mupdf, clean, budget - (Date.now() - started));
+    if (tiles.text) {
+      parts.push(tiles.text);
+      passes.push("tiles");
+      confidence = Math.max(confidence, tiles.confidence);
+    }
+    // Pass 3: faint print / carbon copies — a hard black-and-white copy.
+    if (confidence < 60 && Date.now() - started < budget) {
+      const bin = await recognizeImg(mupdf, binarize(clean), 11);
+      if (bin.text && bin.text.trim()) { parts.push(bin.text); passes.push("binarised"); confidence = Math.max(confidence, bin.confidence); }
     }
   }
 
-  // Still unsure: a hard black-and-white copy often rescues faint print.
-  if (best.confidence < 70 && Date.now() - started < (options.budgetMs || 45000)) {
-    const bin = await recognizeImg(mupdf, binarize(fullImg));
-    if (bin.score > best.score + 2) best = { ...bin, rotation: best.rotation, variant: "binarised" };
-  }
-
+  const text = parts.filter((t) => t && t.trim()).join("\n\n----\n\n");
   return {
-    text: best.text || "",
-    confidence: Math.round(Number(best.confidence) || 0),
-    rotation: best.rotation % 360,
+    text,
+    confidence: Math.round(Number(confidence) || 0),
+    rotation: rotation % 360,
     skew: layout.skew,
-    variant: best.variant,
+    variant: passes.join("+"),
+    passes,
     ms: Date.now() - started,
   };
+}
+
+/** Back-compat: OCR one MuPDF page object. */
+async function ocrMupdfPage(mupdf, page, options = {}) {
+  return ocrGrayPage(mupdf, renderPdfPage(mupdf, page, options.targetLong || 2300), options);
 }
 
 /**
@@ -369,8 +535,8 @@ async function ocrMupdfPage(mupdf, page, options = {}) {
 async function ocrImage(buffer, mimeType, options = {}) {
   let kind = sniffMime(buffer, mimeType);
   // WebP / AVIF (and anything else MuPDF can't decode): convert to PNG
-  // with sharp when it is available in this install (its WebAssembly or
-  // native build), so these photos get the full clean-up too.
+  // with sharp when it is available in this install, so these photos get
+  // the full clean-up too.
   if (!MUPDF_IMAGE_TYPES[kind] && kind !== "image/heic" && kind !== "image/heif") {
     try {
       const sharp = require("sharp");
@@ -380,14 +546,18 @@ async function ocrImage(buffer, mimeType, options = {}) {
       /* Tesseract's own decoder below */
     }
   }
-  const mupdfType = MUPDF_IMAGE_TYPES[kind];
-  if (mupdfType) {
+  if (MUPDF_IMAGE_TYPES[kind]) {
     try {
       const mupdf = await loadMupdf();
-      const doc = mupdf.Document.openDocument(buffer, mupdfType);
-      const page = doc.loadPage(0);
-      const r = await ocrMupdfPage(mupdf, page, options);
-      return { ...r, method: r.rotation ? `image_ocr_rotated_${r.rotation}` : "image_ocr" };
+      let base;
+      try {
+        base = decodeImage(mupdf, buffer);
+      } catch {
+        const doc = mupdf.Document.openDocument(buffer, MUPDF_IMAGE_TYPES[kind]);
+        base = renderPdfPage(mupdf, doc.loadPage(0), 2000);
+      }
+      const r = await ocrGrayPage(mupdf, base, options);
+      return { ...r, method: r.rotation ? `image_ocr_rotated_${r.rotation}` : "image_ocr", width: base.w, height: base.h };
     } catch (err) {
       if (options.strict) throw err;
       /* fall through to Tesseract's own decoder */
@@ -431,7 +601,10 @@ async function ocrPdfPages(buffer, pageIndexes, options = {}) {
     if (i >= doc.countPages()) break;
     try {
       const page = doc.loadPage(i);
-      out.push({ index: i, ...(await ocrMupdfPage(mupdf, page, { ...options, targetLong: options.targetLong || 2400 })) });
+      // Rendered at ~200 dpi; a scanned page is then read at that size
+      // (scale 1.25) — the scanner already gave it readable letters.
+      const base = renderPdfPage(mupdf, page, options.targetLong || 2300);
+      out.push({ index: i, ...(await ocrGrayPage(mupdf, base, { ...options, scale: options.scale || 1.3 })) });
     } catch (err) {
       out.push({ index: i, text: "", confidence: 0, error: err.message });
     }
@@ -439,4 +612,4 @@ async function ocrPdfPages(buffer, pageIndexes, options = {}) {
   return out;
 }
 
-module.exports = { ocrImage, ocrPdfPages, sniffMime, analyseLayout, flatten, stretch, binarize, textScore, loadMupdf };
+module.exports = { ocrImage, ocrPdfPages, ocrGrayPage, ocrMupdfPage, sniffMime, analyseLayout, flatten, stretch, binarize, removeLines, warp, textScore, loadMupdf, decodeImage, toPng };
