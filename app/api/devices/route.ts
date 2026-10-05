@@ -7,6 +7,7 @@ import { loadBackups } from "@/lib/backup";
 import { loadState as loadBackupState } from "@/lib/backupEngine";
 import { DEVICE_COOKIE, heartbeat, loadDevices, command, forget } from "@/lib/devices";
 import { recordAudit } from "@/lib/audit";
+import { SESSION_COOKIE } from "@/lib/authToken";
 
 /**
  * POST {action:"heartbeat"} — any signed-in screen, once a minute.
@@ -58,10 +59,18 @@ export async function POST(req: NextRequest) {
 
   if (body?.action === "heartbeat") {
     const session = await getSession(req);
-    if (!session) return NextResponse.json({ error: "Please sign in." }, { status: 401 });
+    // A session that has ENDED (the developer's fresh-start reset, or the
+    // account is gone) — tell the device to go back to the sign-in page.
+    const hadToken = Boolean(req.cookies.get(SESSION_COOKIE)?.value || req.headers.get("authorization"));
+    if (!session) {
+      return hadToken
+        ? NextResponse.json({ signOut: true, reason: "Your session has ended. Please sign in again." })
+        : NextResponse.json({ error: "Please sign in." }, { status: 401 });
+    }
     const user = findById(session.uid);
     const id = String(body.deviceId || "").replace(/[^a-zA-Z0-9-]/g, "").slice(0, 64);
-    if (!user || !id) return NextResponse.json({ ok: false });
+    if (!user || user.deleted || !user.active) return NextResponse.json({ signOut: true });
+    if (!id) return NextResponse.json({ ok: false });
     const d = heartbeat({
       id, userId: user.id, userName: user.name, role: user.role, ip: clientIp(req),
       userAgent: req.headers.get("user-agent") || "", version: String(body.version || ""),

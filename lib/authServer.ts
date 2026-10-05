@@ -21,6 +21,7 @@ import { AccessOverride, effectivePermissions, featureBlocks } from "@/lib/acces
 import { SESSION_COOKIE, SessionPayload, verifySession, SERVER_PC_HEADER, isServerPcRequest } from "@/lib/authToken";
 import { serverReady, SERVER_NOT_READY_MESSAGE } from "@/lib/serverOwner";
 import { isBlocked, DEVICE_COOKIE } from "@/lib/devices";
+import { sessionsValidAfter } from "@/lib/sessionEpoch";
 
 export interface User {
   id: string;
@@ -161,16 +162,19 @@ export function publicUser(user: User) {
 
 /** Reads the session from the cookie, or from a bearer token. */
 export async function getSession(req: NextRequest): Promise<SessionPayload | null> {
+  // A fresh-start reset ends every session issued before it (lib/sessionEpoch).
+  const cutoff = sessionsValidAfter();
+  const live = (s: SessionPayload | null) => (s && (!cutoff || s.iat >= cutoff) ? s : null);
   const fromCookie = req.cookies.get(SESSION_COOKIE)?.value;
   if (fromCookie) {
-    const session = await verifySession(fromCookie);
+    const session = live(await verifySession(fromCookie));
     if (session) return session;
   }
   // The plant and coordinator apps talk to this server over the network
   // and cannot rely on a cookie, so a bearer token is accepted too.
   const header = req.headers.get("authorization") || "";
   if (header.toLowerCase().startsWith("bearer ")) {
-    return verifySession(header.slice(7).trim());
+    return live(await verifySession(header.slice(7).trim()));
   }
   return null;
 }

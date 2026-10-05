@@ -5,8 +5,9 @@ import { hasPermission } from "@/lib/permissions";
 import { loadEmployees } from "@/lib/payroll";
 import {
   loadLeave, saveLeave, LEAVE_TYPES, leaveSpec, balancesFor, workingDaysIn,
-  checkLeaveRequest, regionForEmployee, loadHolidays, LeaveRequest, LeaveType,
+  checkLeaveRequest, regionForEmployee, loadHolidays, LeaveRequest, LeaveType, regionLabel, localDate,
 } from "@/lib/leave";
+import { loadNotices, notifyLeaveDecision } from "@/lib/leaveNotify";
 import { recordAudit } from "@/lib/audit";
 import { effectivePermissions } from "@/lib/access";
 import { loadRules } from "@/lib/leave";
@@ -57,9 +58,50 @@ export async function GET(req: NextRequest) {
     ? all
     : all.filter((r) => r.employeeId === me?.id || r.raisedBy === user.id || staffIds.has(r.employeeId));
 
-  const month = req.nextUrl.searchParams.get("month") || new Date().toISOString().slice(0, 7);
+  const monthParam = req.nextUrl.searchParams.get("month") || "";
+  const month = /^\d{4}-\d{2}$/.test(monthParam) ? monthParam : new Date().toISOString().slice(0, 7);
+
+  // The developer and the admin keep the full management view; everyone
+  // else gets their own calendar.
+  const canManage = user.role === "developer" || user.role === "admin";
+  const myRegion = regionForEmployee(me?.plant || session.plant || null);
+  const allHolidays = [...loadHolidays()].sort((a, b) => a.date.localeCompare(b.date));
+  // Only the holidays that apply to this person's location.
+  const holidays = canManage ? allHolidays : allHolidays.filter((h) => h.regions.includes(myRegion));
+
+  // Who else is away — only within this person's own scope. An approver
+  // signed in for a plant sees that plant; a plant manager their staff;
+  // an ordinary employee nobody but themselves.
+  const scopePlant = session.plant || null;
+  const teamSource = canDecide
+    ? all.filter((r) => !scopePlant || r.plant === scopePlant)
+    : staff.length ? all.filter((r) => staffIds.has(r.employeeId)) : [];
+  const [y, m] = month.split("-").map(Number);
+  const windowFrom = localDate(new Date(y, m - 2, 1));
+  const windowTo = localDate(new Date(y, m + 1, 0));
+  const today = localDate(new Date());
+  const team = teamSource
+    .filter((r) => (r.status === "approved" || r.status === "pending") && r.employeeId !== me?.id)
+    .filter((r) => !(r.toDate < windowFrom && r.toDate < today) && !(r.fromDate > windowTo && r.fromDate > today))
+    .map((r) => ({
+      id: r.id, employeeName: r.employeeName, employeeCode: r.employeeCode, plant: r.plant,
+      type: r.type, fromDate: r.fromDate, toDate: r.toDate, days: r.days, status: r.status,
+    }));
+
+  const notices = loadNotices()
+    .filter((n) => canManage || n.regions.includes(myRegion))
+    .slice(0, canManage ? 8 : 5)
+    .map((n) => canManage ? n : { id: n.id, name: n.name, fromDate: n.fromDate, toDate: n.toDate, note: n.note, by: n.by, at: n.at });
 
   return NextResponse.json({
+    month,
+    canManage,
+    myRegion,
+    myRegionLabel: regionLabel(myRegion),
+    weekOffDays: loadRules().weekOffDays,
+    team,
+    showTeam: canDecide || staff.length > 0,
+    notices,
     requests: [...requests].sort((a, b) => b.raisedAt.localeCompare(a.raisedAt)),
     types: LEAVE_TYPES,
     canDecide,
@@ -69,7 +111,7 @@ export async function GET(req: NextRequest) {
       .map((e) => ({ id: e.id, name: e.name, code: e.code, plant: e.plant })),
     me: me ? { id: me.id, name: me.name, code: me.code, plant: me.plant } : null,
     balances: me ? balancesFor(me.id, month, all) : [],
-    holidays: loadHolidays(),
+    holidays,
     pending: all.filter((r) => r.status === "pending").length,
   });
 }
@@ -231,6 +273,10 @@ export async function PUT(req: NextRequest) {
   }
 
   saveLeave(all.map((r) => (r.id === request.id ? request : r)));
+  // The person hears the decision by email too (background; never blocks).
+  if (action === "approve" || action === "reject") {
+    try { notifyLeaveDecision(request); } catch { /* mail is a courtesy */ }
+  }
   recordAudit({
     action: `ATTENDANCE_LEAVE_${action.toUpperCase()}`,
     userId: user.id, userName: user.name, role: user.role,
