@@ -947,6 +947,72 @@ function wipeClientCache() {
   ]);
 }
 
+/**
+ * ACCOUNT DISABLED (resigned / terminated).
+ *
+ * The server answers any request made with a disabled account's session
+ * with 401 and the header `x-biome-account: disabled`. When this PC sees
+ * that, it wipes THIS APP'S OWN browser storage — cookies, localStorage,
+ * IndexedDB, Cache Storage, service workers, the HTTP cache — and loads
+ * the login page, which says "This account has been disabled by the
+ * administrator."
+ *
+ * What it never touches: anything outside the app's Chromium profile, and
+ * never the server's data folder (on the server PC that folder holds all
+ * company data; clearStorageData only clears browser storage). The
+ * remembered-device cookie (biome_known) is put back afterwards — the
+ * server has already removed the disabled person from it, and the other
+ * people who use this PC keep their MPIN sign-in.
+ */
+let accountWipeAt = 0;
+async function wipeForDisabledAccount() {
+  if (Date.now() - accountWipeAt < 5000) return; // one wipe per burst of refused requests
+  accountWipeAt = Date.now();
+  const ses = session.defaultSession;
+  const origin = appOrigin();
+  let keep = [];
+  try { keep = await ses.cookies.get({ name: "biome_known" }); } catch (_) {}
+  try {
+    await ses.clearStorageData({
+      storages: ["cookies", "localstorage", "indexdb", "websql", "filesystem", "cachestorage", "serviceworkers", "shadercache"],
+    });
+  } catch (_) {}
+  try { await ses.clearCache(); } catch (_) {}
+  for (const c of keep) {
+    try {
+      const url = `${origin.replace(/\/+$/, "")}${c.path || "/"}`;
+      await ses.cookies.set({
+        url, name: c.name, value: c.value, path: c.path, httpOnly: c.httpOnly, sameSite: c.sameSite,
+        ...(c.expirationDate ? { expirationDate: c.expirationDate } : {}),
+      });
+    } catch (_) {}
+  }
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try { mainWindow.loadURL(`${origin.replace(/\/+$/, "")}/login?disabled=1`); } catch (_) {}
+  }
+}
+
+ipcMain.handle("biome:accountDisabled", async () => {
+  await wipeForDisabledAccount();
+  return { ok: true };
+});
+
+/** Watches responses from the app's server for the disabled signal. */
+function watchForDisabledAccount() {
+  session.defaultSession.webRequest.onCompleted({ urls: ["http://*/*", "https://*/*"] }, (details) => {
+    try {
+      if (details.statusCode !== 401 && details.statusCode !== 403) return;
+      const h = details.responseHeaders || {};
+      const key = Object.keys(h).find((k) => k.toLowerCase() === "x-biome-account");
+      const v = key ? [].concat(h[key]).join(",") : "";
+      if (!v.includes("disabled")) return;
+      const origin = appOrigin().replace(/\/+$/, "");
+      if (!String(details.url || "").startsWith(origin)) return; // only our own server
+      wipeForDisabledAccount();
+    } catch (_) {}
+  });
+}
+
 /* ------------------------------------------------------------------ */
 /* Server PC: one instance, tray icon, start with Windows              */
 /* ------------------------------------------------------------------ */
@@ -1069,6 +1135,7 @@ app.whenReady().then(() => {
   // reload-and-bypass and "Toggle Developer Tools".
   if (app.isPackaged) Menu.setApplicationMenu(null);
   wipeClientCache();
+  watchForDisabledAccount();
   if (SYNC.mode === "server") {
     createTray();
     // Re-applied every start so a moved install keeps starting with Windows.

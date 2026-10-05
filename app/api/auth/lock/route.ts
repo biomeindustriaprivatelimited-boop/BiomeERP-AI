@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSession } from "@/lib/authServer";
+import { getSession, signedOutResponse } from "@/lib/authServer";
 import { LOCK_COOKIE } from "@/lib/mpin";
 
 export const runtime = "nodejs";
@@ -12,7 +12,7 @@ export const dynamic = "force-dynamic";
  */
 export async function POST(req: NextRequest) {
   const s = await getSession(req);
-  if (!s) return NextResponse.json({ error: "Please sign in." }, { status: 401 });
+  if (!s) return signedOutResponse(req);
   const res = NextResponse.json({ ok: true, locked: true });
   res.cookies.set(LOCK_COOKIE, "1", { httpOnly: true, sameSite: "lax", path: "/", maxAge: 400 * 24 * 60 * 60 });
   return res;

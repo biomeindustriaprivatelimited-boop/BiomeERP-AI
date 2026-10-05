@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Portal from "@/components/Portal";
-import { UserPlus, Loader2, AlertCircle, ShieldCheck, KeyRound, Factory, Pencil, Trash2, X } from "lucide-react";
+import { UserPlus, Loader2, AlertCircle, ShieldCheck, KeyRound, Factory, Pencil, Trash2, X, Ban, RotateCcw } from "lucide-react";
 import { ROLES, Role } from "@/lib/permissions";
 import { usePlants } from "@/lib/usePlants";
 import { useSession } from "@/lib/session";
@@ -17,7 +17,14 @@ interface ListedUser {
   mustChangePassword: boolean;
   designation?: string;
   department?: string;
+  email?: string;
+  disabledAt?: string;
+  disabledReason?: string;
+  disabledNote?: string;
+  disabledBy?: string;
 }
+
+const DISABLE_REASONS = ["Resigned", "Terminated", "Other"] as const;
 
 const BLANK = {
   username: "",
@@ -30,6 +37,8 @@ const BLANK = {
   // in a report grouped by department, and on this screen.
   designation: "",
   department: "",
+  // Where "your case has been registered" and other updates are emailed.
+  email: "",
 };
 
 export default function UsersPage() {
@@ -42,7 +51,9 @@ export default function UsersPage() {
   const [form, setForm] = useState({ ...BLANK });
   const [saving, setSaving] = useState(false);
   /** The account currently being edited, held separately from the list. */
-  const [editing, setEditing] = useState<{ id: string; username: string; name: string } | null>(null);
+  const [editing, setEditing] = useState<{ id: string; username: string; name: string; email: string } | null>(null);
+  /** The account being disabled — the dialog asks why. */
+  const [disabling, setDisabling] = useState<{ user: ListedUser; reason: string; note: string; busy: boolean } | null>(null);
   /** Designations and departments as Organisation defines them. */
   const [org, setOrg] = useState<{ designations: { id: string; name: string; active: boolean }[]; departments: { id: string; name: string; active: boolean }[] }>({ designations: [], departments: [] });
 
@@ -250,6 +261,15 @@ export default function UsersPage() {
               ))}
             </select>
           </Field>
+          <Field label="Email (for case updates)">
+            <input
+              type="email"
+              value={form.email}
+              onChange={(e) => setForm({ ...form, email: e.target.value })}
+              placeholder="name@example.com"
+              className={inputClass}
+            />
+          </Field>
           <Field label="Temporary password">
             <input
               type="text"
@@ -327,16 +347,61 @@ export default function UsersPage() {
               <Field label="Username">
                 <input value={editing.username} onChange={(e) => setEditing({ ...editing, username: e.target.value })} className={inputClass} />
               </Field>
+              <Field label="Email (for case updates)">
+                <input type="email" value={editing.email} onChange={(e) => setEditing({ ...editing, email: e.target.value })} placeholder="name@example.com" className={inputClass} />
+              </Field>
             </div>
 
             <button
               onClick={async () => {
-                await patch(editing.id, { name: editing.name, username: editing.username });
+                await patch(editing.id, { name: editing.name, username: editing.username, email: editing.email });
                 setEditing(null);
               }}
               className="bmx-btn mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-biome-leaf px-4 py-2.5 text-[11.5px] font-bold text-white"
             >
               <ShieldCheck size={14} /> Save
+            </button>
+          </div>
+        </div></Portal>
+      )}
+
+      {disabling && (
+        <Portal><div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm" onClick={() => !disabling.busy && setDisabling(null)}>
+          <div data-testid="disable-dialog" className="bmx-panel-in w-full max-w-[440px] rounded-2xl border border-biome-line bg-biome-bgSoft p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start justify-between">
+              <div>
+                <h3 className="text-[15px] font-semibold text-biome-text">Disable {disabling.user.name}?</h3>
+                <p className="mt-0.5 text-[11px] leading-relaxed text-biome-muted">
+                  They are signed out at once on every PC and phone, cannot sign in or use their MPIN again,
+                  and the app on their PC clears its own local copy the next time it reaches the server.
+                  Company data on the server is not touched. You can re-enable the account later.
+                </p>
+              </div>
+              <button onClick={() => setDisabling(null)} className="bmx-toggle rounded-lg p-1.5 text-biome-muted hover:text-biome-text">
+                <X size={15} />
+              </button>
+            </div>
+            <div className="mt-4 space-y-3">
+              <Field label="Reason">
+                <select data-testid="disable-reason" value={disabling.reason} onChange={(e) => setDisabling({ ...disabling, reason: e.target.value })} className={inputClass}>
+                  {DISABLE_REASONS.map((r) => <option key={r} value={r}>{r}</option>)}
+                </select>
+              </Field>
+              <Field label={disabling.reason === "Other" ? "Note (required)" : "Note (optional)"}>
+                <input data-testid="disable-note" value={disabling.note} onChange={(e) => setDisabling({ ...disabling, note: e.target.value })} placeholder="e.g. Last working day 30 Sep" className={inputClass} />
+              </Field>
+            </div>
+            <button
+              data-testid="disable-confirm"
+              disabled={disabling.busy || (disabling.reason === "Other" && !disabling.note.trim())}
+              onClick={async () => {
+                setDisabling({ ...disabling, busy: true });
+                await patch(disabling.user.id, { active: false, disabledReason: disabling.reason, disabledNote: disabling.note.trim() });
+                setDisabling(null);
+              }}
+              className="bmx-btn mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-rose-600 px-4 py-2.5 text-[11.5px] font-bold text-white disabled:opacity-50"
+            >
+              {disabling.busy ? <Loader2 size={14} className="animate-spin" /> : <Ban size={14} />} Disable account
             </button>
           </div>
         </div></Portal>
@@ -370,7 +435,15 @@ export default function UsersPage() {
                     {u.department && ` · ${u.department}`}
                     {u.plants.length > 0 && ` · ${u.plants.join(", ")}`}
                     {u.mustChangePassword && " · password not set yet"}
+                    {u.email && ` · ${u.email}`}
                   </p>
+                  {!u.active && (
+                    <p className="mt-0.5 text-[10.5px] font-semibold text-rose-500">
+                      Disabled{u.disabledReason ? ` — ${u.disabledReason}` : ""}{u.disabledNote ? `: ${u.disabledNote}` : ""}
+                      {u.disabledAt && ` · ${new Date(u.disabledAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}`}
+                      {u.disabledBy && ` · by ${u.disabledBy}`}
+                    </p>
+                  )}
                 </div>
 
                 <select
@@ -411,7 +484,7 @@ export default function UsersPage() {
                 </div>
 
                 <button
-                  onClick={() => setEditing({ id: u.id, username: u.username, name: u.name })}
+                  onClick={() => setEditing({ id: u.id, username: u.username, name: u.name, email: u.email || "" })}
                   className="flex items-center gap-1.5 rounded-lg border border-biome-line px-2.5 py-1.5 text-[10.5px] font-semibold text-biome-muted transition hover:text-biome-text"
                 >
                   <Pencil size={12} /> Edit
@@ -424,12 +497,25 @@ export default function UsersPage() {
                   <KeyRound size={12} /> Reset
                 </button>
 
-                <button
-                  onClick={() => patch(u.id, { active: !u.active })}
-                  className="rounded-lg border border-biome-line px-2.5 py-1.5 text-[10.5px] font-semibold text-biome-muted transition hover:text-biome-text"
-                >
-                  {u.active ? "Disable" : "Enable"}
-                </button>
+                {u.id !== me?.id && (u.active ? (
+                  <button
+                    data-testid={`disable-${u.username}`}
+                    onClick={() => setDisabling({ user: u, reason: "Resigned", note: "", busy: false })}
+                    className="flex items-center gap-1.5 rounded-lg border border-rose-500/30 px-2.5 py-1.5 text-[10.5px] font-semibold text-rose-500 transition hover:bg-rose-500/10"
+                  >
+                    <Ban size={12} /> Disable
+                  </button>
+                ) : (
+                  <button
+                    data-testid={`enable-${u.username}`}
+                    onClick={() => {
+                      if (window.confirm(`Re-enable ${u.name}? They can sign in again with their password (old sessions stay signed out).`)) patch(u.id, { active: true });
+                    }}
+                    className="flex items-center gap-1.5 rounded-lg border border-emerald-500/35 px-2.5 py-1.5 text-[10.5px] font-semibold text-emerald-600 transition hover:bg-emerald-500/10"
+                  >
+                    <RotateCcw size={12} /> Re-enable
+                  </button>
+                ))}
 
                 {u.id !== me?.id && (
                   <button

@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSession, findById, publicUser } from "@/lib/authServer";
+import { getSession, findById, publicUser, readSessionToken, sessionAccountDisabled } from "@/lib/authServer";
 import { permissionsFor } from "@/lib/permissions";
 import { effectivePermissions, inactiveSwitches } from "@/lib/access";
 import { SERVER_PC_HEADER, SESSION_COOKIE, SERVER_PC_DEVELOPER_TTL_SECONDS, isServerPcRequest, signSession } from "@/lib/authToken";
 import { serverReady, setServerOwner } from "@/lib/serverOwner";
+import { disabledResponseFor } from "@/lib/mpin";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,11 +20,17 @@ export const dynamic = "force-dynamic";
  */
 export async function GET(req: NextRequest) {
   const session = await getSession(req);
-  if (!session) return NextResponse.json({ user: null, plant: null, permissions: [] });
+  if (!session) {
+    // A token that belongs to a disabled account gets the wipe signal, so
+    // the desktop app / phone clears its local copy and shows why.
+    const raw = await readSessionToken(req);
+    if (raw && sessionAccountDisabled(raw)) return disabledResponseFor(req, raw.uid);
+    return NextResponse.json({ user: null, plant: null, permissions: [] });
+  }
 
   const user = findById(session.uid);
   if (!user || !user.active) {
-    return NextResponse.json({ user: null, plant: null, permissions: [] });
+    return disabledResponseFor(req, session.uid);
   }
 
   // The developer already signed in on the server PC (a sign-in from

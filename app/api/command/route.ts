@@ -17,7 +17,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 async function me(req: NextRequest) {
-  const auth = await requirePermission(req, "work");
+  const auth = await requirePermission(req, "command");
   if ("response" in auth) return { auth, user: null as any };
   const u = findById(auth.session.uid)!;
   return { auth, user: { id: u.id, name: u.name, role: u.role, plant: auth.session.plant ?? null } };

@@ -1,7 +1,8 @@
 import os from "os";
 import fs from "fs";
 import { NextRequest, NextResponse } from "next/server";
-import { getSession, findById, requirePermission, loadUsers, saveUsers } from "@/lib/authServer";
+import { getSession, findById, requirePermission, loadUsers, saveUsers, signedOutResponse, readSessionToken, sessionAccountDisabled } from "@/lib/authServer";
+import { disabledResponseFor } from "@/lib/mpin";
 import { paths } from "@/lib/dataRoot";
 import { loadBackups } from "@/lib/backup";
 import { loadState as loadBackupState } from "@/lib/backupEngine";
@@ -58,7 +59,11 @@ export async function POST(req: NextRequest) {
 
   if (body?.action === "heartbeat") {
     const session = await getSession(req);
-    if (!session) return NextResponse.json({ error: "Please sign in." }, { status: 401 });
+    if (!session) {
+      const raw = await readSessionToken(req);
+      if (raw && sessionAccountDisabled(raw)) return disabledResponseFor(req, raw.uid);
+      return signedOutResponse(req);
+    }
     const user = findById(session.uid);
     const id = String(body.deviceId || "").replace(/[^a-zA-Z0-9-]/g, "").slice(0, 64);
     if (!user || !id) return NextResponse.json({ ok: false });

@@ -118,7 +118,7 @@ export const FEATURE_MAP: FeatureCategory[] = [
   {
     id: "command", label: "Command Center", tagline: "What needs attention today — decided, not searched.", icon: "Radar", tone: "from-lime-400/25 to-yellow-300/10",
     features: [
-      { id: "command", label: "Command Center", href: "/command", icon: "Radar", perm: "work", what: "Problem → context → impact → action, from every module; health index, briefing, risks." },
+      { id: "command", label: "Command Center", href: "/command", icon: "Radar", perm: "command", what: "Problem → context → impact → action, from every module; health index, briefing, risks." },
       { id: "decisions", label: "Decision Room", href: "/decisions", icon: "Gavel", perm: "developer", what: "Only what needs a human: approve, reject, send back." },
       { id: "work", label: "Work planner", href: "/work", icon: "Sparkles", perm: "developer", what: "Auto-detected tasks with why and next action; autopilot; automations." },
       { id: "insights", label: "Insights", href: "/insights", icon: "Activity", perm: "developer", what: "Health score, anomalies, predictions, cash flow, performance." },

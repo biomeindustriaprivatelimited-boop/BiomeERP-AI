@@ -16,7 +16,7 @@
  */
 import crypto from "crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { loadUsers, saveUsers, findById, User } from "@/lib/authServer";
+import { loadUsers, saveUsers, findById, User, accountDisabledResponse } from "@/lib/authServer";
 import { signToken, verifyToken } from "@/lib/authToken";
 
 export const KNOWN_COOKIE = "biome_known";
@@ -157,4 +157,26 @@ export async function rememberOnDevice(req: NextRequest, res: NextResponse, uid:
   const fresh: KnownTok = { uid, mv: u.mpinVersion || 0, iat: Math.floor(Date.now() / 1000) };
   const tokens = await Promise.all([fresh, ...keep].slice(0, KNOWN_MAX).map((k) => signToken(k as unknown as Record<string, unknown>)));
   res.cookies.set(KNOWN_COOKIE, tokens.join("~"), { httpOnly: true, sameSite: "lax", path: "/", maxAge: KNOWN_TTL_SECONDS });
+}
+
+/**
+ * Forget `uid` on this device: drops their entry from the remembered-
+ * people cookie (others on the same PC keep theirs). Used when the
+ * account is disabled, so the MPIN sign-in for them disappears here.
+ */
+export async function forgetOnDevice(req: NextRequest, res: NextResponse, uid: string): Promise<void> {
+  const keep = (await readKnown(req)).filter((k) => k.uid !== uid);
+  if (!keep.length) {
+    res.cookies.set(KNOWN_COOKIE, "", { httpOnly: true, sameSite: "lax", path: "/", maxAge: 0 });
+    return;
+  }
+  const tokens = await Promise.all(keep.slice(0, KNOWN_MAX).map((k) => signToken(k as unknown as Record<string, unknown>)));
+  res.cookies.set(KNOWN_COOKIE, tokens.join("~"), { httpOnly: true, sameSite: "lax", path: "/", maxAge: KNOWN_TTL_SECONDS });
+}
+
+/** ACCOUNT_DISABLED answer that also forgets `uid` on this device. */
+export async function disabledResponseFor(req: NextRequest, uid: string | null | undefined): Promise<NextResponse> {
+  const res = accountDisabledResponse();
+  if (uid) await forgetOnDevice(req, res, uid);
+  return res;
 }

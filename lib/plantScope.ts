@@ -16,7 +16,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { getSession, findById } from "@/lib/authServer";
+import { getSession, findById, signedOutResponse } from "@/lib/authServer";
 import { hasPermission } from "@/lib/permissions";
 import { slugForCode, codeForSlug, allSlugs } from "@/lib/plantRegistry";
 
@@ -57,7 +57,7 @@ export async function resolvePlantScope(
 ): Promise<{ scope: PlantScope } | { response: NextResponse }> {
   const session = await getSession(req);
   if (!session) {
-    return { response: NextResponse.json({ error: "Please sign in." }, { status: 401 }) };
+    return { response: await signedOutResponse(req) };
   }
   const user = findById(session.uid);
   if (!user || !user.active) {

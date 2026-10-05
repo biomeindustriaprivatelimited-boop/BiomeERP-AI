@@ -171,6 +171,52 @@ export default function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
       ),
   })).filter((section) => section.items.length > 0);
 
+  /**
+   * Exactly ONE item is lit — the best match for the page you are on.
+   *
+   * Each item used to decide for itself whether it was "active", so a page
+   * that sits in two categories (Vendor & Client Registration is in both
+   * Plant and Partners) or a prefix that matched more than one entry lit
+   * two rows at once. Now every item scores how specifically it matches
+   * (the length of the longest href that covers the path) and only the
+   * highest score wins. On a tie, the category the person last clicked
+   * wins, so the highlight stays where they came from.
+   */
+  const bare = (href: string) => (href || "").split(/[?#]/)[0].replace(/\/+$/, "") || "/";
+  const covers = (raw: string) => {
+    if (!raw) return false;
+    const href = bare(raw);
+    return pathname === href || (href !== "/" && pathname.startsWith(href + "/"));
+  };
+  const scoreFor = (item: NavItem): number => {
+    let best = covers(item.href) ? bare(item.href).length + (pathname === bare(item.href) ? 1000 : 0) : -1;
+    const cat = item.categoryId ? FEATURE_MAP.find((c) => c.id === item.categoryId) : null;
+    if (cat) {
+      for (const f of visibleFeatures(cat.features, visible)) {
+        for (const h of [f.href, ...((f.children || []).map((k) => k.href))]) {
+          if (covers(h)) best = Math.max(best, bare(h).length + (pathname === bare(h) ? 500 : 0));
+        }
+      }
+    }
+    return best;
+  };
+  let lastCat: string | null = null;
+  try { lastCat = typeof window !== "undefined" ? sessionStorage.getItem("biome:navCat") : null; } catch { /* no storage */ }
+  let activeKey: string | null = null;
+  let activeScore = -1;
+  for (const section of sections) {
+    for (const item of section.items) {
+      const sc = scoreFor(item);
+      if (sc < 0) continue;
+      const key = item.categoryId ? `cat:${item.categoryId}` : item.href;
+      if (sc > activeScore || (sc === activeScore && item.categoryId && item.categoryId === lastCat)) {
+        activeScore = sc;
+        activeKey = key;
+      }
+    }
+  }
+  const isActiveItem = (item: NavItem) => (item.categoryId ? `cat:${item.categoryId}` : item.href) === activeKey;
+
   return (
     <aside
       className={`forest-rail sticky top-0 h-screen shrink-0 flex-col transition-[width] duration-300 ${
@@ -204,7 +250,7 @@ export default function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
           // dropdown — there is nothing to label the toggle with.
           const collapsible = Boolean(section.title) && !collapsed;
           const isOpen = collapsible ? openSections[key] !== false : true;
-          const activeInside = section.items.some((i) => i.href === pathname);
+          const activeInside = section.items.some((i) => isActiveItem(i));
 
           return (
             <div key={`${key}-${sectionIndex}`}>
@@ -254,9 +300,7 @@ export default function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
                       ? "space-y-0.5 rounded-2xl border border-[#9fe870]/10 bg-white/[.03] p-1"
                       : "space-y-0.5"}>
                       {section.items.flatMap((item) => {
-                        const cat = item.categoryId ? FEATURE_MAP.find((c) => c.id === item.categoryId) : null;
-                        const inside = cat ? cat.features.some((f) => pathname === f.href || pathname.startsWith(f.href + "/") || (f.children || []).some((k) => pathname === k.href || pathname.startsWith(k.href + "/"))) : false;
-                        const active = pathname === item.href || inside;
+                        const active = isActiveItem(item);
                         const Icon = item.icon;
                         const kids = item.children || [];
                         const branchOpen = kids.some((k) => pathname === k.href) || active || openBranches[item.href];
@@ -270,6 +314,7 @@ export default function Sidebar({ drawer = false }: { drawer?: boolean } = {}) {
                             animate={{ opacity: 1, x: 0 }}
                             transition={{ delay: Math.min(section.items.indexOf(item) * 0.03, 0.24), duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
                             title={collapsed ? item.label : undefined}
+                            onClick={() => { try { if (item.categoryId) sessionStorage.setItem("biome:navCat", item.categoryId); } catch { /* no storage */ } }}
                             className={`rail-item group relative flex items-center gap-2.5 px-2.5 py-2 transition-colors ${
                               active ? "is-active" : ""
                             }`}

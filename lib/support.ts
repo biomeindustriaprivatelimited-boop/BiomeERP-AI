@@ -41,9 +41,9 @@ export type Status =
   | "resolved" | "rejected" | "closed";
 
 export const STATUS_FLOW: { id: Status; label: string; detail: string; step: number }[] = [
-  { id: "submitted", label: "Received", detail: "Your message has reached accounts and the admin.", step: 1 },
+  { id: "submitted", label: "Received", detail: "Your case is registered and has reached the admin and the developer.", step: 1 },
   { id: "accepted", label: "Accepted", detail: "Someone has picked this up and is looking into it.", step: 2 },
-  { id: "pending_admin", label: "With the admin", detail: "Referred upward — waiting on a decision.", step: 3 },
+  { id: "pending_admin", label: "Escalated", detail: "Escalated — waiting on a decision.", step: 3 },
   { id: "reopened", label: "Reopened", detail: "The earlier answer did not sort it. Back with the desk.", step: 3 },
   { id: "resolved", label: "Resolved", detail: "Sorted, with the outcome written below.", step: 4 },
   { id: "rejected", label: "Not accepted", detail: "Looked at and declined, with the reason written below.", step: 4 },
@@ -63,12 +63,38 @@ export const STATUS_FLOW: { id: Status; label: string; detail: string; step: num
  * always generated, never the browser's, because an uploaded name can
  * contain path separators and walk out of the folder.
  */
-const ALLOWED_TYPES = new Set([
-  "image/jpeg", "image/png", "image/webp", "image/heic", "application/pdf",
-]);
+/**
+ * What may be attached, by file extension. The browser's MIME type is
+ * checked too, but it is not trusted on its own: Windows often reports a
+ * .csv as "application/vnd.ms-excel", a phone photo as "" and an old .doc
+ * as "application/octet-stream". The extension decides the KIND; the
+ * stored content type comes from this table, never from the browser, so a
+ * file can never be served back as something it was not uploaded as.
+ */
+export const ATTACHMENT_KINDS: Record<string, { type: string; kind: "image" | "pdf" | "excel" | "word" }> = {
+  jpg: { type: "image/jpeg", kind: "image" },
+  jpeg: { type: "image/jpeg", kind: "image" },
+  png: { type: "image/png", kind: "image" },
+  webp: { type: "image/webp", kind: "image" },
+  gif: { type: "image/gif", kind: "image" },
+  heic: { type: "image/heic", kind: "image" },
+  pdf: { type: "application/pdf", kind: "pdf" },
+  xls: { type: "application/vnd.ms-excel", kind: "excel" },
+  xlsx: { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", kind: "excel" },
+  csv: { type: "text/csv", kind: "excel" },
+  doc: { type: "application/msword", kind: "word" },
+  docx: { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", kind: "word" },
+};
 
-export const MAX_TICKET_ATTACHMENT_BYTES = 12 * 1024 * 1024;
-export const MAX_TICKET_ATTACHMENTS = 5;
+/** For the file picker's `accept` attribute. */
+export const ATTACHMENT_ACCEPT = Object.keys(ATTACHMENT_KINDS).map((e) => "." + e).join(",") + ",image/*,application/pdf";
+
+export const MAX_TICKET_ATTACHMENT_BYTES = 15 * 1024 * 1024;
+export const MAX_TICKET_ATTACHMENT_MB = 15;
+/** Files in one message (the first message, or one follow-up). */
+export const MAX_FILES_PER_MESSAGE = 10;
+/** Files across the whole case. */
+export const MAX_TICKET_ATTACHMENTS = 40;
 
 export interface TicketAttachment {
   id: string;
@@ -80,14 +106,24 @@ export interface TicketAttachment {
   uploadedAt: string;
   uploadedBy: string;
   uploadedByName: string;
+  /** The follow-up message this file came with; absent = the first message. */
+  replyId?: string;
 }
 
-export function ticketAttachmentAllowed(type: string, size: number): string | null {
-  if (!ALLOWED_TYPES.has(type)) {
-    return "Attach a photo (JPG, PNG, WEBP) or a PDF. A screenshot of the screen is usually the most useful thing.";
+export function attachmentExt(name: string): string {
+  const m = /\.([a-zA-Z0-9]{1,6})$/.exec(String(name || "").trim());
+  return m ? m[1].toLowerCase() : "";
+}
+
+/** Null when the file may be attached, otherwise the sentence to show. */
+export function ticketAttachmentAllowed(name: string, size: number): string | null {
+  const ext = attachmentExt(name);
+  if (!ATTACHMENT_KINDS[ext]) {
+    return `"${name}" can't be attached. Allowed: photos (JPG, PNG, WEBP, HEIC, GIF), PDF, Excel (XLS, XLSX, CSV) and Word (DOC, DOCX).`;
   }
+  if (size <= 0) return `"${name}" is empty.`;
   if (size > MAX_TICKET_ATTACHMENT_BYTES) {
-    return "That file is over 12 MB. A phone photo of the screen is plenty.";
+    return `"${name}" is ${(size / 1024 / 1024).toFixed(1)} MB — the limit is ${MAX_TICKET_ATTACHMENT_MB} MB per file. Compress it, or split it into smaller files.`;
   }
   return null;
 }

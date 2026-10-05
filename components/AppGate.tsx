@@ -17,6 +17,7 @@ import FeatureShell from "@/components/FeatureShell";
 import { Particles, Ripples } from "@/components/fx";
 import DeviceHeartbeat from "@/components/DeviceHeartbeat";
 import IdleLock from "@/components/IdleLock";
+import SupportUpdates from "@/components/SupportUpdates";
 import { NotificationsProvider } from "@/lib/notifications";
 import { SessionProvider, useSession } from "@/lib/session";
 
@@ -107,7 +108,7 @@ function Gate({ children }: { children: React.ReactNode }) {
       <ServerGuard>
         <DeviceHeartbeat />
         <IdleLock minutes={user?.autoLockMinutes || 0} />
-        <NotificationsProvider>{children}</NotificationsProvider>
+        <NotificationsProvider><SupportUpdates />{children}</NotificationsProvider>
       </ServerGuard>
     );
   }
@@ -121,6 +122,7 @@ function Gate({ children }: { children: React.ReactNode }) {
       <DeviceHeartbeat />
       <IdleLock minutes={user?.autoLockMinutes || 0} />
       <NotificationsProvider>
+        <SupportUpdates />
         <div className="flex h-screen overflow-hidden">
           <Sidebar />
           <MobileNavDrawer />

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSession, findById, verifyPassword } from "@/lib/authServer";
-import { LOCK_COOKIE, checkMpin, hasMpin, resetMpinFails } from "@/lib/mpin";
+import { getSession, findById, verifyPassword, readSessionToken, sessionAccountDisabled } from "@/lib/authServer";
+import { LOCK_COOKIE, checkMpin, hasMpin, resetMpinFails, disabledResponseFor } from "@/lib/mpin";
 import { lockedFor, noteFail, clearLock } from "@/lib/loginLock";
 import { recordAudit } from "@/lib/audit";
 
@@ -11,7 +11,11 @@ export const dynamic = "force-dynamic";
 export async function POST(req: NextRequest) {
   const s = await getSession(req);
   const u = s ? findById(s.uid) : undefined;
-  if (!s || !u || !u.active) return NextResponse.json({ error: "Please sign in.", code: "SIGNED_OUT" }, { status: 401 });
+  if (!s || !u || !u.active) {
+    const raw = await readSessionToken(req);
+    if (raw && sessionAccountDisabled(raw)) return disabledResponseFor(req, raw.uid);
+    return NextResponse.json({ error: "Please sign in.", code: "SIGNED_OUT" }, { status: 401 });
+  }
   const b = await req.json().catch(() => ({} as any));
   const key = "unlock:" + u.id;
   const wait = lockedFor(key);

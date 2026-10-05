@@ -6,6 +6,7 @@ import {
   saveUsers,
   verifyPassword,
   makeCredentials,
+  signedOutResponse,
 } from "@/lib/authServer";
 
 export const runtime = "nodejs";
@@ -14,7 +15,7 @@ export const dynamic = "force-dynamic";
 /** Anyone signed in can change their own password; nobody else's. */
 export async function POST(req: NextRequest) {
   const session = await getSession(req);
-  if (!session) return NextResponse.json({ error: "Please sign in." }, { status: 401 });
+  if (!session) return signedOutResponse(req);
 
   const body = await req.json().catch(() => null);
   if (!body) return NextResponse.json({ error: "Invalid request body." }, { status: 400 });

@@ -7,7 +7,7 @@
  * Server only.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { publicUser, User } from "@/lib/authServer";
+import { publicUser, User, accountDisabledResponse } from "@/lib/authServer";
 import {
   SESSION_COOKIE, SESSION_TTL_SECONDS, SERVER_PC_DEVELOPER_TTL_SECONDS, SERVER_PC_HEADER,
   isServerPcRequest, signSession,
@@ -15,7 +15,7 @@ import {
 import { effectivePermissions } from "@/lib/access";
 import { recordAudit } from "@/lib/audit";
 import { serverReady, setServerOwner, SERVER_NOT_READY_MESSAGE } from "@/lib/serverOwner";
-import { rememberOnDevice, LOCK_COOKIE } from "@/lib/mpin";
+import { rememberOnDevice, forgetOnDevice, LOCK_COOKIE } from "@/lib/mpin";
 
 export async function issueSession(
   req: NextRequest,
@@ -23,8 +23,17 @@ export async function issueSession(
   plantWanted: string | null,
   how: "password" | "mpin"
 ): Promise<NextResponse> {
-  if (!user.active) {
-    return NextResponse.json({ error: "This account has been disabled." }, { status: 403 });
+  if (!user.active || user.deleted) {
+    // Same answer as a live session of a disabled account gets: the code
+    // tells the app to wipe its local copy; the known-device entry (MPIN
+    // sign-in) for this person is dropped from this device.
+    recordAudit({
+      action: "LOGIN_FAILED", userId: user.id, userName: user.name, role: user.role,
+      outcome: "failed", errorMessage: "Account disabled",
+    });
+    const res = accountDisabledResponse();
+    await forgetOnDevice(req, res, user.id);
+    return res;
   }
 
   // The plant is not a free choice. A user may only sign in as a plant

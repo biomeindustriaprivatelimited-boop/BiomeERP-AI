@@ -101,6 +101,13 @@ class MainActivity : AppCompatActivity() {
                 swipe.isRefreshing = false
                 // Keep the sign-in across app restarts.
                 CookieManager.getInstance().flush()
+                // The server disabled this account (resigned / terminated):
+                // the page has already cleared its own storage; also drop
+                // the WebView's cache and web storage for this app.
+                if (url != null && url.contains("/login?disabled=1")) {
+                    android.webkit.WebStorage.getInstance().deleteAllData()
+                    view?.clearCache(true)
+                }
             }
 
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {

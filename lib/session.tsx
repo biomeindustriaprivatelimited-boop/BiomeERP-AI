@@ -3,6 +3,12 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { Permission, Role } from "@/lib/permissions";
 import { permissionForPath } from "@/lib/permissions";
+import { installAccountGuard } from "@/lib/accountGuard";
+
+// Watch every request for "this account has been disabled" from the very
+// first one (/api/auth/me below), so a disabled account's device wipes
+// the app's local data and lands on the login screen with the reason.
+installAccountGuard();
 
 /** A module the developer has frozen ("readonly") or switched off. */
 export interface InactiveSwitch {

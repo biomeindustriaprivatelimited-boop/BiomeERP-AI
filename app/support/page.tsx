@@ -7,6 +7,9 @@ import {
   Wallet, CalendarDays, IndianRupee, FileText, Wrench, HelpCircle, Paperclip, Image as ImageIcon,
 } from "lucide-react";
 import FormPanel, { FormSection } from "@/components/FormPanel";
+import {
+  ATTACHMENT_ACCEPT, ticketAttachmentAllowed, MAX_FILES_PER_MESSAGE, MAX_TICKET_ATTACHMENT_MB,
+} from "@/lib/support";
 
 /**
  * Help and support.
@@ -17,7 +20,7 @@ import FormPanel, { FormSection } from "@/components/FormPanel";
  * changes a colour would be a flag nobody acts on.
  */
 
-interface Reply { id: string; byName: string; byRole: string; message: string; at: string; }
+interface Reply { id: string; by?: string; byName: string; byRole: string; message: string; at: string; }
 type Status = "submitted" | "accepted" | "pending_admin" | "reopened" | "resolved" | "rejected" | "closed";
 interface StatusEvent { status: Status; at: string; byName: string; note: string; }
 interface FlowStep { id: Status; label: string; detail: string; step: number; }
@@ -29,11 +32,93 @@ interface Ticket {
   attachments?: TicketAttachment[];
   onBehalfOfName?: string;
   reopenCount?: number;
+  /** Something new on this case since you last opened it. */
+  unread?: boolean;
 }
 
 interface TicketAttachment {
   id: string; name: string; size: number; type: string;
   uploadedAt: string; uploadedByName: string;
+  /** The follow-up message it came with; absent = the first message. */
+  replyId?: string;
+}
+
+/**
+ * Sends files one after another (each is checked again on the server).
+ * Returns the sentences for any that failed, so the person knows exactly
+ * which file did not go.
+ */
+async function uploadFiles(ticketId: string, files: File[], replyId?: string): Promise<string[]> {
+  const problems: string[] = [];
+  for (const f of files) {
+    const fd = new FormData();
+    fd.append("ticketId", ticketId);
+    if (replyId) fd.append("replyId", replyId);
+    fd.append("file", f);
+    const res = await fetch("/api/support/attachment", { method: "POST", body: fd });
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      problems.push(j.error || `"${f.name}" could not be attached.`);
+    }
+  }
+  return problems;
+}
+
+/** Client-side check before anything is sent (the server checks again). */
+function checkFiles(files: File[], already: number): { ok: File[]; problems: string[] } {
+  const ok: File[] = [];
+  const problems: string[] = [];
+  for (const f of files) {
+    const p = ticketAttachmentAllowed(f.name, f.size);
+    if (p) problems.push(p);
+    else if (already + ok.length >= MAX_FILES_PER_MESSAGE) problems.push(`Only ${MAX_FILES_PER_MESSAGE} files per message — "${f.name}" was left out.`);
+    else ok.push(f);
+  }
+  return { ok, problems };
+}
+
+/** Pick files, see them listed, remove any before sending. Same for every role. */
+function FilePicker({ files, onChange, testId }: { files: File[]; onChange: (f: File[]) => void; testId: string }) {
+  const [problems, setProblems] = useState<string[]>([]);
+  return (
+    <div>
+      <label className="flex cursor-pointer flex-wrap items-center gap-2 text-[10.5px] text-biome-muted">
+        <input
+          data-testid={testId}
+          type="file"
+          multiple
+          accept={ATTACHMENT_ACCEPT}
+          className="hidden"
+          onChange={(e) => {
+            const picked = Array.from(e.target.files || []);
+            const { ok, problems: bad } = checkFiles(picked, files.length);
+            setProblems(bad);
+            onChange([...files, ...ok]);
+            e.target.value = "";
+          }}
+        />
+        <span className="bmx-chip flex items-center gap-1.5 rounded-lg border border-biome-line px-2.5 py-1.5 font-semibold text-biome-text">
+          <Paperclip size={11} /> Attach documents
+        </span>
+        <span>Photos, PDF, Excel or Word · up to {MAX_TICKET_ATTACHMENT_MB} MB each · {MAX_FILES_PER_MESSAGE} per message</span>
+      </label>
+      {files.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {files.map((f, i) => (
+            <span key={f.name + i} className="flex items-center gap-1.5 rounded-lg border border-biome-line bg-biome-bg px-2 py-1 text-[10.5px] text-biome-text">
+              <FileText size={11} className="text-biome-leaf" />
+              <span className="max-w-[180px] truncate">{f.name}</span>
+              <span className="text-biome-muted">{Math.max(1, Math.round(f.size / 1024))} KB</span>
+              <button type="button" aria-label={`Remove ${f.name}`} onClick={() => onChange(files.filter((_, j) => j !== i))} className="text-biome-muted hover:text-rose-500">
+                <XCircle size={11} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      {problems.map((p) => <p key={p} className="mt-1 text-[10.5px] text-rose-500">{p}</p>)}
+    </div>
+  );
 }
 
 interface BoardColumn {
@@ -48,9 +133,14 @@ interface Board {
 export default function SupportPage() {
   const [data, setData] = useState<{
     tickets: Ticket[]; canManage: boolean; canResolve: boolean; canRaise?: boolean; canReopen?: boolean;
+    canProcess?: boolean; canClose?: boolean;
     topics: string[]; flow: FlowStep[]; urgentOpen: number;
-    board?: Board | null; maxAttachments?: number;
+    board?: Board | null; maxAttachments?: number; myEmail?: string;
   } | null>(null);
+  /** Files chosen for the new case. */
+  const [files, setFiles] = useState<File[]>([]);
+  /** "Your case has been registered" — shown after sending. */
+  const [registered, setRegistered] = useState<{ ref: string; email: string; fileProblems: string[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Saving never waits on email, but nobody should believe "they were told"
   // when the notice didn't go — so failed notices are said out loud.
@@ -74,6 +164,21 @@ export default function SupportPage() {
 
   useEffect(() => { load(); }, [load]);
 
+  // A case opened from a link (or still open while an update arrives) is read.
+  useEffect(() => {
+    const t = data?.tickets.find((x) => x.id === expanded);
+    if (t?.unread) markSeen(t.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, expanded]);
+
+  // Opened from an update card or email: /support?case=<id>.
+  useEffect(() => {
+    try {
+      const id = new URLSearchParams(window.location.search).get("case");
+      if (id) setExpanded(id);
+    } catch { /* no URL */ }
+  }, []);
+
   // Accounts should not have to reload to notice something urgent arrived.
   useEffect(() => {
     const t = window.setInterval(() => { if (document.visibilityState === "visible") load(); }, 15000);
@@ -83,31 +188,63 @@ export default function SupportPage() {
   async function submit() {
     setBusy(true); setError(null);
     try {
+      const withAttachments = files.length > 0;
       const res = await fetch("/api/support", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
+        body: JSON.stringify({ ...form, withAttachments }),
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json.error || `Failed (${res.status}).`);
-      setMailNote(mailSummary(json.mail));
+      let fileProblems: string[] = [];
+      let mail = json.mail;
+      if (withAttachments) {
+        fileProblems = await uploadFiles(json.ticket.id, files);
+        // The emails go once, after the files are on the case.
+        const n = await fetch("/api/support", {
+          method: "PUT", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: json.ticket.id, action: "notify" }),
+        });
+        mail = (await n.json().catch(() => ({}))).mail;
+      }
+      setMailNote(mailSummary(mail));
+      setRegistered({ ref: json.ticket.ref, email: data?.myEmail || "", fileProblems });
       setForm({ ...form, subject: "", message: "", urgency: "normal" });
+      setFiles([]);
       setOpen(false);
       await load();
     } catch (err) { setError((err as Error).message); } finally { setBusy(false); }
   }
 
-  async function act(id: string, message: string, status?: Status, outcome?: string) {
-    setBusy(true);
+  async function act(id: string, message: string, status?: Status, outcome?: string, replyFiles: File[] = []) {
+    setBusy(true); setError(null);
     try {
+      const withAttachments = replyFiles.length > 0 && !status;
       const res = await fetch("/api/support", {
         method: "PUT", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, message, status, outcome }),
+        body: JSON.stringify({ id, message, status, outcome, withAttachments }),
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json.error || `Failed (${res.status}).`);
-      setMailNote(mailSummary(json.mail));
+      let mail = json.mail;
+      if (withAttachments && json.replyId) {
+        const problems = await uploadFiles(id, replyFiles, json.replyId);
+        const n = await fetch("/api/support", {
+          method: "PUT", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id, action: "notify", replyId: json.replyId }),
+        });
+        mail = (await n.json().catch(() => ({}))).mail;
+        if (problems.length) setError(problems.join(" "));
+      }
+      setMailNote(mailSummary(mail));
       await load();
     } catch (err) { setError((err as Error).message); } finally { setBusy(false); }
+  }
+
+  async function markSeen(id: string) {
+    await fetch("/api/support", {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, action: "seen" }),
+    }).catch(() => {});
   }
 
   return (
@@ -119,7 +256,7 @@ export default function SupportPage() {
         <p className="mt-1 text-[11.5px] text-biome-muted">
           {data?.canManage
             ? "Messages from staff. Anything marked urgent stays at the top until it's closed."
-            : "Something wrong with your salary, imprest or the app? Write here — accounts and the admin see it."}
+            : "Something wrong with your salary, imprest or the app? Raise a case here — the admin and the developer see it, and you get every update in the app and by email."}
         </p>
       </header>
 
@@ -141,6 +278,22 @@ export default function SupportPage() {
         </div>
       )}
 
+      {registered && (
+        <div data-testid="support-registered" className="bmx-msg-in flex items-start gap-2 rounded-2xl border border-emerald-500/30 bg-emerald-500/[.07] px-4 py-3">
+          <CheckCircle2 size={15} className="mt-px shrink-0 text-emerald-600" />
+          <div className="flex-1 text-[11.5px] text-biome-text">
+            <p className="font-semibold">Your case has been registered. Case number: <span className="font-mono">{registered.ref}</span></p>
+            <p className="mt-0.5 text-biome-muted">
+              {registered.email
+                ? `A confirmation is on its way to ${registered.email}. Every update will reach you here and by email.`
+                : "There is no email address on your account, so updates will reach you in the app only. Ask the admin to add your email in Users."}
+            </p>
+            {registered.fileProblems.map((p) => <p key={p} className="mt-0.5 text-rose-500">{p}</p>)}
+          </div>
+          <button onClick={() => setRegistered(null)} className="text-[10.5px] font-semibold text-biome-muted">Dismiss</button>
+        </div>
+      )}
+
       {mailNote && (
         <div data-testid="support-mail-note" className="bmx-msg-in flex items-start gap-2 rounded-2xl border border-amber-500/30 bg-amber-500/[.07] px-4 py-3">
           <AlertCircle size={15} className="mt-px shrink-0 text-amber-600" />
@@ -157,11 +310,11 @@ export default function SupportPage() {
         <span className="flex items-center gap-2 text-[13px] font-semibold text-biome-text">
           <MessageSquare size={15} className="text-biome-leaf" /> Write a message
         </span>
-        <span className="text-[11px] text-biome-muted">With or without documents · opens as a card</span>
+        <span className="text-[11px] text-biome-muted">New request · attach documents if you have them</span>
       </button>
       ) : (
         <p className="rounded-2xl border border-biome-line bg-biome-bgSoft px-5 py-3 text-[11.5px] text-biome-muted">
-          Tickets are raised by the team. As {data?.canReopen ? "developer" : "admin"} you resolve or decline them below{data?.canReopen ? ", and only you can reopen or change a finished case" : ""}.
+          Cases are raised by the team. As {data?.canReopen ? "developer" : "admin"} you accept, escalate, resolve, decline or close them below{data?.canReopen ? ", and only you can reopen or change a finished case" : ""}.
         </p>
       )}
 
@@ -169,7 +322,7 @@ export default function SupportPage() {
         open={open}
         onClose={() => setOpen(false)}
         title="Write a message"
-        subtitle="Accounts and the admin see this. Give the dates and figures if you have them."
+        subtitle="The admin and the developer see this. Give the dates and figures if you have them."
         footer={
           <>
             <button onClick={() => setOpen(false)} className="bmx-chip rounded-xl border border-biome-line px-4 py-2.5 text-[11.5px] font-semibold text-biome-muted">
@@ -202,6 +355,10 @@ export default function SupportPage() {
           </Field>
         </FormSection>
 
+        <FormSection title="Documents" hint="A screenshot, bill, slip or sheet often answers faster than a description." columns={1}>
+          <FilePicker files={files} onChange={setFiles} testId="support-new-files" />
+        </FormSection>
+
         <FormSection title="How urgent is it?" columns={1}>
           <div className="flex flex-wrap items-center gap-3">
             <button
@@ -216,7 +373,7 @@ export default function SupportPage() {
             </button>
             <p className="max-w-[420px] text-[11px] leading-relaxed text-biome-muted">
               Use urgent when money is missing or work is stopped. It goes to the top of the
-              accounts list and stays there until someone closes it.
+              admin's list and stays there until the case is closed.
             </p>
           </div>
         </FormSection>
@@ -300,11 +457,16 @@ export default function SupportPage() {
             key={t.id}
             ticket={t}
             canManage={data!.canManage}
-            canResolve={data!.canResolve}
+            canResolve={!!(data!.canProcess ?? data!.canResolve)}
+            canClose={!!data!.canClose}
             canReopen={!!data!.canReopen}
             flow={data!.flow}
             expanded={expanded === t.id}
-            onToggle={() => setExpanded(expanded === t.id ? null : t.id)}
+            onToggle={() => {
+              const next = expanded === t.id ? null : t.id;
+              setExpanded(next);
+              if (next && t.unread) markSeen(t.id).then(load);
+            }}
             onAct={act}
             onChanged={load}
             busy={busy}
@@ -417,82 +579,42 @@ function BoardStat({ label, value, hint, tone }: { label: string; value: number 
 /* Attachments                                                         */
 /* ------------------------------------------------------------------ */
 
-function Attachments({
-  ticket, canAdd, onChanged,
-}: { ticket: Ticket; canAdd: boolean; onChanged: () => void }) {
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const list = ticket.attachments || [];
-
-  async function upload(file: File) {
-    setBusy(true); setErr(null);
-    try {
-      const fd = new FormData();
-      fd.append("ticketId", ticket.id);
-      fd.append("file", file);
-      const res = await fetch("/api/support/attachment", { method: "POST", body: fd });
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(json.error || "Could not attach that.");
-      onChanged();
-    } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
-  }
-
-  if (!list.length && !canAdd) return null;
-
+/** The files that came with one message. Opens in the app (photo, PDF) or downloads (Excel, Word). */
+function FileList({ ticket, replyId }: { ticket: Ticket; replyId?: string }) {
+  const list = (ticket.attachments || []).filter((a) => (a.replyId || "") === (replyId || ""));
+  if (!list.length) return null;
   return (
-    <div className="mt-4 rounded-xl border border-biome-line bg-biome-bg p-3">
-      <p className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[.12em] text-biome-muted">
-        <Paperclip size={11} /> Attachments
-      </p>
-
-      {list.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {list.map((a) => (
-            <a
-              key={a.id}
-              href={`/api/support/attachment?ticketId=${ticket.id}&id=${a.id}`}
-              target="_blank"
-              rel="noreferrer"
-              className="bmx-chip flex items-center gap-1.5 rounded-lg border border-biome-line px-2.5 py-1.5 text-[10.5px] text-biome-text"
-            >
-              {a.type.startsWith("image/") ? <ImageIcon size={11} className="text-biome-leaf" /> : <FileText size={11} className="text-biome-leaf" />}
-              <span className="max-w-[180px] truncate">{a.name}</span>
-              <span className="text-biome-muted">{Math.round(a.size / 1024)} KB</span>
-            </a>
-          ))}
-        </div>
-      )}
-
-      {canAdd && (
-        <label className="mt-2 flex cursor-pointer items-center gap-2 text-[10.5px] text-biome-muted">
-          <input
-            type="file"
-            accept="image/*,application/pdf"
-            className="hidden"
-            onChange={(e) => { const f = e.target.files?.[0]; if (f) upload(f); e.target.value = ""; }}
-          />
-          <span className="bmx-chip rounded-lg border border-biome-line px-2.5 py-1.5 font-semibold text-biome-text">
-            {busy ? <Loader2 size={11} className="bmx-spin" /> : "Add a photo or PDF"}
-          </span>
-          <span>A screenshot of the screen usually answers this faster than a description.</span>
-        </label>
-      )}
-
-      {err && <p className="mt-1.5 text-[10.5px] text-rose-500">{err}</p>}
+    <div className="mt-2 flex flex-wrap gap-1.5">
+      {list.map((a) => (
+        <a
+          key={a.id}
+          data-testid="support-file"
+          href={`/api/support/attachment?ticketId=${ticket.id}&id=${a.id}`}
+          target="_blank"
+          rel="noreferrer"
+          className="bmx-chip flex items-center gap-1.5 rounded-lg border border-biome-line px-2.5 py-1.5 text-[10.5px] text-biome-text"
+        >
+          {a.type.startsWith("image/") ? <ImageIcon size={11} className="text-biome-leaf" /> : <FileText size={11} className="text-biome-leaf" />}
+          <span className="max-w-[180px] truncate">{a.name}</span>
+          <span className="text-biome-muted">{Math.max(1, Math.round(a.size / 1024))} KB</span>
+        </a>
+      ))}
     </div>
   );
 }
 
 function TicketCard({
-  ticket, canManage, canResolve, canReopen, flow, expanded, onToggle, onAct, onChanged, busy, index,
+  ticket, canManage, canResolve, canClose, canReopen, flow, expanded, onToggle, onAct, onChanged, busy, index,
 }: {
-  ticket: Ticket; canManage: boolean; canResolve: boolean; canReopen: boolean; flow: FlowStep[];
+  ticket: Ticket; canManage: boolean; canResolve: boolean; canClose: boolean; canReopen: boolean; flow: FlowStep[];
   expanded: boolean; onToggle: () => void;
-  onAct: (id: string, message: string, status?: Status, outcome?: string) => void;
+  onAct: (id: string, message: string, status?: Status, outcome?: string, files?: File[]) => void;
   onChanged: () => void;
   busy: boolean; index: number;
 }) {
+  void onChanged;
   const [text, setText] = useState("");
+  const [replyFiles, setReplyFiles] = useState<File[]>([]);
   const settled = ["resolved", "rejected", "closed"].includes(ticket.status);
   const urgent = ticket.urgency === "urgent" && !settled;
   const current = flow.find((f) => f.id === ticket.status);
@@ -513,6 +635,9 @@ function TicketCard({
         <div className="min-w-[200px] flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <span className="rounded-md bg-biome-bg px-1.5 py-0.5 font-mono text-[9.5px] text-biome-muted">{ticket.ref}</span>
+            {ticket.unread && (
+              <span data-testid="support-unread" className="rounded-full bg-biome-leaf px-1.5 py-0.5 text-[8.5px] font-bold uppercase tracking-[.1em] text-white">New update</span>
+            )}
             <p className="text-[13px] font-semibold text-biome-text">{ticket.subject}</p>
             <StatusPill status={ticket.status} flow={flow} />
           </div>
@@ -553,6 +678,7 @@ function TicketCard({
       {expanded && (
         <div className="bmx-msg-in border-t border-biome-line p-4">
           <p className="whitespace-pre-wrap text-[11.5px] leading-relaxed text-biome-text">{ticket.message}</p>
+          <FileList ticket={ticket} />
 
           {ticket.outcome && (
             <div className={`mt-3 rounded-xl border px-3.5 py-2.5 ${
@@ -573,6 +699,7 @@ function TicketCard({
                 {r.byName} · {new Date(r.at).toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
               </p>
               <p className="mt-1 whitespace-pre-wrap text-[11.5px] leading-relaxed text-biome-text">{r.message}</p>
+              <FileList ticket={ticket} replyId={r.id} />
             </div>
           ))}
 
@@ -582,28 +709,31 @@ function TicketCard({
               <p className="mt-1 text-[11px] leading-relaxed text-biome-muted">
                 {canReopen
                   ? "Only you (developer) can reopen it or change its status — use the buttons below."
-                  : "Only the developer can reopen it or change its status. You can still add a reply below — the developer will see it."}
+                  : "Only the developer can reopen it or change its status. You can still write a message below — the admin and the developer will see it."}
               </p>
             </div>
           )}
 
-          <Attachments ticket={ticket} canAdd={!settled} onChanged={onChanged} />
-
           <div className="mt-4">
             <textarea
+              data-testid="support-reply-text"
               rows={3} value={text} onChange={(e) => setText(e.target.value)}
-              placeholder={canManage ? "Reply, or write the reason before you resolve or decline…" : "Add anything else…"}
+              placeholder={canManage ? "Reply, or write the reason before you resolve or decline…" : "Write a message to the admin and the developer on this case…"}
               className={`${inputCls} resize-y`}
             />
+            <div className="mt-2">
+              <FilePicker files={replyFiles} onChange={setReplyFiles} testId="support-reply-files" />
+            </div>
           </div>
 
           <div className="mt-3 flex flex-wrap gap-2">
             <button
-              onClick={() => { onAct(ticket.id, text); setText(""); }}
-              disabled={busy || text.trim().length < 2}
+              data-testid="support-reply-send"
+              onClick={() => { onAct(ticket.id, text, undefined, undefined, replyFiles); setText(""); setReplyFiles([]); }}
+              disabled={busy || (text.trim().length < 2 && replyFiles.length === 0)}
               className="bmx-btn flex items-center gap-1.5 rounded-xl bg-biome-leaf px-3.5 py-2.5 text-[11px] font-bold text-white disabled:opacity-50"
             >
-              <Send size={12} />Reply
+              <Send size={12} />{canManage ? "Reply" : "Send message"}
             </button>
 
             {canReopen && settled && (
@@ -621,23 +751,23 @@ function TicketCard({
               </select>
             )}
 
-            {canManage && ticket.status === "submitted" && (
-              <button onClick={() => { onAct(ticket.id, text, "accepted"); setText(""); }} disabled={busy}
+            {canResolve && ["submitted", "reopened"].includes(ticket.status) && (
+              <button data-testid="support-accept" onClick={() => { onAct(ticket.id, text, "accepted"); setText(""); }} disabled={busy}
                 className="bmx-chip flex items-center gap-1.5 rounded-xl border border-sky-500/40 px-3.5 py-2.5 text-[11px] font-bold text-sky-600">
                 <Check size={12} /> Accept the case
               </button>
             )}
 
-            {canManage && !canResolve && ["submitted", "accepted"].includes(ticket.status) && (
-              <button onClick={() => { onAct(ticket.id, text, "pending_admin"); setText(""); }} disabled={busy}
+            {canResolve && ["submitted", "accepted", "reopened"].includes(ticket.status) && (
+              <button data-testid="support-escalate" onClick={() => { onAct(ticket.id, text, "pending_admin"); setText(""); }} disabled={busy}
                 className="bmx-chip flex items-center gap-1.5 rounded-xl border border-amber-500/40 px-3.5 py-2.5 text-[11px] font-bold text-amber-600">
-                <ArrowUp size={12} /> Refer to the admin
+                <ArrowUp size={12} /> Escalate
               </button>
             )}
 
             {canResolve && !settled && (
               <>
-                <button onClick={() => { onAct(ticket.id, text, "resolved", text); setText(""); }} disabled={busy || text.trim().length < 2}
+                <button data-testid="support-resolve" onClick={() => { onAct(ticket.id, text, "resolved", text); setText(""); }} disabled={busy || text.trim().length < 2}
                   className="bmx-btn flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-2.5 text-[11px] font-bold text-white disabled:opacity-50"
                   title="Write what was done in the box above first">
                   <CheckCircle2 size={12} /> Resolve
@@ -649,8 +779,9 @@ function TicketCard({
               </>
             )}
 
-            {ticket.status !== "closed" && !settled && (
-              <button onClick={() => { onAct(ticket.id, text, "closed"); setText(""); }} disabled={busy}
+            {/* Close: the admin and the developer only — never the person who raised it. */}
+            {canClose && ticket.status !== "closed" && !settled && (
+              <button data-testid="support-close" onClick={() => { onAct(ticket.id, text, "closed"); setText(""); }} disabled={busy}
                 className="bmx-chip flex items-center gap-1.5 rounded-xl border border-biome-line px-3.5 py-2.5 text-[11px] font-semibold text-biome-muted">
                 <Check size={12} /> Close
               </button>

@@ -21,11 +21,14 @@
  * 2. **Nobody is emailed about their own action.** The person who just
  *    pressed Resolve does not need an email telling them it was resolved,
  *    and a desk that mails itself teaches everyone to filter the address.
+ *    One exception: whoever RAISES a case gets "your case has been
+ *    registered" with the case number, because that number is what they
+ *    quote later.
  */
 
 import { loadUsers, User } from "@/lib/authServer";
 import { loadEmployees } from "@/lib/payroll";
-import { hasPermission } from "@/lib/permissions";
+import { effectivePermissions } from "@/lib/access";
 import { sendMail } from "@/lib/mailer";
 
 export type TicketEvent = "raised" | "reply" | "status" | "reopened" | "resolved";
@@ -39,24 +42,31 @@ export interface MailOutcome {
 }
 
 /**
- * The work email for a login.
+ * The email for a login.
  *
- * It lives on the employee record, not the sign-in, so the two are matched
- * by name. A user with no matching employee has no address — reported,
- * never silently skipped, because "everyone was told" must not quietly
- * mean "everyone we happened to have an address for".
+ * The user record's own `email` (set in Users & Access) comes first. Older
+ * accounts that have none fall back to the employee record with the same
+ * name. A user with neither has no address — reported on the ticket and in
+ * the server log, never silently skipped, because "everyone was told" must
+ * not quietly mean "everyone we happened to have an address for".
  */
-function emailFor(user: Pick<User, "name">): string {
-  const employees = loadEmployees();
-  const match = employees.find(
-    (e) => e.email && e.name.trim().toLowerCase() === user.name.trim().toLowerCase()
-  );
-  return match?.email || "";
+export function emailFor(user: Pick<User, "name"> & { email?: string }): string {
+  const own = String(user.email || "").trim();
+  if (own) return own;
+  try {
+    const employees = loadEmployees();
+    const match = employees.find(
+      (e) => e.email && e.name.trim().toLowerCase() === user.name.trim().toLowerCase()
+    );
+    return match?.email || "";
+  } catch {
+    return "";
+  }
 }
 
 /** Who runs the desk — everyone who can see other people's tickets. */
 function deskUsers(): User[] {
-  return loadUsers().filter((u) => u.active && hasPermission(u.role, "support.manage"));
+  return loadUsers().filter((u) => u.active && !u.deleted && effectivePermissions(u.role, u.access).includes("support.manage"));
 }
 
 interface TicketLike {
@@ -72,7 +82,8 @@ interface TicketLike {
   reopenCount?: number;
 }
 
-function subjectLine(t: TicketLike, event: TicketEvent): string {
+function subjectLine(t: TicketLike, event: TicketEvent, toRaiser = false): string {
+  if (event === "raised" && toRaiser) return `Your case has been registered · ${t.ref} · ${t.subject}`;
   const label =
     event === "raised" ? "New query"
     : event === "reopened" ? "Reopened"
@@ -83,8 +94,22 @@ function subjectLine(t: TicketLike, event: TicketEvent): string {
   return `${urgent}${label} · ${t.ref} · ${t.subject}`;
 }
 
-function bodyFor(t: TicketLike, event: TicketEvent, note: string, actorName: string, forName: string): string {
+function bodyFor(t: TicketLike, event: TicketEvent, note: string, actorName: string, forName: string, toRaiser = false): string {
   const lines: string[] = [`${forName},`, ""];
+
+  if (event === "raised" && toRaiser) {
+    lines.push(
+      `Your case has been registered. Your case number is ${t.ref}.`,
+      "",
+      `Subject: ${t.subject}`,
+      "",
+      "The admin and the developer have received it. You will get an email and an in-app update every time it moves or someone replies.",
+      "To add anything — a message or a file — open Help & support in the Biome app and write on this same case.",
+      "",
+      "— Biome Industria Private Limited"
+    );
+    return lines.join("\n");
+  }
 
   if (event === "raised") {
     lines.push(
@@ -146,31 +171,38 @@ export async function notifyTicket(
   const raiser = users.find((u) => u.id === ticket.raisedBy);
 
   // Who hears about it: the person who raised it, plus the desk. Minus
-  // whoever just did the thing.
-  const recipients: User[] = [];
-  if (raiser && raiser.id !== actor.id && raiser.active) recipients.push(raiser);
+  // whoever just did the thing — except that the raiser always gets the
+  // "your case has been registered" confirmation with the case number.
+  const recipients: { user: User; toRaiser: boolean }[] = [];
+  if (raiser && raiser.active && !raiser.deleted && (raiser.id !== actor.id || event === "raised")) {
+    recipients.push({ user: raiser, toRaiser: true });
+  }
   for (const u of deskUsers()) {
     if (u.id === actor.id) continue;
-    if (recipients.some((r) => r.id === u.id)) continue;
-    recipients.push(u);
+    if (recipients.some((r) => r.user.id === u.id)) continue;
+    recipients.push({ user: u, toRaiser: false });
   }
 
   const results: MailOutcome[] = [];
-  for (const u of recipients) {
+  for (const { user: u, toRaiser } of recipients) {
     const to = emailFor(u);
     if (!to) {
+      // Skipped, not failed: the action itself went through. Logged so the
+      // developer can see on the server who never gets these emails.
+      console.warn(`[support] ${ticket.ref}: no email address for ${u.name} (@${u.username}) — ${event} notice not emailed.`);
       results.push({
         to: "", name: u.name, ok: false,
-        error: "No email address on their employee record.",
+        error: "No email address on their user account.",
         at: new Date().toISOString(),
       });
       continue;
     }
     const sent = await sendMail({
       to,
-      subject: subjectLine(ticket, event),
-      text: bodyFor(ticket, event, note, actor.name, u.name),
+      subject: subjectLine(ticket, event, toRaiser),
+      text: bodyFor(ticket, event, note, actor.name, u.name, toRaiser),
     });
+    if (!sent.ok) console.warn(`[support] ${ticket.ref}: email to ${to} failed — ${sent.error || "send failed"}`);
     results.push({
       to, name: u.name, ok: sent.ok,
       error: sent.ok ? "" : sent.error || "Send failed.",

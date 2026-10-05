@@ -84,6 +84,7 @@ export type Permission =
   | "stock.manage"
   | "support"         // raise a ticket; approvers also answer them
   | "work"            // the Work Engine: planner, autopilot, decisions
+  | "command"         // the Command Center — management's whole-business view
   | "support.manage"  // see and answer everyone's tickets
   | "release.read"    // be told a new version exists
   | "release.publish" // announce one
@@ -132,6 +133,7 @@ const ALL: Permission[] = [
   "stock",
   "stock.manage",
   "work",
+  "command",
   "support",
   "support.manage",
   "release.read",
@@ -195,7 +197,10 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     // The developer can still grant it to one accounts person if needed.
     "support",
     "work",
-    "support.manage",
+    "command",
+    // No "support.manage": only the admin and the developer escalate,
+    // process or close Help & Support cases (owner's rule). Accounts raise
+    // and follow up like everyone else; the developer can grant it per person.
     "release.read",
     "company",
   ],
@@ -221,6 +226,7 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "attendance.entry",
     "support",
     "work",
+    "command",
     "release.read",
   ],
 
@@ -248,6 +254,10 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "reports",
     "support",
     "work",
+    // No "command": the Command Center is management's view of the whole
+    // business. The owner took it away from plant managers and
+    // procurement (menu, page and API). The developer can still grant it
+    // to one person from the access screen.
     "release.read",
   ],
 
@@ -265,6 +275,7 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "attendance.entry",
     "support",
     "work",
+    // No "command" — no Command Center for procurement (see plant_manager).
     "release.read",
   ],
 };
@@ -317,7 +328,7 @@ export const ROUTE_PERMISSIONS: { prefix: string; permission: Permission }[] = [
   { prefix: "/api/ops-map", permission: "developer" },
   { prefix: "/api/inbox", permission: "settings" },
   { prefix: "/api/po", permission: "operations" },
-  { prefix: "/api/command", permission: "work" },
+  { prefix: "/api/command", permission: "command" },
   { prefix: "/api/entity", permission: "work" },
   { prefix: "/api/contracts", permission: "developer" },
   { prefix: "/api/memory", permission: "settings" },
@@ -396,7 +407,7 @@ export const ROUTE_PERMISSIONS: { prefix: string; permission: Permission }[] = [
   { prefix: "/inbox", permission: "settings" },
   { prefix: "/po", permission: "operations" },
   { prefix: "/stock", permission: "stock" },
-  { prefix: "/command", permission: "work" },
+  { prefix: "/command", permission: "command" },
   { prefix: "/decisions", permission: "developer" },
   { prefix: "/entity", permission: "work" },
   { prefix: "/contracts", permission: "developer" },
@@ -573,7 +584,8 @@ export const PERMISSION_INFO: Record<string, { label: string; what: string; why:
   settings: { label: "Settings", what: "Appearance, mail, backup, Drive, PO policy, SLA, memory.", why: "Admin. Changes affect everyone.", risk: "high" },
   users: { label: "Users & Audit", what: "Create users, set roles, read the audit log.", why: "Admin only.", risk: "high" },
   support: { label: "Help & Support", what: "Guides and support tickets.", why: "Everyone.", risk: "low" },
-  work: { label: "Command Center & Work", what: "Command Center, forms, entity search, PO alerts.", why: "Management and coordinators.", risk: "medium" },
+  work: { label: "Work", what: "Forms, issues, meetings, calendar, entity search, PO alerts.", why: "Everyone who runs day-to-day work.", risk: "medium" },
+  command: { label: "Command Center", what: "Whole-business view: health index, briefing, risks, decisions.", why: "Management and coordinators — not plant managers or procurement.", risk: "medium" },
   "release.read": { label: "Release notes", what: "See what changed in each update.", why: "Everyone.", risk: "low" },
   announce: { label: "Announcements", what: "Post announcements to staff.", why: "Developer/admin.", risk: "medium" },
   "access.grant": { label: "Access control", what: "Activate or deactivate features for each person.", why: "Developer only.", risk: "high" },
@@ -593,6 +605,6 @@ export const PERMISSION_INFO: Record<string, { label: string; what: string; why:
   "employee.edit": { label: "Employees — edit", what: "Change an existing employee record.", why: "Admin.", risk: "high" },
   "employee.freeze": { label: "Employees — freeze/remove", what: "Freeze or remove a person from the rolls.", why: "Admin.", risk: "high" },
   "attendance.approve": { label: "Attendance — approve", what: "Approve attendance, correct older days, chase missing marks.", why: "Accounts.", risk: "medium" },
-  "support.manage": { label: "Support — answer tickets", what: "See and answer everyone's support tickets.", why: "Admin/accounts.", risk: "low" },
+  "support.manage": { label: "Support — answer tickets", what: "See and answer everyone's support tickets.", why: "Admin and developer only — they escalate, process and close cases.", risk: "low" },
   "release.publish": { label: "Release notes — publish", what: "Announce a new version to everyone.", why: "Admin.", risk: "medium" },
 };

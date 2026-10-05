@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { findById } from "@/lib/authServer";
-import { knownMpinUsers, deviceKnows, checkMpin } from "@/lib/mpin";
+import { knownMpinUsers, deviceKnows, checkMpin, disabledResponseFor } from "@/lib/mpin";
 import { issueSession } from "@/lib/issueSession";
 import { recordAudit } from "@/lib/audit";
 
@@ -27,6 +27,9 @@ export async function POST(req: NextRequest) {
   }
   const user = findById(uid);
   if (!user) return NextResponse.json({ error: "Sign in with your user ID and password." }, { status: 401 });
+  // Disabled (resigned / terminated): refused before the MPIN is even
+  // checked, and this device forgets them.
+  if (!user.active || user.deleted) return disabledResponseFor(req, user.id);
   const r = checkMpin(uid, mpin);
   if (!r.ok) {
     recordAudit({ action: "LOGIN_FAILED", userId: user.id, userName: user.name, role: user.role, outcome: "failed", errorMessage: "Wrong MPIN" });

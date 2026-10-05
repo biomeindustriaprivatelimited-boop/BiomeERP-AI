@@ -14,6 +14,41 @@ import { ROLES, Role } from "@/lib/permissions";
 import { loadEntries, loadPeople } from "@/lib/imprest";
 import { recordAudit } from "@/lib/audit";
 
+/** "" for none, null for something that is not an email address. */
+function cleanEmail(input: unknown): string | null {
+  const v = String(input ?? "").trim().toLowerCase();
+  if (!v) return "";
+  return /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(v) && v.length <= 160 ? v : null;
+}
+
+/** Why an account was disabled. "Other" needs a short note. */
+const DISABLE_REASONS = ["Resigned", "Terminated", "Other"] as const;
+
+/**
+ * The fields that disable an account. `sessionsRevokedAt` kills every
+ * token issued before now on every device (PC, phone, the developer's
+ * long server-PC session) — and keeps them dead even after a re-enable;
+ * accessVersion moves too so permission-checked routes refuse at once.
+ */
+function disableFields(u: User, by: string, reason: string, note: string): Partial<User> {
+  const now = new Date().toISOString();
+  return {
+    active: false,
+    disabledAt: now,
+    disabledReason: reason,
+    disabledNote: note || undefined,
+    disabledBy: by,
+    sessionsRevokedAt: now,
+    accessVersion: (u.accessVersion || 0) + 1,
+  };
+}
+
+function cleanReason(input: unknown): string {
+  const v = String(input ?? "").trim();
+  const hit = DISABLE_REASONS.find((r) => r.toLowerCase() === v.toLowerCase());
+  return hit || "Other";
+}
+
 function livePlants() { return plantOptions().map((p) => ({ code: p.code, label: p.label })); }
 
 export const runtime = "nodejs";
@@ -64,6 +99,8 @@ export async function POST(req: NextRequest) {
   const role = String(body.role || "") as Role;
   const password = String(body.password || "");
   const plants = cleanPlants(body.plants);
+  const email = cleanEmail(body.email);
+  if (email === null) return NextResponse.json({ error: "That email address doesn't look right." }, { status: 400 });
 
   if (!/^[a-z0-9._-]{3,32}$/.test(username)) {
     return NextResponse.json(
@@ -109,6 +146,7 @@ export async function POST(req: NextRequest) {
     // grouped by department actually groups.
     designation: String(body.designation || "").trim() || undefined,
     department: String(body.department || "").trim() || undefined,
+    email: email || undefined,
     active: true,
     // Whoever creates the account knows the password. Forcing a change
     // means the person's password is theirs alone from day one.
@@ -175,6 +213,16 @@ export async function PUT(req: NextRequest) {
   }
 
   const active = body.active !== undefined ? Boolean(body.active) : existing.active;
+  const disabling = existing.active && !active;
+  const reenabling = !existing.active && active;
+  if (disabling && existing.id === auth.session.uid) {
+    return NextResponse.json({ error: "You can't disable your own account." }, { status: 409 });
+  }
+  const disableReason = cleanReason(body.disabledReason);
+  const disableNote = String(body.disabledNote || "").trim().slice(0, 300);
+  if (disabling && disableReason === "Other" && !disableNote) {
+    return NextResponse.json({ error: "Write a short reason for disabling this account." }, { status: 400 });
+  }
 
   // Locking yourself out of the only admin account leaves nobody able to
   // create another one, and the fix would be hand-editing users.json.
@@ -206,13 +254,25 @@ export async function PUT(req: NextRequest) {
     username = wanted;
   }
 
+  let email = existing.email;
+  if (body.email !== undefined) {
+    const cleaned = cleanEmail(body.email);
+    if (cleaned === null) return NextResponse.json({ error: "That email address doesn't look right." }, { status: 400 });
+    email = cleaned || undefined;
+  }
+
   const updated: User = {
     ...existing,
     username,
+    email,
     name: body.name !== undefined ? String(body.name).trim() || existing.name : existing.name,
     role,
     plants,
     active,
+    // Disabling stamps the moment and the reason, and revokes every
+    // session issued before it on every device.
+    ...(disabling ? disableFields(existing, auth.session.name, disableReason, disableNote) : {}),
+    ...(reenabling ? { disabledReason: undefined, disabledNote: undefined, disabledBy: undefined, reenabledAt: new Date().toISOString() } : {}),
     updatedAt: new Date().toISOString(),
   };
 
@@ -234,11 +294,13 @@ export async function PUT(req: NextRequest) {
 
   saveUsers(users.map((u) => (u.id === updated.id ? updated : u)));
   recordAudit({
-    action: body.newPassword ? "USER_PASSWORD_RESET" : "USER_UPDATED",
+    action: body.newPassword ? "USER_PASSWORD_RESET" : disabling ? "USER_DISABLED" : reenabling ? "USER_REENABLED" : "USER_UPDATED",
     userId: auth.session.uid, userName: auth.session.name, role: auth.session.role,
     targetType: "user", targetId: updated.id, targetLabel: `${updated.name} (@${updated.username})`,
     detail: existing.active !== updated.active
-      ? (updated.active ? "Re-enabled" : "Disabled")
+      ? (updated.active
+          ? `Re-enabled (was disabled: ${existing.disabledReason || "no reason recorded"})`
+          : `Disabled — ${disableReason}${disableNote ? `: ${disableNote}` : ""}. All sessions on every device ended.`)
       : existing.role !== updated.role ? `Role ${existing.role} → ${updated.role}` : undefined,
   });
   return NextResponse.json({ user: publicUser(updated) });
@@ -282,9 +344,18 @@ export async function DELETE(req: NextRequest) {
   }
 
   if (!purge) {
+    const reason = cleanReason(req.nextUrl.searchParams.get("reason"));
+    const note = String(req.nextUrl.searchParams.get("note") || "").trim().slice(0, 300);
     saveUsers(
-      users.map((u) => (u.id === id ? { ...u, active: false, updatedAt: new Date().toISOString() } : u))
+      users.map((u) => (u.id === id
+        ? { ...u, ...disableFields(u, auth.session.name, reason, note), updatedAt: new Date().toISOString() }
+        : u))
     );
+    recordAudit({
+      action: "USER_DISABLED", userId: auth.session.uid, userName: auth.session.name, role: auth.session.role,
+      targetType: "user", targetId: existing.id, targetLabel: `${existing.name} (@${existing.username})`,
+      detail: `Disabled — ${reason}${note ? `: ${note}` : ""}. All sessions on every device ended.`,
+    });
     return NextResponse.json({ ok: true, disabled: true });
   }
 
@@ -310,6 +381,7 @@ export async function DELETE(req: NextRequest) {
               ...u,
               active: false,
               deleted: true,
+              ...disableFields(u, auth.session.name, "Other", "Deleted"),
               username: `deleted-${u.id.slice(0, 8)}`,
               salt: "",
               hash: "",

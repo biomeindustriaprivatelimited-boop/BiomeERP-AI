@@ -10,6 +10,7 @@ import { CursorGlow } from "@/components/fx";
 import { useSession } from "@/lib/session";
 import PinInput from "@/components/PinInput";
 import { usePlants } from "@/lib/usePlants";
+import { ACCOUNT_DISABLED_TEXT } from "@/lib/accountGuard";
 
 export default function LoginPage() {
   const PLANTS = usePlants();
@@ -24,6 +25,13 @@ export default function LoginPage() {
   // Bumped on every refused sign-in so the error block re-mounts and its
   // entrance animation plays again rather than sitting there unchanged.
   const [attempt, setAttempt] = useState(0);
+  // Arrived here because this account was disabled (lib/accountGuard.ts):
+  // the app's local data on this device has already been cleared.
+  useEffect(() => {
+    try {
+      if (new URLSearchParams(window.location.search).get("disabled") === "1") setError(ACCOUNT_DISABLED_TEXT);
+    } catch { /* no URL */ }
+  }, []);
   /**
    * Which plants this account may sign in as. Stays empty — and the
    * picker stays hidden — until the server says so, so the screen looks

@@ -49,6 +49,24 @@ export interface User {
   /** From Organisation — the lists the company actually maintains. */
   designation?: string;
   department?: string;
+  /**
+   * Where this person is emailed — support case updates and the like.
+   * Optional: when it is empty the app says so on screen and the server
+   * skips the mail (and logs that it did) rather than failing the action.
+   */
+  email?: string;
+  /** When the account was last disabled (resigned, terminated, other). */
+  disabledAt?: string;
+  /** Why: "Resigned" | "Terminated" | "Other" (+ note). Shown in Users. */
+  disabledReason?: string;
+  disabledNote?: string;
+  disabledBy?: string;
+  /**
+   * Every session token issued before this moment is dead, on every
+   * device, even after the account is re-enabled. Set when disabling.
+   */
+  sessionsRevokedAt?: string;
+  reenabledAt?: string;
   salt: string;
   hash: string;
   createdAt: string;
@@ -147,8 +165,13 @@ export function publicUser(user: User) {
     role: user.role,
     designation: user.designation,
     department: user.department,
+    email: user.email || "",
     plants: user.plants,
     active: user.active,
+    disabledAt: user.active ? undefined : user.disabledAt,
+    disabledReason: user.active ? undefined : user.disabledReason,
+    disabledNote: user.active ? undefined : user.disabledNote,
+    disabledBy: user.active ? undefined : user.disabledBy,
     mustChangePassword: user.mustChangePassword,
     // MPIN / auto-lock (lib/mpin.ts) — whether one is set, never the hash.
     hasMpin: Boolean((user as any).mpinHash),
@@ -159,8 +182,49 @@ export function publicUser(user: User) {
   };
 }
 
-/** Reads the session from the cookie, or from a bearer token. */
-export async function getSession(req: NextRequest): Promise<SessionPayload | null> {
+export const ACCOUNT_DISABLED_CODE = "ACCOUNT_DISABLED";
+export const ACCOUNT_DISABLED_MESSAGE = "This account has been disabled by the administrator.";
+
+/**
+ * The answer every route gives a session whose account was disabled (or
+ * deleted) after it signed in. Also clears the session and remembered
+ * device cookies, so this browser stops presenting them.
+ */
+export function accountDisabledResponse(): NextResponse {
+  const res = NextResponse.json(
+    { error: ACCOUNT_DISABLED_MESSAGE, code: ACCOUNT_DISABLED_CODE, disabled: true },
+    { status: 401 }
+  );
+  res.cookies.set(SESSION_COOKIE, "", { httpOnly: true, path: "/", maxAge: 0 });
+  res.cookies.set("biome_lock", "", { httpOnly: true, path: "/", maxAge: 0 });
+  // Read by the desktop shell (electron/main.js) without parsing bodies:
+  // it is the signal to wipe this PC's local copy of the app.
+  res.headers.set("x-biome-account", "disabled");
+  res.headers.set("Cache-Control", "no-store");
+  return res;
+}
+
+/**
+ * True when this token must no longer work because of its ACCOUNT: the
+ * account is disabled or deleted, or the token was issued before the
+ * account was last disabled (so re-enabling does not revive old sessions
+ * on a PC or phone the person no longer should have).
+ */
+export function sessionAccountDisabled(session: SessionPayload | null): boolean {
+  if (!session) return false;
+  const user = findById(session.uid);
+  if (!user || !user.active || user.deleted) return true;
+  return tokenRevoked(session, user);
+}
+
+function tokenRevoked(session: SessionPayload, user: User): boolean {
+  if (!user.sessionsRevokedAt) return false;
+  const cut = Date.parse(user.sessionsRevokedAt);
+  return Number.isFinite(cut) && session.iat * 1000 <= cut;
+}
+
+/** The token as presented (cookie first, then bearer) — no account checks. */
+export async function readSessionToken(req: NextRequest): Promise<SessionPayload | null> {
   const fromCookie = req.cookies.get(SESSION_COOKIE)?.value;
   if (fromCookie) {
     const session = await verifySession(fromCookie);
@@ -173,6 +237,31 @@ export async function getSession(req: NextRequest): Promise<SessionPayload | nul
     return verifySession(header.slice(7).trim());
   }
   return null;
+}
+
+/**
+ * Reads the session from the cookie, or from a bearer token.
+ *
+ * A token whose account has been disabled (or that was issued before the
+ * last disable) is treated as no session at all, so every route that
+ * uses this — not only the ones behind requirePermission — refuses it.
+ */
+export async function getSession(req: NextRequest): Promise<SessionPayload | null> {
+  const session = await readSessionToken(req);
+  if (!session) return null;
+  if (sessionAccountDisabled(session)) return null;
+  return session;
+}
+
+/**
+ * The 401 for a request with no usable session: ACCOUNT_DISABLED (and the
+ * wipe signal) when the token it carried belongs to a disabled account,
+ * the ordinary "Please sign in." otherwise.
+ */
+export async function signedOutResponse(req: NextRequest): Promise<NextResponse> {
+  const raw = await readSessionToken(req);
+  if (raw && sessionAccountDisabled(raw)) return accountDisabledResponse();
+  return NextResponse.json({ error: "Please sign in." }, { status: 401 });
 }
 
 /**
@@ -191,7 +280,7 @@ export async function requirePermission(
   req: NextRequest,
   permission: Permission
 ): Promise<{ session: SessionPayload } | { response: NextResponse }> {
-  const session = await getSession(req);
+  const session = await readSessionToken(req);
   if (!session) {
     return {
       response: NextResponse.json({ error: "Please sign in." }, { status: 401 }),
@@ -208,10 +297,11 @@ export async function requirePermission(
   // The token says what the role was at sign-in. If the account has since
   // been disabled or its role reduced, the live file is what counts.
   const user = findById(session.uid);
-  if (!user || !user.active) {
-    return {
-      response: NextResponse.json({ error: "This account is no longer active." }, { status: 401 }),
-    };
+  if (!user || !user.active || user.deleted || tokenRevoked(session, user)) {
+    // A clear code, not just a 401: the desktop app wipes this PC's local
+    // copy of the app when it sees ACCOUNT_DISABLED, and must NOT do that
+    // on an ordinary "please sign in" (expired session) or a network error.
+    return { response: accountDisabledResponse() };
   }
 
   // Access was changed while this session was open. Serving the token's

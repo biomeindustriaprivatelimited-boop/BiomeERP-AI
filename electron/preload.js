@@ -23,6 +23,9 @@ contextBridge.exposeInMainWorld("biomeDesktop", {
   setPublicAddress: (address) => ipcRenderer.invoke("biome:setPublicAddress", address),
   // Client PC: look for the server again (office network / static IP).
   reconnect: () => ipcRenderer.invoke("biome:reconnect"),
+  // The server said this account is disabled (lib/accountGuard.ts): the
+  // shell clears the app's own storage on this PC and shows the login page.
+  accountDisabled: () => ipcRenderer.invoke("biome:accountDisabled"),
 });
 
 contextBridge.exposeInMainWorld("biomeSetup", {
