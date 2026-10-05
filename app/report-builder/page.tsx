@@ -126,64 +126,69 @@ export default function ReportBuilderPage() {
   async function exportExcel() {
     if (!result) return;
     const ExcelJS = (await import("exceljs")).default;
+    const XL = await import("@/lib/excelStyle");
     const wb = new ExcelJS.Workbook();
-    wb.creator = "Biome Industria — Enterprise Platform";
+    wb.creator = "Biome Industria Private Limited";
+    wb.created = new Date();
+    // The same letterhead as every other export: logo, company, title, meta.
+    let logoId: number | null = null;
+    try {
+      const r = await fetch("/icons/icon-192.png");
+      if (r.ok) logoId = XL.addLogo(wb, await r.arrayBuffer());
+    } catch { /* the heading reads fine without it */ }
     const cols: Col[] = result.columns;
     const sumCols = cols.filter((c) => c.sum);
-    const numFmt = (t: Col["type"]) => (t === "money" ? '"₹"#,##,##0' : t === "kg" || t === "number" ? "#,##,##0.##" : t === "pct" ? '0.0"%"' : undefined);
-    const head = (ws: any, width: number) => {
-      ws.mergeCells(1, 1, 1, width); ws.getCell(1, 1).value = "BIOME INDUSTRIA PRIVATE LIMITED";
-      ws.getCell(1, 1).font = { bold: true, size: 14, color: { argb: "FF163300" } };
-      ws.mergeCells(2, 1, 2, width); ws.getCell(2, 1).value = title; ws.getCell(2, 1).font = { bold: true, size: 12 };
-      ws.mergeCells(3, 1, 3, width); ws.getCell(3, 1).value = `${subtitle}  ·  Generated ${new Date().toLocaleString("en-IN")} by ${meta.me.name}`;
-      ws.getCell(3, 1).font = { size: 9, color: { argb: "FF6E788C" } };
-    };
-    const styleHeader = (row: any) => {
-      row.eachCell((c: any) => {
-        c.font = { bold: true, color: { argb: "FFFFFFFF" } };
-        c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF5A9C4E" } };
-        c.alignment = { vertical: "middle", wrapText: true };
-        c.border = { bottom: { style: "thin", color: { argb: "FF3E7A34" } } };
-      });
-      row.height = 22;
-    };
+    const xType = (t: Col["type"]): import("@/lib/excelStyle").XlType =>
+      t === "money" ? "money" : t === "kg" ? "kg" : t === "number" ? "number" : t === "pct" ? "pct100" : t === "date" ? "date" : "text";
+    const sheetMeta = { title, note: subtitle, generatedBy: meta.me?.name || "" };
 
-    // Summary
+    // Summary — groups (and sub-groups) with sub-totals and a grand total.
     if (result.groups.length) {
-      const ws = wb.addWorksheet("Summary", { views: [{ state: "frozen", ySplit: 5 }] });
-      const hdr = [result.groupBy, ...(result.thenBy ? [result.thenBy] : []), "Records", ...sumCols.map((c) => c.label)];
-      head(ws, hdr.length);
-      styleHeader(ws.addRow([]) && ws.addRow(hdr));
-      const add = (vals: any[], bold = false, fill?: string) => {
-        const r = ws.addRow(vals);
-        sumCols.forEach((c, i) => { const cell = r.getCell((result.thenBy ? 3 : 2) + 1 + i); const f = numFmt(c.type); if (f) cell.numFmt = f; });
-        if (bold) r.font = { bold: true };
-        if (fill) r.eachCell((c: any) => { c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: fill } }; });
+      const ws = wb.addWorksheet("Summary", { properties: { tabColor: { argb: XL.XL_COLORS.brand } } });
+      const hdr: import("@/lib/excelStyle").XlColumn[] = [
+        { key: "g", header: result.groupBy },
+        ...(result.thenBy ? [{ key: "t", header: result.thenBy }] : []),
+        { key: "count", header: "Records", type: "int" as const },
+        ...sumCols.map((c) => ({ key: c.key, header: c.label, type: xType(c.type) })),
+      ];
+      const headerRow = XL.letterhead(ws, sheetMeta, hdr.length, logoId);
+      XL.styleHeaderRow(ws, headerRow, hdr);
+      let rowNo = headerRow + 1;
+      let band = 0;
+      const add = (vals: any[], kind: "row" | "sub" | "grand") => {
+        const r = ws.getRow(rowNo++);
+        vals.forEach((v, i) => {
+          const cell = r.getCell(i + 1);
+          cell.value = v;
+          const fmt = XL.numFmtFor(hdr[i].type);
+          if (fmt) cell.numFmt = fmt;
+          cell.font = { size: 10, bold: kind !== "row", color: { argb: kind === "row" ? XL.XL_COLORS.ink : XL.XL_COLORS.brand } };
+          cell.border = { bottom: { style: kind === "grand" ? "double" : "thin", color: { argb: kind === "grand" ? XL.XL_COLORS.leaf : XL.XL_COLORS.line } } };
+          const fill = kind === "grand" ? "FFD5E8CC" : kind === "sub" ? XL.XL_COLORS.leafSoft : band % 2 ? XL.XL_COLORS.zebra : "";
+          if (fill) cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: fill } };
+        });
+        if (kind === "row") band += 1;
       };
       for (const g of result.groups as Group[]) {
         if (result.thenBy && g.children) {
-          for (const ch of g.children) add([g.key, ch.key, ch.count, ...sumCols.map((c) => ch.sums[c.key])]);
-          add([`${g.key} — subtotal`, "", g.count, ...sumCols.map((c) => g.sums[c.key])], true, "FFEAF4E4");
-        } else add([g.key, g.count, ...sumCols.map((c) => g.sums[c.key])]);
+          for (const ch of g.children) add([g.key, ch.key, ch.count, ...sumCols.map((c) => ch.sums[c.key])], "row");
+          add([`${g.key} — subtotal`, "", g.count, ...sumCols.map((c) => g.sums[c.key])], "sub");
+        } else add([g.key, g.count, ...sumCols.map((c) => g.sums[c.key])], "row");
       }
-      add(["GRAND TOTAL", ...(result.thenBy ? [""] : []), result.count, ...sumCols.map((c) => result.totals[c.key])], true, "FFD5E8CC");
-      ws.columns.forEach((c: any, i: number) => { c.width = i < (result.thenBy ? 2 : 1) ? 32 : 16; });
+      add(["GRAND TOTAL", ...(result.thenBy ? [""] : []), result.count, ...sumCols.map((c) => result.totals[c.key])], "grand");
+      hdr.forEach((_, i) => { ws.getColumn(i + 1).width = i < (result.thenBy ? 2 : 1) ? 32 : 16; });
+      ws.views = [{ state: "frozen", ySplit: headerRow, showGridLines: false }];
+      XL.printSetup(ws, headerRow, title);
     }
 
-    // Detail
-    const wd = wb.addWorksheet("Detail", { views: [{ state: "frozen", ySplit: 5 }] });
-    head(wd, cols.length);
-    wd.addRow([]);
-    styleHeader(wd.addRow(cols.map((c) => c.label)));
-    for (const r of result.rows) {
-      const row = wd.addRow(cols.map((c) => (c.type === "text" || c.type === "date" ? r[c.key] ?? "" : Number(r[c.key]) || 0)));
-      cols.forEach((c, i) => { const f = numFmt(c.type); if (f) row.getCell(i + 1).numFmt = f; });
-    }
-    const tot = wd.addRow(cols.map((c, i) => (i === 0 ? "TOTAL" : c.sum ? result.totals[c.key] : "")));
-    tot.font = { bold: true };
-    cols.forEach((c, i) => { const f = numFmt(c.type); if (f && c.sum) tot.getCell(i + 1).numFmt = f; });
-    wd.autoFilter = { from: { row: 5, column: 1 }, to: { row: 5 + result.rows.length, column: cols.length } };
-    wd.columns.forEach((c: any, i: number) => { const col = cols[i]; c.width = col?.width ? Math.min(60, col.width) : col?.type === "text" ? 22 : 14; });
+    // Detail — the full styled table.
+    XL.buildTableSheet(wb, "Detail", {
+      meta: sheetMeta,
+      columns: cols.map((c) => ({ key: c.key, header: c.label, type: xType(c.type), total: !!c.sum, width: c.width ? Math.min(60, c.width) : undefined })),
+      rows: result.rows,
+      logoId,
+      footerLeft: title,
+    });
 
     const buf = await wb.xlsx.writeBuffer();
     const a = document.createElement("a");

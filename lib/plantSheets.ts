@@ -45,6 +45,11 @@ export interface SheetColumn {
   suggestField?: "name" | "code";
   /** Sibling column filled with the other half (code ↔ name) on pick. */
   pairKey?: string;
+  /**
+   * Must be filled before the row can be submitted (and is reported as
+   * "missing" on import). See missingRequired() for the transport rule.
+   */
+  required?: boolean;
 }
 
 const num = (v: any) => {
@@ -58,19 +63,19 @@ const num = (v: any) => {
 
 export const REWARI_COLUMNS: SheetColumn[] = [
   { cell: "B", key: "srNo", label: "Sr. No.", kind: "entry", type: "number", width: 60 },
-  { cell: "C", key: "date", label: "Date", kind: "entry", type: "date", width: 110 },
-  { cell: "D", key: "materialType", label: "Material Type", kind: "entry", width: 130 },
-  { cell: "E", key: "weightSlipNo", label: "Weight Slip No.", kind: "entry", width: 120 },
+  { cell: "C", key: "date", required: true, label: "Date", kind: "entry", type: "date", width: 110 },
+  { cell: "D", key: "materialType", required: true, label: "Material Type", kind: "entry", width: 130 },
+  { cell: "E", key: "weightSlipNo", required: true, label: "Weight Slip No.", kind: "entry", width: 120 },
   // Added so the uploaded slip can be checked against the entry — the slip
   // always carries a vehicle number, and it is the field that tells a typo
   // apart from the wrong slip being attached.
-  { cell: "EA", key: "vehicleNo", label: "Vehicle No.", kind: "entry", width: 120, hint: "Checked against the weight slip" },
+  { cell: "EA", key: "vehicleNo", required: true, label: "Vehicle No.", kind: "entry", width: 120, hint: "Checked against the weight slip" },
   { cell: "F", key: "vendorCode", label: "Vendor Code", kind: "entry", width: 110, suggest: "vendor", suggestField: "code", pairKey: "name" },
-  { cell: "G", key: "name", label: "Name", kind: "entry", width: 150, suggest: "vendor", suggestField: "name", pairKey: "vendorCode" },
+  { cell: "G", key: "name", required: true, label: "Name", kind: "entry", width: 150, suggest: "vendor", suggestField: "name", pairKey: "vendorCode" },
   { cell: "H", key: "village", label: "Village Location", kind: "entry", width: 140 },
   { cell: "I", key: "fs", label: "F/S", kind: "entry", width: 60, hint: "Farmer or Supplier" },
-  { cell: "J", key: "grossWeight", label: "Gross Weight (kg)", kind: "entry", type: "number", unit: "kg", width: 110 },
-  { cell: "K", key: "tareWeight", label: "Tare Weight (kg)", kind: "entry", type: "number", unit: "kg", width: 110 },
+  { cell: "J", key: "grossWeight", required: true, label: "Gross Weight (kg)", kind: "entry", type: "number", unit: "kg", width: 110 },
+  { cell: "K", key: "tareWeight", required: true, label: "Tare Weight (kg)", kind: "entry", type: "number", unit: "kg", width: 110 },
   {
     cell: "L", key: "netWeight", label: "Net. Weight (kg)", kind: "derived", type: "number", width: 110,
     formula: "=J{row}-K{row}",
@@ -111,7 +116,7 @@ export const REWARI_COLUMNS: SheetColumn[] = [
       return net - dust - moist;
     },
   },
-  { cell: "T", key: "rate", label: "Rate", kind: "entry", type: "number", width: 90 },
+  { cell: "T", key: "rate", required: true, label: "Rate", kind: "entry", type: "number", width: 90 },
   {
     cell: "U", key: "amount", label: "Amount", kind: "derived", type: "number", width: 120,
     formula: "=S{row}*T{row}",
@@ -188,17 +193,17 @@ export const REWARI_COLUMNS: SheetColumn[] = [
 
 export const GANGAKHED_COLUMNS: SheetColumn[] = [
   { cell: "B", key: "srNo", label: "Sr. No.", kind: "entry", type: "number", width: 60 },
-  { cell: "C", key: "date", label: "Date", kind: "entry", type: "date", width: 110 },
-  { cell: "D", key: "materialType", label: "Material Type", kind: "entry", width: 130 },
-  { cell: "E", key: "weightSlipNo", label: "Weight Slip No.", kind: "entry", width: 120 },
+  { cell: "C", key: "date", required: true, label: "Date", kind: "entry", type: "date", width: 110 },
+  { cell: "D", key: "materialType", required: true, label: "Material Type", kind: "entry", width: 130 },
+  { cell: "E", key: "weightSlipNo", required: true, label: "Weight Slip No.", kind: "entry", width: 120 },
   // Added so the uploaded slip can be checked against the entry — the slip
   // always carries a vehicle number, and it is the field that tells a typo
   // apart from the wrong slip being attached.
-  { cell: "EA", key: "vehicleNo", label: "Vehicle No.", kind: "entry", width: 120, hint: "Checked against the weight slip" },
+  { cell: "EA", key: "vehicleNo", required: true, label: "Vehicle No.", kind: "entry", width: 120, hint: "Checked against the weight slip" },
   { cell: "F", key: "vendorCode", label: "Vendor Code", kind: "entry", width: 110, suggest: "vendor", suggestField: "code", pairKey: "vendorName" },
-  { cell: "G", key: "vendorName", label: "Vendor Name", kind: "entry", width: 170, suggest: "vendor", suggestField: "name", pairKey: "vendorCode" },
-  { cell: "H", key: "grossWeight", label: "Gross Weight (kg)", kind: "entry", type: "number", unit: "kg", width: 110 },
-  { cell: "I", key: "tareWeight", label: "Tare Weight (kg)", kind: "entry", type: "number", unit: "kg", width: 110 },
+  { cell: "G", key: "vendorName", required: true, label: "Vendor Name", kind: "entry", width: 170, suggest: "vendor", suggestField: "name", pairKey: "vendorCode" },
+  { cell: "H", key: "grossWeight", required: true, label: "Gross Weight (kg)", kind: "entry", type: "number", unit: "kg", width: 110 },
+  { cell: "I", key: "tareWeight", required: true, label: "Tare Weight (kg)", kind: "entry", type: "number", unit: "kg", width: 110 },
   {
     cell: "J", key: "netWeight", label: "Net. Weight (kg)", kind: "derived", type: "number", width: 110,
     formula: "=H{row}-I{row}",
@@ -210,8 +215,8 @@ export const GANGAKHED_COLUMNS: SheetColumn[] = [
     formula: "=J{row}-K{row}",
     compute: (r) => num(r.grossWeight) - num(r.tareWeight) - num(r.anyDeduction),
   },
-  { cell: "M", key: "finalWeight", label: "Final Weight (kg)", kind: "entry", type: "number", unit: "kg", width: 110 },
-  { cell: "N", key: "rate", label: "Rate", kind: "entry", type: "number", width: 90 },
+  { cell: "M", key: "finalWeight", required: true, label: "Final Weight (kg)", kind: "entry", type: "number", unit: "kg", width: 110 },
+  { cell: "N", key: "rate", required: true, label: "Rate", kind: "entry", type: "number", width: 90 },
   {
     cell: "O", key: "amount", label: "Amount", kind: "derived", type: "number", width: 120,
     formula: "=M{row}*N{row}",
@@ -234,7 +239,7 @@ export const GANGAKHED_COLUMNS: SheetColumn[] = [
 
 export const TRANSPORT_COLUMNS: SheetColumn[] = [
   { cell: "A", key: "srNo", label: "S/No.", kind: "entry", type: "number", width: 60 },
-  { cell: "B", key: "date", label: "Date", kind: "entry", type: "date", width: 110 },
+  { cell: "B", key: "date", required: true, label: "Date", kind: "entry", type: "date", width: 110 },
   { cell: "C", key: "kantaParchi", label: "Kanta Parchi", kind: "entry", width: 120 },
   { cell: "D", key: "partyName", label: "Party Name", kind: "entry", width: 140, suggest: "client", suggestField: "name" },
   { cell: "E", key: "to", label: "To", kind: "entry", width: 130 },
@@ -255,7 +260,7 @@ export const TRANSPORT_COLUMNS: SheetColumn[] = [
     },
   },
   { cell: "J", key: "outTime", label: "Out Time", kind: "entry", width: 100 },
-  { cell: "K", key: "vehicleNo", label: "Vehicle No.", kind: "entry", width: 120 },
+  { cell: "K", key: "vehicleNo", required: true, label: "Vehicle No.", kind: "entry", width: 120 },
   // The receiving slip from the client end. Its net weight is what
   // R. Weight above is checked against — that difference is the shortage
   // the coordination register exists to catch.
@@ -268,8 +273,8 @@ export const TRANSPORT_COLUMNS: SheetColumn[] = [
   // the same way Vendor Code / Name do on the biomass sheet. Sits at NA so
   // the plant's own column letters (A–T) stay where their workbook has them.
   { cell: "NA", key: "transporterCode", label: "Transporter Code", kind: "entry", width: 120, suggest: "transporter", suggestField: "code", pairKey: "transporter" },
-  { cell: "N", key: "transporter", label: "Transporter", kind: "entry", width: 150, suggest: "transporter", suggestField: "name", pairKey: "transporterCode" },
-  { cell: "O", key: "rate", label: "Rate", kind: "entry", type: "number", width: 90 },
+  { cell: "N", key: "transporter", required: true, label: "Transporter", kind: "entry", width: 150, suggest: "transporter", suggestField: "name", pairKey: "transporterCode" },
+  { cell: "O", key: "rate", required: true, label: "Rate", kind: "entry", type: "number", width: 90 },
   { cell: "P", key: "daala", label: "Daala", kind: "entry", type: "number", width: 90 },
   {
     cell: "Q", key: "amount", label: "Amount", kind: "derived", type: "number", width: 120,
@@ -325,6 +330,31 @@ export function totals(columns: SheetColumn[], rows: Record<string, any>[]) {
     sums[col.key] = rows.reduce((s, r) => s + num(computeRow(columns, r)[col.key]), 0);
   }
   return sums;
+}
+
+/**
+ * The labels of required columns still blank on a row. Transport adds one
+ * rule of its own: a SUPPLY trip (or one with no purpose given) also needs
+ * the party, the kanta parchi and the dispatch weight — a machine-repair
+ * run legitimately has none of those.
+ */
+export function missingRequired(
+  kind: "biomass" | "transport",
+  columns: Pick<SheetColumn, "key" | "label" | "required">[],
+  row: Record<string, any>
+): string[] {
+  const blank = (v: any) => v === null || v === undefined || String(v).trim() === "";
+  const out = columns.filter((c) => c.required && blank(row[c.key])).map((c) => c.label);
+  if (kind === "transport") {
+    const purpose = String(row.tripPurpose ?? "").trim();
+    if (!purpose || /^supply$/i.test(purpose)) {
+      for (const k of ["partyName", "kantaParchi", "weight"]) {
+        const col = columns.find((c) => c.key === k);
+        if (col && blank(row[k]) && !out.includes(col.label)) out.push(col.label);
+      }
+    }
+  }
+  return out;
 }
 
 export const TRIP_PURPOSES = ["Supply", "Machine Repair", "Maintenance", "Other"] as const;

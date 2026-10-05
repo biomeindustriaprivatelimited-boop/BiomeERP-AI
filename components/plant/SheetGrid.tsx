@@ -5,7 +5,11 @@ import PartnerCombo, { type ComboOption } from "@/components/plant/PartnerCombo"
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
 import { toKg, conversionNote } from "@/lib/units";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Plus, Download, Trash2, Loader2, Upload, Calculator, Filter, ShieldCheck, ShieldAlert, ScanLine } from "lucide-react";
+import { Plus, Download, Trash2, Loader2, Upload, Calculator, Filter, ShieldCheck, ShieldAlert, ScanLine, Lock, LockOpen, Clock, Send, FileSpreadsheet, MessageSquareWarning } from "lucide-react";
+import { lockInfo, LOCK_CHIP, LOCK_META_KEYS, type LockInfo } from "@/lib/sheetLock";
+import { missingRequired } from "@/lib/plantSheets";
+import SheetImport from "@/components/plant/SheetImport";
+import { RequestEditDialog, EditRequestsPanel, type SheetEditRequest } from "@/components/plant/SheetEditRequests";
 import GlassCard from "@/components/GlassCard";
 import PremiumButton from "@/components/ui/PremiumButton";
 import { useNotifications } from "@/lib/notifications";
@@ -35,6 +39,8 @@ interface Column {
   suggest?: SuggestKind | SuggestKind[];
   suggestField?: "name" | "code";
   pairKey?: string;
+  /** Must be filled before the row can be submitted. */
+  required?: boolean;
 }
 
 type SuggestKind = "vendor" | "transporter" | "client";
@@ -59,8 +65,8 @@ interface Plant {
  * would repeat the original problem.
  */
 function UploadCell({
-  value, plant, onChange,
-}: { value: string; plant: string; onChange: (v: string) => void }) {
+  value, plant, onChange, disabled,
+}: { value: string; plant: string; onChange: (v: string) => void; disabled?: boolean }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -84,6 +90,10 @@ function UploadCell({
     } finally {
       setBusy(false);
     }
+  }
+
+  if (disabled && !id) {
+    return <span className="block truncate px-2 py-1 text-[10.5px] text-biome-muted" title={name}>{name || "—"}</span>;
   }
 
   return (
@@ -116,7 +126,7 @@ function UploadCell({
           <span className="truncate">{busy ? "Uploading…" : error ? "Retry" : name || "Upload"}</span>
         </label>
       )}
-      {id && (
+      {id && !disabled && (
         <button
           onClick={() => onChange("")}
           title="Remove"
@@ -165,6 +175,26 @@ export default function SheetGrid({
   // Office roles read the plant's book; only the plant manager enters rows.
   const [readOnly, setReadOnly] = useState(false);
   const [columns, setColumns] = useState<Column[]>([]);
+  /** Enters, submits and deletes rows: the plant manager (and the developer). */
+  const entryUser = !readOnly;
+  /**
+   * Submit / freeze. Read from the rows API: who may unlock (accounts /
+   * admin / developer), who may import, and whether this person corrects
+   * existing rows in place without being the plant manager.
+   */
+  const [perm, setPerm] = useState({ canUnlock: false, canImport: false, approverEdit: false, freezeDays: 5, unlockHours: 24 });
+  const deletedRef = useRef<Set<string>>(new Set());
+  const [requests, setRequests] = useState<SheetEditRequest[]>([]);
+  const [meId, setMeId] = useState("");
+  const [asking, setAsking] = useState<{ id: string; label: string } | null>(null);
+  const [sheetImportOpen, setSheetImportOpen] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  // Days-left and unlock windows count down while the page is open.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const t = window.setInterval(() => setTick((x) => x + 1), 60000);
+    return () => window.clearInterval(t);
+  }, []);
 
   /**
    * Read the attached slip and compare it with the row.
@@ -316,7 +346,16 @@ export default function SheetGrid({
           fetch(`/api/plant-data?what=vendors&plant=${plant}`, { cache: "no-store" }),
         ]);
         if (cancelled) return;
-        if (rowsRes.ok) { const j = await rowsRes.json(); setRows(j.rows || []); setReadOnly(Boolean(j.readOnly)); }
+        if (rowsRes.ok) {
+          const j = await rowsRes.json();
+          deletedRef.current = new Set();
+          setRows(j.rows || []);
+          setReadOnly(Boolean(j.readOnly));
+          setPerm({
+            canUnlock: Boolean(j.canUnlock), canImport: Boolean(j.canImport), approverEdit: Boolean(j.approverEdit),
+            freezeDays: Number(j.freezeDays) || 5, unlockHours: Number(j.unlockHours) || 24,
+          });
+        }
         if (vendorRes.ok) setVendors((await vendorRes.json()).vendors || []);
       } catch {
         /* an empty sheet is better than a broken page */
@@ -343,21 +382,136 @@ export default function SheetGrid({
   const save = useCallback(
     async (next: Record<string, any>[]) => {
       setSaving(true);
+      const deleted = [...deletedRef.current];
       try {
         const res = await fetch("/api/plant-data", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ kind, plant, rows: next }),
+          // Ids of rows deleted here, so the server's merge drops them —
+          // and only them; a row added on another PC is never wiped.
+          body: JSON.stringify({ kind, plant, rows: next, deleted }),
         });
-        if (res.ok) { setSavedAt(new Date()); loadMatch(); }
+        if (res.ok) {
+          for (const id of deleted) deletedRef.current.delete(id);
+          setSavedAt(new Date());
+          loadMatch();
+        } else if (res.status === 423) {
+          // A frozen row was changed or deleted here. The server saved
+          // nothing; put those rows back as stored and keep the rest.
+          const json = await res.json().catch(() => ({}));
+          const frozen = new Set<string>((json.frozen || []).map((f: any) => String(f.id)));
+          const stored = new Map<string, any>((json.rows || []).map((r: any) => [String(r.id), r]));
+          for (const id of frozen) deletedRef.current.delete(id);
+          setRows((prev) => {
+            const kept = prev.map((r) => (frozen.has(String(r.id)) && stored.has(String(r.id)) ? stored.get(String(r.id)) : r));
+            const have = new Set(kept.map((r) => String(r.id)));
+            for (const id of frozen) if (!have.has(id) && stored.has(id)) kept.push(stored.get(id));
+            return kept;
+          });
+          notify({ kind: "warning", title: "Frozen row not changed", detail: json.error || "That row is frozen — use Request edit." });
+        }
       } catch {
         /* the next edit tries again */
       } finally {
         setSaving(false);
       }
     },
-    [kind, plant, loadMatch]
+    [kind, plant, loadMatch, notify]
   );
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+  /** Save what is on screen now (before submit, export or import). */
+  const flush = useCallback(async () => { await save(rowsRef.current); }, [save]);
+
+  const reloadRows = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/plant-data?kind=${kind}&plant=${plant}`, { cache: "no-store" });
+      if (res.ok) { const j = await res.json(); deletedRef.current = new Set(); setRows(j.rows || []); }
+    } catch { /* keep what is on screen */ }
+  }, [kind, plant]);
+
+  // ---- Edit requests (frozen rows) ----
+  const loadRequests = useCallback(async () => {
+    try {
+      const res = await fetch("/api/plant-data/edit-request", { cache: "no-store" });
+      if (!res.ok) return;
+      const j = await res.json();
+      setMeId(String(j.meId || ""));
+      setRequests((j.requests || []).filter((r: SheetEditRequest) => r.plant === plant && r.kind === kind));
+    } catch { /* the list is a convenience; the API is the rule */ }
+  }, [plant, kind]);
+  useEffect(() => { setRequests([]); loadRequests(); }, [loadRequests]);
+  useLiveRefresh(loadRequests, 30000);
+  const pendingFor = useMemo(() => {
+    const m = new Map<string, SheetEditRequest>();
+    for (const r of requests) if (r.status === "pending") m.set(r.rowId, r);
+    return m;
+  }, [requests]);
+
+  async function sendRequest(rowId: string, reason: string) {
+    const res = await fetch("/api/plant-data/edit-request", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind, plant, rowId, reason }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json.error || `Request failed (${res.status}).`);
+    setAsking(null);
+    notify({ kind: "success", title: "Edit request sent", detail: "Accounts / admin will approve or reject it. You will get a notice." });
+    loadRequests();
+  }
+
+  async function decide(id: string, approve: boolean, note: string) {
+    const res = await fetch("/api/plant-data/edit-request", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, approve, note }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) { notify({ kind: "warning", title: "Couldn't record the decision", detail: json.error || `Failed (${res.status}).` }); return; }
+    notify({ kind: "success", title: approve ? "Approved — row unlocked" : "Request rejected", detail: json.request?.rowLabel || "" });
+    await flush();
+    await Promise.all([loadRequests(), reloadRows()]);
+  }
+
+  async function submitRows(ids: string[]) {
+    if (!ids.length) return;
+    setSubmitting(true);
+    try {
+      await flush();
+      const res = await fetch("/api/plant-data", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ what: "submit", kind, plant, ids }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || `Submit failed (${res.status}).`);
+      // Take the server's submit / unlock fields; keep everything typed.
+      const stored = new Map<string, any>((json.rows || []).map((r: any) => [String(r.id), r]));
+      setRows((prev) =>
+        prev.map((r) => {
+          const st = stored.get(String(r.id));
+          if (!st) return r;
+          const o: Record<string, any> = { ...r };
+          for (const k of LOCK_META_KEYS) { if (st[k] === undefined) delete o[k]; else o[k] = st[k]; }
+          return o;
+        })
+      );
+      const n = (json.submitted || []).length;
+      const refused = json.refused || [];
+      notify({
+        kind: refused.length ? "warning" : "success",
+        title: n ? `${n} row${n === 1 ? "" : "s"} submitted` : "Nothing submitted",
+        detail: refused.length
+          ? refused.slice(0, 3).map((x: any) => `${x.label}: ${x.why}`).join(" ")
+          : `Editable for ${perm.freezeDays} more days, then frozen.`,
+      });
+    } catch (err) {
+      notify({ kind: "warning", title: "Couldn't submit", detail: (err as Error).message });
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   // Saved shortly after typing stops, rather than on every keystroke.
   useEffect(() => {
@@ -421,8 +575,19 @@ export default function SheetGrid({
   const visible = useMemo(() => {
     const q = vendorFilter.trim().toUpperCase();
     if (!q) return computed;
-    return computed.filter((r) => String(r.vendorCode ?? "").toUpperCase().includes(q));
-  }, [computed, vendorFilter]);
+    return computed.filter((r) => String(r[kind === "transport" ? "transporterCode" : "vendorCode"] ?? "").toUpperCase().includes(q));
+  }, [computed, vendorFilter, kind]);
+
+  const submittable = useMemo(
+    () =>
+      entryUser
+        ? computed.filter((r) => {
+            const st = lockInfo(r).state;
+            return (st === "draft" || st === "unlocked") && missingRequired(kind, columns, r).length === 0;
+          })
+        : [],
+    [computed, columns, kind, entryUser]
+  );
 
   const totals = useMemo(() => {
     const t: Record<string, number> = {};
@@ -434,8 +599,23 @@ export default function SheetGrid({
   }, [columns, visible]);
 
   function addRow() {
-    setRows((r) => [...r, { srNo: r.length + 1, date: new Date().toISOString().slice(0, 10) }]);
+    setRows((r) => [
+      ...r,
+      {
+        // A stable id from the first keystroke, so the server's merge never
+        // mistakes the same new row for two.
+        id: `${kind}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`,
+        srNo: r.reduce((m, x) => Math.max(m, Number(x.srNo) || 0), 0) + 1,
+        date: new Date().toISOString().slice(0, 10),
+      },
+    ]);
   }
+
+  // Who may type into a given row: the plant manager until it freezes (or
+  // while an approval has it unlocked); accounts / admin / developer always.
+  const rowEditable = (lock: LockInfo) =>
+    perm.approverEdit || (entryUser && (lock.state !== "frozen" || perm.canUnlock));
+  const filterKey = kind === "transport" ? "transporterCode" : "vendorCode";
 
   function setCell(index: number, key: string, value: any) {
     setRows((r) => r.map((row, i) => (i === index ? { ...row, [key]: value } : row)));
@@ -467,10 +647,12 @@ export default function SheetGrid({
     }
     setExporting(true);
     try {
+      // The export reads the saved sheet — save what is on screen first.
+      if (!readOnly || perm.approverEdit) await flush();
       const res = await fetch("/api/plant-sheet", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ kind, plant, rows, vendorCode: vendorFilter.trim() || undefined }),
+        body: JSON.stringify({ kind, plant, vendorCode: vendorFilter.trim() || undefined }),
       });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
@@ -488,7 +670,7 @@ export default function SheetGrid({
       notify({
         kind: "success",
         title: "Exported",
-        detail: "The formulas are live in the file — change a weight and the totals follow.",
+        detail: "Styled register plus a Summary sheet. The formulas are live — change a weight and the totals follow.",
       });
     } catch (err) {
       notify({ kind: "warning", title: "Export failed", detail: (err as Error).message });
@@ -508,7 +690,9 @@ export default function SheetGrid({
           <p className="mt-1 max-w-2xl text-xs leading-relaxed text-biome-muted">{subtitle}</p>
           {readOnly && (
             <p className="mt-1.5 inline-block rounded-lg border border-sky-500/30 bg-sky-500/[.07] px-2.5 py-1 text-[11px] text-sky-700">
-              Read-only — the plant manager enters this sheet. You can write in the Accounts remarks column.
+              {perm.approverEdit
+                ? "The plant manager enters this sheet. You can correct any existing row directly (also frozen ones) and write in the Accounts remarks column — every change is audited."
+                : "Read-only — the plant manager enters this sheet. You can write in the Accounts remarks column."}
             </p>
           )}
           {kind === "transport" && match?.summary && (
@@ -521,9 +705,25 @@ export default function SheetGrid({
           )}
         </div>
         <div className="flex flex-wrap gap-2">
+          {entryUser && submittable.length > 0 && (
+            <PremiumButton
+              variant="secondary"
+              disabled={submitting}
+              onClick={() => submitRows(submittable.map((r) => String(r.id)))}
+              title="Submit every complete Draft (and re-opened) row. Submitted rows freeze after the edit window."
+            >
+              {submitting ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} />}
+              Submit {submittable.length} complete row{submittable.length === 1 ? "" : "s"}
+            </PremiumButton>
+          )}
+          {perm.canImport && (
+            <PremiumButton variant="ghost" onClick={() => setSheetImportOpen((o) => !o)}>
+              <FileSpreadsheet size={13} /> Import data
+            </PremiumButton>
+          )}
           {kind === "biomass" && !readOnly && (
             <PremiumButton variant="ghost" onClick={() => setImportOpen((o) => !o)}>
-              <Upload size={13} /> Import vendors
+              <Upload size={13} /> Vendor list
             </PremiumButton>
           )}
           {!readOnly && (
@@ -537,6 +737,35 @@ export default function SheetGrid({
           </PremiumButton>
         </div>
       </div>
+
+      {sheetImportOpen && (
+        <SheetImport
+          kind={kind}
+          plant={plant}
+          plantName={plants.find((p) => p.id === plant)?.name || plant}
+          freezeDays={perm.freezeDays}
+          beforeImport={async () => { if (!readOnly || perm.approverEdit) await flush(); }}
+          onImported={(next) => { deletedRef.current = new Set(); setRows(next); }}
+          onClose={() => setSheetImportOpen(false)}
+        />
+      )}
+
+      <EditRequestsPanel
+        requests={requests}
+        canDecide={perm.canUnlock}
+        unlockHours={perm.unlockHours}
+        meId={meId}
+        onDecide={decide}
+      />
+
+      {asking && (
+        <RequestEditDialog
+          rowLabel={asking.label}
+          unlockHours={perm.unlockHours}
+          onCancel={() => setAsking(null)}
+          onSend={(reason) => sendRequest(asking.id, reason)}
+        />
+      )}
 
       {importOpen && (
         <GlassCard className="p-4">
@@ -618,7 +847,7 @@ export default function SheetGrid({
           <input
             value={vendorFilter}
             onChange={(e) => setVendorFilter(e.target.value)}
-            placeholder="Filter by vendor code — exports just that vendor"
+            placeholder={kind === "transport" ? "Filter by transporter code — exports just that transporter" : "Filter by vendor code — exports just that vendor"}
             className="w-full rounded-xl border border-biome-line bg-biome-hover py-2 pl-8 pr-3 text-[11.5px] text-biome-text outline-none placeholder:text-biome-muted/60 focus:border-biome-leaf/40"
           />
         </div>
@@ -702,10 +931,17 @@ export default function SheetGrid({
             Add a row and fill in the white cells. The shaded ones work themselves out — net weight,
             deductions, amounts — the same way they do in the workbook.
           </p>
-          <div className="mt-3">
-            <PremiumButton onClick={addRow}>
-              <Plus size={13} /> Add the first row
-            </PremiumButton>
+          <div className="mt-3 flex flex-wrap justify-center gap-2">
+            {!readOnly && (
+              <PremiumButton onClick={addRow}>
+                <Plus size={13} /> Add the first row
+              </PremiumButton>
+            )}
+            {perm.canImport && (
+              <PremiumButton variant="ghost" onClick={() => setSheetImportOpen(true)}>
+                <FileSpreadsheet size={13} /> Import previous data
+              </PremiumButton>
+            )}
           </div>
         </GlassCard>
       ) : (
@@ -714,6 +950,9 @@ export default function SheetGrid({
             <table className="w-full text-left text-[11px]">
               <thead className="sticky top-0 z-10 bg-biome-surface">
                 <tr className="border-b border-biome-line">
+                  <th className="whitespace-nowrap px-2 py-2 text-[9.5px] font-medium uppercase tracking-wider text-biome-muted/70" style={{ minWidth: 128 }}>
+                    Status
+                  </th>
                   {columns.map((c) => (
                     <th
                       key={c.key}
@@ -724,6 +963,7 @@ export default function SheetGrid({
                       style={{ minWidth: c.width || 110 }}
                     >
                       {c.label}
+                      {c.required && <span className="ml-0.5 text-rose-500" title="Required to submit">*</span>}
                       {c.kind === "derived" && <span className="ml-1 normal-case">ƒ</span>}
                     </th>
                   ))}
@@ -739,8 +979,55 @@ export default function SheetGrid({
                       .filter((x: any) => x.status === "mismatch")
                       .map((x: any) => [x.field, x])
                   );
+                  const lock = lockInfo(row);
+                  const editable = rowEditable(lock);
+                  const missing = missingRequired(kind, columns, row);
+                  const pending = pendingFor.get(String(row.id));
+                  const chip = LOCK_CHIP[lock.state];
                   return (
-                  <tr key={i} className="border-b border-biome-line/40 hover:bg-biome-hover">
+                  <tr
+                    key={String(row.id || i)}
+                    className={`border-b border-biome-line/40 hover:bg-biome-hover ${lock.state === "frozen" ? "bg-indigo-500/[.035]" : lock.state === "unlocked" ? "bg-amber-500/[.05]" : ""}`}
+                  >
+                    <td className="whitespace-nowrap px-2 py-1 align-middle">
+                      <div className="flex flex-col items-start gap-1">
+                        <span
+                          title={lock.label + (lock.state === "draft" && missing.length ? ` · Still to fill: ${missing.join(", ")}` : "")}
+                          className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9.5px] font-semibold ${chip.cls}`}
+                        >
+                          {lock.state === "frozen" ? <Lock size={10} /> : lock.state === "unlocked" ? <LockOpen size={10} /> : lock.state === "submitted" ? <Clock size={10} /> : null}
+                          {lock.state === "submitted"
+                            ? `${lock.daysLeft}d to freeze`
+                            : lock.state === "unlocked"
+                            ? `Open till ${new Date(lock.unlockUntil).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}`
+                            : chip.text}
+                        </span>
+                        {entryUser && (lock.state === "draft" || lock.state === "unlocked") && (
+                          <button
+                            onClick={() => submitRows([String(row.id)])}
+                            disabled={submitting || missing.length > 0}
+                            title={missing.length ? `Fill in first: ${missing.join(", ")}` : "Submit this consignment — it freezes after the edit window"}
+                            className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium text-biome-leaf hover:bg-biome-leaf/10 disabled:cursor-not-allowed disabled:text-biome-muted/60 disabled:hover:bg-transparent"
+                          >
+                            <Send size={10} /> {lock.state === "unlocked" ? "Re-submit" : missing.length ? `${missing.length} missing` : "Submit"}
+                          </button>
+                        )}
+                        {entryUser && lock.state === "frozen" && !perm.canUnlock && (
+                          pending ? (
+                            <span title={`Asked ${new Date(pending.requestedAt).toLocaleString("en-IN")}: ${pending.reason}`} className="text-[10px] font-medium text-amber-600">
+                              Edit requested…
+                            </span>
+                          ) : (
+                            <button
+                              onClick={() => setAsking({ id: String(row.id), label: `${[String(row.date || "").slice(0, 10).split("-").reverse().join("-"), row.vehicleNo, row.weightSlipNo || row.kantaParchi, row.name || row.vendorName || row.transporter].filter(Boolean).join(" · ")}` })}
+                              className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium text-indigo-500 hover:bg-indigo-500/10"
+                            >
+                              <MessageSquareWarning size={10} /> Request edit
+                            </button>
+                          )
+                        )}
+                      </div>
+                    </td>
                     {columns.map((c) => (
                       <td
                         key={c.key}
@@ -749,7 +1036,7 @@ export default function SheetGrid({
                           bad.has(c.key) ? "bg-rose-500/12 ring-1 ring-inset ring-rose-500/40" : ""
                         }`}
                       >
-                        {readOnly && c.kind === "entry" && c.key !== "accountsRemarks" ? (
+                        {!editable && c.kind === "entry" && !(readOnly && c.key === "accountsRemarks") ? (
                           <span className={`block px-2 py-1 ${c.type === "number" ? "text-right font-mono tabular-nums" : ""} text-biome-text`}>
                             {c.type === "number" && row[c.key] !== "" && row[c.key] != null ? Number(row[c.key]).toLocaleString("en-IN", { maximumFractionDigits: 2 }) : String(row[c.key] ?? "")}
                           </span>
@@ -763,6 +1050,7 @@ export default function SheetGrid({
                           <UploadCell
                             value={String(row[c.key] ?? "")}
                             plant={plant}
+                            disabled={!editable}
                             onChange={(v) => setCell(i, c.key, v)}
                           />
                         ) : c.type === "yesno" ? (
@@ -885,8 +1173,13 @@ export default function SheetGrid({
                           )}
                         </button>
                       )}
-                      {!readOnly && <button
-                        onClick={() => setRows((r) => r.filter((_, x) => x !== i))}
+                      {!readOnly && (lock.state !== "frozen" || perm.canUnlock) && <button
+                        onClick={() => {
+                          if (lock.state !== "draft" && !window.confirm("Delete this submitted row? It is recorded in the audit log.")) return;
+                          if (row.id) deletedRef.current.add(String(row.id));
+                          setRows((r) => r.filter((_, x) => x !== i));
+                        }}
+                        title="Delete row"
                         className="rounded-lg p-1 text-biome-muted transition-colors hover:bg-biome-hover hover:text-rose-400"
                       >
                         <Trash2 size={12} />
@@ -898,13 +1191,12 @@ export default function SheetGrid({
               </tbody>
               <tfoot className="sticky bottom-0 bg-biome-surface">
                 <tr className="border-t-2 border-biome-line">
+                  <td className="px-2 py-2">
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-biome-muted">Total</span>
+                  </td>
                   {columns.map((c, idx) => (
                     <td key={c.key} className="px-2 py-2">
-                      {idx === 0 ? (
-                        <span className="text-[10px] font-semibold uppercase tracking-wider text-biome-muted">
-                          Total
-                        </span>
-                      ) : c.type === "number" ? (
+                      {idx === 0 ? null : c.type === "number" ? (
                         <span className="block text-right font-mono text-[11px] font-semibold tabular-nums text-biome-text">
                           {totals[c.key]?.toLocaleString("en-IN", { maximumFractionDigits: 2 })}
                         </span>
@@ -923,6 +1215,10 @@ export default function SheetGrid({
         Columns marked <span className="text-biome-leafBright">ƒ</span> are worked out from the
         others and can&apos;t be typed into. The exported file carries those as real Excel formulas,
         so correcting a weight there updates everything that depends on it.
+        {" "}<span className="text-rose-500">*</span> fields are required before a row can be submitted. A submitted row stays
+        editable for {perm.freezeDays} days, then <Lock size={10} className="inline" /> freezes — after that the plant manager
+        uses <span className="font-medium text-indigo-500">Request edit</span>, and an approval opens it for {perm.unlockHours} hours
+        (or until it is submitted again).
       </p>
     </div>
   );
