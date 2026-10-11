@@ -570,7 +570,7 @@ function GrnMatchCard({ data, g, post, setOk, onEdit, onClose, reload }: { data:
       {m && (
         <div className="overflow-x-auto">
           <table className="w-full min-w-[860px] text-left text-[11.5px]">
-            <thead><tr className={th}><th className="py-2">Part</th><th className="text-right">Ordered</th><th className="text-right">Earlier GRNs</th><th className="text-right">Pending</th><th className="text-right">Received</th><th className="text-right">Damaged</th><th className="text-right">Accepted → stock</th><th className="text-right">PO rate / invoice rate</th><th>Result</th></tr></thead>
+            <thead><tr className={th}><th className="py-2">Part</th><th className="text-right">Ordered</th><th className="text-right">Earlier GRNs</th><th className="text-right">Pending</th><th className="text-right">Received</th><th className="text-right">Damaged</th><th className="text-right">Accepted → stock</th><th className="pr-3 text-right">PO rate / invoice rate</th><th className="pl-2">Result</th></tr></thead>
             <tbody>
               {m.lines.map((l: any) => (
                 <tr key={l.poLineId} className="border-b border-biome-line/60">
@@ -581,7 +581,7 @@ function GrnMatchCard({ data, g, post, setOk, onEdit, onClose, reload }: { data:
                   <td className="text-right font-mono">{l.receivedQty}</td>
                   <td className={`text-right font-mono ${l.damagedQty ? "text-rose-500" : "text-biome-muted"}`}>{l.damagedQty}</td>
                   <td className="text-right font-mono font-semibold text-emerald-600">{l.acceptedQty}</td>
-                  <td className={`text-right font-mono ${Math.abs(l.rateDiff) > 0.004 ? "text-sky-600" : ""}`}>{inr2(l.poRate)} / {inr2(l.invoiceRate)}</td>
+                  <td className={`pr-3 text-right font-mono ${Math.abs(l.rateDiff) > 0.004 ? "text-sky-600" : ""}`}>{inr2(l.poRate)} / {inr2(l.invoiceRate)}</td>
                   <td><span className="flex flex-wrap gap-1">{l.flags.map((f: string) => <Badge key={f} tone={FLAG_TONE[f]}>{FLAG_LABEL[f]}{f === "short" ? ` ${l.short}` : f === "excess" ? ` ${l.excess}` : ""}</Badge>)}</span></td>
                 </tr>
               ))}
