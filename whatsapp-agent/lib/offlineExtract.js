@@ -627,8 +627,10 @@ function extractOffline(text, ctx = {}) {
     }
   }
 
+  // A bank account number ("Account no.-044905003345") is 12 digits too — never an e-way bill.
+  const accountNos = new Set((upper.match(/(?:A\/?C|ACCOUNT)\s*(?:NO|NUMBER)?\.?\s*[:.\-]*\s*(\d[\d ]{10,16}\d)/g) || []).map((m) => m.replace(/^\D+/, "").replace(/\s/g, "")));
   const ewayCandidates = [...new Set((upper.match(EWAY_RE) || []).map((e) => e.replace(/\s/g, "")))]
-    .filter((e) => e.length === 12);
+    .filter((e) => e.length === 12 && !accountNos.has(e));
 
   const dates = findDates(raw);
   const amounts = findAmounts(raw);

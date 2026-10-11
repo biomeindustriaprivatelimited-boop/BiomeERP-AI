@@ -459,6 +459,88 @@ async function readTiles(mupdf, img, budgetLeft) {
 }
 
 /**
+ * Dot-matrix and thermal slips (weighbridges, our own Rewari bridge):
+ * the letters are separate dots on grey, uneven paper. Subtract the local
+ * background, keep what is clearly darker, and thicken it by one pixel so
+ * the dots join into strokes Tesseract can read.
+ */
+function dotMatrix(img) {
+  const { w, h, data } = img;
+  const r = Math.max(8, Math.round(Math.min(w, h) / 40));
+  // integral image for a fast box blur (the background)
+  const I = new Float64Array((w + 1) * (h + 1));
+  for (let y = 0; y < h; y++) {
+    let row = 0;
+    for (let x = 0; x < w; x++) {
+      row += data[y * w + x];
+      I[(y + 1) * (w + 1) + x + 1] = I[y * (w + 1) + x + 1] + row;
+    }
+  }
+  const diff = new Float32Array(w * h);
+  let max = 0;
+  for (let y = 0; y < h; y++) {
+    const y0 = Math.max(0, y - r), y1 = Math.min(h, y + r + 1);
+    for (let x = 0; x < w; x++) {
+      const x0 = Math.max(0, x - r), x1 = Math.min(w, x + r + 1);
+      const sum = I[y1 * (w + 1) + x1] - I[y0 * (w + 1) + x1] - I[y1 * (w + 1) + x0] + I[y0 * (w + 1) + x0];
+      const bg = sum / ((y1 - y0) * (x1 - x0));
+      const d = Math.max(0, bg - data[y * w + x]);
+      diff[y * w + x] = d;
+      if (d > max) max = d;
+    }
+  }
+  // threshold relative to the strong end of the distribution
+  const hist = new Uint32Array(256);
+  for (let i = 0; i < diff.length; i++) hist[Math.min(255, Math.round((diff[i] / (max || 1)) * 255))]++;
+  let acc = 0, p99 = 255;
+  for (let v = 255; v >= 0; v--) { acc += hist[v]; if (acc > diff.length * 0.01) { p99 = v; break; } }
+  const cut = Math.max(12, p99 * 0.28) * (max || 1) / 255;
+  const ink = new Uint8Array(w * h);
+  for (let i = 0; i < diff.length; i++) ink[i] = diff[i] > cut ? 1 : 0;
+  let out = new Uint8ClampedArray(w * h).fill(255);
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      if (ink[i] || ink[i - 1] || ink[i + 1] || ink[i - w] || ink[i + w]) out[i] = 0;
+    }
+  }
+  // A soft blur (3x3 box passes) melts the dots into strokes.
+  for (let pass = 0; pass < 3; pass++) {
+    const next = new Uint8ClampedArray(w * h).fill(255);
+    for (let y = 1; y < h - 1; y++) {
+      for (let x = 1; x < w - 1; x++) {
+        const i = y * w + x;
+        next[i] = (out[i - w - 1] + out[i - w] + out[i - w + 1] + out[i - 1] + out[i] + out[i + 1] + out[i + w - 1] + out[i + w] + out[i + w + 1]) / 9;
+      }
+    }
+    out = next;
+  }
+  return { w, h, data: out };
+}
+
+/** The bright sheet of paper in a photo taken on a dark floor or table. */
+function paperCrop(img) {
+  const f = 8;
+  const small = downsample(img, f);
+  const sorted = Array.from(small.data).sort((a, b) => a - b);
+  const thr = Math.max(140, sorted[Math.floor(sorted.length * 0.6)] || 140);
+  const rows = [], cols = [];
+  for (let y = 0; y < small.h; y++) {
+    let n = 0;
+    for (let x = 0; x < small.w; x++) if (small.data[y * small.w + x] > thr) n++;
+    if (n > small.w * 0.3) rows.push(y);
+  }
+  for (let x = 0; x < small.w; x++) {
+    let n = 0;
+    for (let y = 0; y < small.h; y++) if (small.data[y * small.w + x] > thr) n++;
+    if (n > small.h * 0.3) cols.push(x);
+  }
+  if (rows.length < 5 || cols.length < 5) return null;
+  const c = crop(img, cols[0] * f, rows[0] * f, (cols[cols.length - 1] + 1) * f, (rows[rows.length - 1] + 1) * f);
+  return c.w * c.h < img.w * img.h * 0.9 ? c : null;
+}
+
+/**
  * OCR one page given as gray pixels (a decoded photo or a rendered PDF page).
  * @returns {Promise<{text, confidence, rotation, skew, variant, passes, ms}>}
  */
@@ -508,6 +590,35 @@ async function ocrGrayPage(mupdf, base, options = {}) {
     if (confidence < 60 && Date.now() - started < budget) {
       const bin = await recognizeImg(mupdf, binarize(clean), 11);
       if (bin.text && bin.text.trim()) { parts.push(bin.text); passes.push("binarised"); confidence = Math.max(confidence, bin.confidence); }
+    }
+  }
+
+  // Pass 4: still unreadable — a dot-matrix / thermal weighbridge slip, or
+  // a small slip photographed on the floor. Read the sheet itself (paper
+  // crop) and the whole frame with dots joined, at every orientation.
+  if (confidence < 70 && !options.noDotPass && Date.now() - started < budget * 1.6) {
+    let bestDot = null;
+    const sheets = [];
+    const sheet = paperCrop(base);
+    if (sheet) sheets.push(["sheet", sheet]);
+    sheets.push(["frame", base]);
+    const order = [rotation, ...[0, 90, 180, 270].filter((d) => d !== rotation)];
+    for (const [name, src] of sheets) {
+      const long = Math.max(src.w, src.h);
+      const sc = Math.max(1, Math.min(1.6, 1800 / long));
+      for (const deg of order) {
+        if (Date.now() - started > budget * 1.6) break;
+        const img = dotMatrix(warp(src, deg - (name === "frame" ? layout.skew : 0), sc));
+        const r = await recognizeImg(mupdf, img, 6);
+        if (!bestDot || r.score > bestDot.score) bestDot = { ...r, name, deg };
+        if (r.score >= 60) break;
+      }
+      if (bestDot && bestDot.score >= 60) break;
+    }
+    if (bestDot && bestDot.text && bestDot.text.trim() && bestDot.score > first.score) {
+      parts.push(bestDot.text);
+      passes.push(`dots-${bestDot.name}-${bestDot.deg}`);
+      confidence = Math.max(confidence, bestDot.confidence || 0);
     }
   }
 
@@ -612,4 +723,4 @@ async function ocrPdfPages(buffer, pageIndexes, options = {}) {
   return out;
 }
 
-module.exports = { ocrImage, ocrPdfPages, ocrGrayPage, ocrMupdfPage, sniffMime, analyseLayout, flatten, stretch, binarize, removeLines, warp, textScore, loadMupdf, decodeImage, toPng };
+module.exports = { __dot: dotMatrix, __paper: paperCrop, ocrImage, ocrPdfPages, ocrGrayPage, ocrMupdfPage, sniffMime, analyseLayout, flatten, stretch, binarize, removeLines, warp, textScore, loadMupdf, decodeImage, toPng };

@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import DocumentViewer from "./DocumentViewer";
 import WhyPanel from "./WhyPanel";
+import { StatusChip, NeedsCheckChip } from "./SetVerify";
 import GlassCard from "@/components/GlassCard";
 import {
   DOC_TYPE_LABEL,
@@ -206,6 +207,8 @@ export default function SupplySetCard({
             <span className="font-mono text-[13px] font-semibold tracking-tight text-biome-leafBright">
               {set.reference}
             </span>
+            <StatusChip status={set.status} />
+            <NeedsCheckChip count={set.status === "final" ? 0 : set.needsCheckCount || 0} />
             {!set.clientMatched ? (
               <span
                 className="flex items-center gap-1 rounded-full border border-biome-sky/30 bg-biome-sky/10 px-2 py-0.5 text-[10px] font-medium text-biome-skyBright"

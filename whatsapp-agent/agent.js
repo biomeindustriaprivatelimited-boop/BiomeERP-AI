@@ -46,6 +46,10 @@ const staging = require("./lib/staging");
 const patterns = require("./lib/patterns");
 const { parseFileName, applyFileNameHints } = require("./lib/fileNameParser");
 const verify = require("./lib/verify");
+const pdfSplit = require("./lib/pdfSplit");
+const supplyMatch = require("./lib/supplyMatch");
+const setState = require("./lib/setState");
+const { migrateLayout } = require("./lib/layoutMigrate");
 const gemini = require("./lib/gemini");
 
 const HOST = "127.0.0.1";
@@ -192,6 +196,10 @@ function settings() {
     labChats: Array.isArray(s.labChats) ? s.labChats : [],
     /** Groups the agent may study in full — every message, not just media. */
     learnChats: Array.isArray(s.learnChats) ? s.learnChats : [],
+    /** Per-chat purpose: { jid: "sales" | "imprest" | "receiving" | "lab" | "ignore" }.
+     *  A chat only feeds the workflow it was given; chats selected by an
+     *  older build (allowedChats with no purpose) count as "sales". */
+    chatPurposes: s.chatPurposes && typeof s.chatPurposes === "object" ? s.chatPurposes : {},
     /** Ignore messages we ourselves sent from the linked phone. */
     // Defaults to FALSE: our own invoices are posted by us, and they are
     // the documents that carry the reference.
@@ -949,7 +957,7 @@ function chatsPayload() {
   // A chat that is selected but no longer in the list (renamed, history
   // cleared) still shows, so it can be unselected.
   const all = new Map(knownChats);
-  for (const jid of [...allowed, ...receiving, ...lab, ...learn]) {
+  for (const jid of [...allowed, ...receiving, ...lab, ...learn, ...Object.keys(cfg.chatPurposes || {}).map(normChatJid)]) {
     if (!all.has(jid) && isListableChat(jid)) {
       all.set(jid, { jid, name: null, isGroup: jid.endsWith("@g.us"), lastSeen: null, documentCount: 0, messageCount: 0 });
     }
@@ -959,7 +967,8 @@ function chatsPayload() {
     .map((c) => {
       const participants = c.participants ?? c.participantCount ?? null;
       const { participantCount, ...rest } = c;
-      const watched = cfg.watchAllChats || allowed.includes(c.jid) || receiving.includes(c.jid) || lab.includes(c.jid);
+      const p = purposeOf(c.jid, cfg);
+      const watched = cfg.watchAllChats || allowed.includes(c.jid) || receiving.includes(c.jid) || lab.includes(c.jid) || (Boolean(p) && p !== "ignore");
       return {
         ...rest,
         participants,
@@ -969,6 +978,7 @@ function chatsPayload() {
         receivingSelected: receiving.includes(c.jid),
         labSelected: lab.includes(c.jid),
         learnFrom: learn.includes(c.jid),
+        purpose: purposeOf(c.jid, cfg),
         suggested: Boolean(c.isGroup && SUGGEST.test(String(c.name || ""))),
       };
     })
@@ -987,6 +997,8 @@ function chatsPayload() {
     receivingChats: receiving,
     labChats: lab,
     learnChats: learn,
+    chatPurposes: effectivePurposes(cfg),
+    purposeOptions: PURPOSES.map((id) => ({ id, label: PURPOSE_LABEL[id] })),
     listState: {
       status: state.status,
       engine: state.engine || null,
@@ -1218,6 +1230,92 @@ function inScope(list, jid) {
   });
 }
 
+const PURPOSES = ["sales", "imprest", "receiving", "lab", "ignore"];
+const PURPOSE_LABEL = {
+  sales: "Sales documents (supply sets)",
+  imprest: "Imprest / expenses",
+  receiving: "Client receivings",
+  lab: "Lab reports",
+  ignore: "Ignore",
+};
+
+/** The purpose a chat was given, or null when it is not selected at all. */
+function purposeOf(jid, cfg = settings()) {
+  if (!jid) return null;
+  const j = normChatJid(jid);
+  for (const [k, v] of Object.entries(cfg.chatPurposes || {})) {
+    if (PURPOSES.includes(v) && inScope([k], j)) return v;
+  }
+  if (inScope(cfg.allowedChats, j)) return "sales";
+  if (inScope(cfg.receivingChats, j)) return "receiving";
+  if (inScope(cfg.labChats, j)) return "lab";
+  if (cfg.watchAllChats) return "sales";
+  return null;
+}
+
+/** Every selected chat with its purpose; chats on the old sales list count as "sales". */
+function effectivePurposes(cfg = settings()) {
+  const out = {};
+  for (const j of cfg.allowedChats || []) out[normChatJid(j)] = "sales";
+  for (const [k, v] of Object.entries(cfg.chatPurposes || {})) if (PURPOSES.includes(v)) out[normChatJid(k)] = v;
+  return out;
+}
+
+/**
+ * One-time upgrade: chats picked by an older build (allowedChats with no
+ * purpose) are written down as "Sales documents" so the picker shows it.
+ */
+function migrateChatPurposes() {
+  try {
+    const raw = readJsonSafe(PATHS.settingsFile, {});
+    const cur = raw.chatPurposes && typeof raw.chatPurposes === "object" ? raw.chatPurposes : {};
+    const next = { ...cur };
+    let added = 0;
+    for (const j of Array.isArray(raw.allowedChats) ? raw.allowedChats : []) {
+      const k = normChatJid(j);
+      if (k && !Object.keys(next).some((x) => normChatJid(x) === k)) { next[k] = "sales"; added += 1; }
+    }
+    if (added) {
+      writeChatSettings({ chatPurposes: next });
+      log(`chat purposes: ${added} chat(s) selected earlier set to "Sales documents (supply sets)"`);
+    }
+  } catch (err) {
+    log(`chat purposes migration skipped: ${err.message}`);
+  }
+}
+
+/** Documents a chat's purpose does not cover are skipped — and listed, with the reason. */
+// Kept on disk (db/skipped.json) so the list survives a restart.
+const skippedFile = () => path.join(PATHS.dbDir, "skipped.json");
+function loadSkipped() {
+  try {
+    const j = JSON.parse(fs.readFileSync(skippedFile(), "utf8"));
+    return Array.isArray(j.items) ? j.items : [];
+  } catch {
+    return [];
+  }
+}
+function noteSkipped(entry) {
+  const items = loadSkipped();
+  items.unshift({ at: new Date().toISOString(), ...entry });
+  if (items.length > 300) items.length = 300;
+  try {
+    ensureDir(PATHS.dbDir);
+    const tmp = `${skippedFile()}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify({ items }, null, 1), "utf8");
+    fs.renameSync(tmp, skippedFile());
+  } catch {
+    /* the log line still says it */
+  }
+}
+
+/** A filed paper of a FINAL supply set — frozen: never moved, re-read or removed. */
+const FINAL_LOCKED_MSG = "This document belongs to a FINAL supply set and is locked. An admin or the developer must reopen the set first.";
+function inFinalSet(rec) {
+  const ref = rec?.reference?.canonical;
+  return Boolean(ref && rec.bucket === "filed" && setState.isFinal(ref));
+}
+
 function enqueue(msg) {
   const cfg = settings();
   if (!msg?.key?.id) return;
@@ -1237,7 +1335,7 @@ function enqueue(msg) {
 
   const jid = normChatJid(msg.key.remoteJid || "");
   if (jid === "status@broadcast") return; // WhatsApp Status posts
-  const workflowChat = inScope(cfg.allowedChats, jid) || inScope(cfg.receivingChats, jid) || inScope(cfg.labChats, jid);
+  const workflowChat = inScope(cfg.allowedChats, jid) || inScope(cfg.receivingChats, jid) || inScope(cfg.labChats, jid) || Boolean(purposeOf(jid, cfg));
   if (!cfg.watchAllChats && !workflowChat) {
     if (!describeMedia(msg) || !jid.endsWith("@g.us")) return;
     const nothingChosenYet = !cfg.allowedChats.length && !cfg.receivingChats.length && !cfg.labChats.length;
@@ -1263,6 +1361,13 @@ function enqueue(msg) {
 
   const media = describeMedia(msg);
   if (!media) { diag.noMedia += 1; return; } // plain text, sticker, call, etc.
+  const purpose = purposeOf(jid, cfg);
+  if (purpose === "ignore") {
+    diag.ignoredByPurpose = (diag.ignoredByPurpose || 0) + 1;
+    noteSkipped({ chat: knownChats.get(jid)?.name || jid, chatJid: jid, fileName: media.fileName, reason: "This chat's purpose is set to Ignore." });
+    return;
+  }
+  media.purpose = purpose || "sales";
   if (store.hasMessage(msg.key.id)) { diag.alreadyHandled += 1; return; } // already handled
   diag.queued += 1;
   diag.lastDocumentAt = new Date().toISOString();
@@ -1542,38 +1647,105 @@ function autoSelectSalesGroups() {
  * It is safe to run repeatedly: markConsumed() removes anything matched.
  */
 function sweepStaged({ logFn = log } = {}) {
-  const opts = { companyCodes: settings().companyCodes, vendorCodes: vendors().map((v) => v.code) };
-  let anchors = [];
-  try {
-    anchors = supplyAnchors(opts);
-  } catch (err) {
-    logFn(`could not list the supply sets: ${err.message}`);
-  }
-  let promoted = 0, fromTrips = 0, ambiguous = 0;
-  if (anchors.length) {
+  let promoted = 0, needsCheck = 0, ambiguous = 0, waitingOnFinal = 0;
+  // Several passes: a page placed by its number lets its sibling pages
+  // (same merged PDF) follow in the next pass.
+  for (let pass = 0; pass < 4; pass++) {
+    let sets = [];
+    try {
+      sets = matchingSets();
+    } catch (err) {
+      logFn(`could not list the supply sets: ${err.message}`);
+      break;
+    }
+    if (!sets.length) break;
+    const bundleHome = new Map();
+    for (const st of sets) for (const d of st.docs) if (d.bundleId && !bundleHome.has(d.bundleId)) bundleHome.set(d.bundleId, st.reference.canonical);
+    let movedThisPass = 0;
     for (const entry of staging.pending()) {
+      const rec = store.byId(entry.id) || {};
+      const doc = {
+        id: entry.id,
+        extracted: entry.extracted || rec.extracted || {},
+        transcription: (entry.extracted || rec.extracted || {}).transcription || "",
+        receivedAt: rec.receivedAt || entry.receivedAt,
+        sender: rec.sender || entry.sender,
+        bundleId: rec.bundleId || null,
+      };
       let best = null;
       try {
-        best = staging.bestAnchorFor(entry, anchors);
-      } catch {
+        best = supplyMatch.bestSetFor(doc, sets, { vendors: vendors(), bundleHome });
+      } catch (err) {
+        logFn(`matching "${entry.fileName}" failed: ${err.message}`);
         continue;
       }
       if (!best) continue;
       if (best.ambiguous) {
-        ambiguous += 1;
-        logFn(`"${entry.fileName}" fits ${best.candidates.map((c) => `${c.reference} (${c.score})`).join(" and ")} equally — left for a person to choose`);
+        if (pass === 0) {
+          ambiguous += 1;
+          store.update(entry.id, { matchNote: `Fits ${best.candidates.map((c) => c.reference).join(" and ")} equally — choose the right supply set.`, matchCandidates: best.candidates });
+          logFn(`"${entry.fileName}" fits ${best.candidates.map((c) => c.reference).join(" and ")} equally — left for a person to choose`);
+        }
         continue;
       }
-      const a = best.anchor;
-      const done = promoteStagedVendorDoc(entry, a.reference, a.dir, a.supplyType, logFn, best.reasons, best.score);
+      if (best.set.final) {
+        if (pass === 0) {
+          waitingOnFinal += 1;
+          store.update(entry.id, { matchNote: `Belongs to ${best.key}, which is FINAL — reopen that set to add it.`, needsCheck: true, heldForFinal: best.key, needsCheckReason: `Matches ${best.key}, which was already verified and made final — not added automatically. Reopen that set to add it, or move it elsewhere.` });
+        }
+        continue;
+      }
+      const done = promoteStagedVendorDoc(entry, best.set.reference, best.set.dir, best.set.supplyType, logFn, best.reasons, best.level === "sure" ? 95 : 60);
       if (done) {
         promoted += 1;
-        if (a.source === "trip") fromTrips += 1;
+        movedThisPass += 1;
+        if (best.level === "check") {
+          needsCheck += 1;
+          store.update(entry.id, { needsCheck: true, needsCheckReason: best.reasons.join("; "), matchLevel: "check", matchNote: null });
+        } else {
+          store.update(entry.id, { matchLevel: "sure", needsCheck: false, matchNote: null });
+        }
       }
     }
+    if (!movedThisPass) break;
   }
-  logFn(`staging sweep: ${promoted} document(s) filed (${fromTrips} via coordination trips) against ${anchors.length} supply set(s); ${staging.pending().length} still waiting${ambiguous ? `, ${ambiguous} ambiguous` : ""}`);
-  return { promoted, examined: anchors.length, fromTrips, ambiguous, stillWaiting: staging.pending().length };
+  const stillWaiting = staging.pending().length;
+  logFn(`staging sweep: ${promoted} document(s) placed (${needsCheck} marked Needs check); ${stillWaiting} still waiting${ambiguous ? `, ${ambiguous} ambiguous` : ""}${waitingOnFinal ? `, ${waitingOnFinal} belong to a final set` : ""}`);
+  return { promoted, needsCheck, ambiguous, waitingOnFinal, stillWaiting, fromTrips: 0, examined: 0 };
+}
+
+/**
+ * Every supply set that papers can join: a set exists once OUR tax
+ * invoice / challan is filed. Carries what supplyMatch needs.
+ */
+function matchingSets() {
+  const plants = loadPlants();
+  const finals = setState.finalReferences();
+  const byRef = new Map();
+  for (const r of store.all()) {
+    const canon = r.reference?.canonical;
+    if (r.bucket !== "filed" || !canon || !r.filePath) continue;
+    if (!byRef.has(canon)) byRef.set(canon, { reference: r.reference, docs: [], our: null });
+    const g = byRef.get(canon);
+    g.docs.push(r);
+    if (!g.our && ANCHOR_TYPES.includes(r.extracted?.documentType)) g.our = r;
+  }
+  const opts = { companyCodes: settings().companyCodes, vendorCodes: vendors().map((v) => v.code), plantCodes: plants.map((p) => p.code) };
+  const out = [];
+  for (const [canon, g] of byRef) {
+    if (!g.our) continue;
+    const parsed = parseReference(canon, opts) || { ...g.reference };
+    const plant = parsed.plantCode ? plants.find((p) => String(p.code || "").toUpperCase() === parsed.plantCode) : null;
+    out.push({
+      reference: parsed,
+      supplyType: parsed.plantCode ? "manufacturing" : "trading",
+      plantAdjustmentKg: Number(plant?.weightAdjustmentKg) || 0,
+      final: finals.has(canon),
+      docs: g.docs,
+      dir: path.dirname(g.our.filePath),
+    });
+  }
+  return out;
 }
 
 const ANCHOR_TYPES = ["biome_tax_invoice", "biome_delivery_challan"];
@@ -1788,6 +1960,13 @@ async function handleMedia(msg, media) {
     Number(msg.messageTimestamp || 0) * 1000 || Date.now()
   );
   const sender = media.senderOverride || senderOf(msg);
+  // Pages split out of one merged PDF remember where they came from, so a
+  // page with nothing printed on it still follows its sibling pages.
+  const bundleFields = media.partOf
+    ? { bundleId: media.partOf.bundleId, bundlePages: media.partOf.pages, bundleOf: media.partOf.of, bundleFile: media.partOf.fileName }
+    : {};
+  const chatPurpose = media.purpose || purposeOf(sender.chatJid);
+  const appendRec = (r) => store.append(r && typeof r === "object" ? { ...r, ...bundleFields, chatPurpose } : r);
   log(`incoming ${media.kind} "${media.fileName}" from ${sender.name || sender.chatJid}`);
 
   // 1. Download from WhatsApp's media servers.
@@ -1807,7 +1986,7 @@ async function handleMedia(msg, media) {
     );
   } catch (err) {
     log(`could not download "${media.fileName}": ${err.message}`);
-    store.append({
+    appendRec({
       id: `doc-${msg.key.id}`,
       messageId: msg.key.id,
       receivedAt: receivedAt.toISOString(),
@@ -1852,7 +2031,7 @@ async function handleMedia(msg, media) {
   const alreadyHave = store.findByHash(sha256);
   if (alreadyHave && alreadyHave.id !== thisId && !media.reprocess) {
     log(`skipped "${media.fileName}" — same file already handled as ${alreadyHave.originalName}`);
-    return store.append({
+    return appendRec({
       id: `doc-${msg.key.id}`,
       messageId: msg.key.id,
       receivedAt: receivedAt.toISOString(),
@@ -1872,6 +2051,64 @@ async function handleMedia(msg, media) {
     });
   }
 
+  // ---- 1a. Imprest / expense chats: kept for the imprest workflow, never matched to a supply ----
+  if (chatPurpose === "imprest") {
+    const d = receivedAt;
+    const plan = {
+      dir: path.join(PATHS.inbox, "_Imprest", `${["January","February","March","April","May","June","July","August","September","October","November","December"][d.getMonth()]}-${d.getFullYear()}`, d.toISOString().slice(0, 10)),
+      baseName: path.basename(String(media.fileName || "document"), path.extname(String(media.fileName || ""))).replace(/[<>:"/\\|?*\u0000-\u001F]/g, " ").slice(0, 90) || "document",
+      ext: path.extname(String(media.fileName || "")) || (/pdf/.test(media.mimeType || "") ? ".pdf" : ".jpg"),
+    };
+    const saved = saveFile(plan, buffer);
+    log(`imprest chat: saved "${media.fileName}" for the imprest workflow (not a supply document)`);
+    return appendRec({
+      id: `doc-${msg.key.id}`, messageId: msg.key.id, receivedAt: receivedAt.toISOString(), sender,
+      originalName: media.fileName, mimeType: media.mimeType, sizeBytes: buffer.length, sha256, caption: media.caption,
+      bucket: "imprest", filePath: saved.filePath, relativePath: path.relative(PATHS.inbox, saved.filePath),
+      reference: null, extracted: null, aiStatus: "skipped", aiMessage: "Imprest / expenses chat — kept for the imprest workflow.",
+    });
+  }
+
+  // ---- 1b. A merged PDF is split page-wise into its documents ----
+  if (!media.partOf && /pdf/i.test(String(media.mimeType || "")) && !media.noSplit) {
+    let read = null;
+    try { read = await readLocally(buffer, "application/pdf", media.fileName); } catch { read = null; }
+    if (read && Array.isArray(read.pages) && read.pages.length > 1) {
+      let segs = [];
+      try { segs = pdfSplit.segmentPages(read.pages, { clients: loadClients() }); } catch { segs = []; }
+      if (segs.length > 1) {
+        log(`"${media.fileName}" holds ${segs.length} documents on ${read.pages.length} pages — splitting: ${segs.map((g) => `${g.documentType || "unknown"} (p${g.pages.map((i) => i + 1).join(",")})`).join(", ")}`);
+        try {
+          const ext = ".pdf";
+          const stem = path.basename(String(media.fileName || "merged"), path.extname(String(media.fileName || ""))).replace(/[<>:"/\\|?*\u0000-\u001F]/g, " ").slice(0, 80) || "merged";
+          saveFile({ dir: path.join(PATHS.inbox, "_Originals", receivedAt.toISOString().slice(0, 10)), baseName: stem, ext }, buffer);
+        } catch { /* the parts below are what matters */ }
+        const stem = path.basename(String(media.fileName || "document"), path.extname(String(media.fileName || ""))).slice(0, 80) || "document";
+        const signed = await pdfSplit.signedPages(buffer);
+        let first = null;
+        for (const seg of segs) {
+          const range = seg.pages.length > 1 ? `${seg.pages[0] + 1}-${seg.pages[seg.pages.length - 1] + 1}` : `${seg.pages[0] + 1}`;
+          let part;
+          try { part = await pdfSplit.extractPages(buffer, seg.pages); } catch (err) { log(`could not cut pages ${range} out of "${media.fileName}": ${err.message}`); continue; }
+          const partMsg = { ...msg, key: { ...msg.key, id: `${msg.key.id}_p${range}` } };
+          const rec = await handleMedia(partMsg, {
+            ...media,
+            buffer: part,
+            fileName: `${stem} (page ${range}).pdf`,
+            mimeType: "application/pdf",
+            ocrPages: seg.pages.map((i) => read.pages[i]),
+            readMethod: read.method,
+            dscSigned: seg.pages.some((i) => signed.has(i)),
+            partOf: { bundleId: msg.key.id, pages: seg.pages.map((i) => i + 1), of: read.pages.length, fileName: media.fileName },
+          });
+          if (!first) first = rec;
+        }
+        try { sweepStaged({ logFn: () => {} }); } catch { /* next sweep */ }
+        return first;
+      }
+    }
+  }
+
   // 2. Read it, giving the AI the surrounding chat as context — the
   //    "documents for JPL" line that names the client the papers belong to.
   const vendorList = vendors();
@@ -1889,10 +2126,19 @@ async function handleMedia(msg, media) {
     chatContext,
     caption: media.caption,
     fileName: media.fileName,
+    ...(Array.isArray(media.ocrPages) && media.ocrPages.join("").trim().length > 20 ? { pages: media.ocrPages } : {}),
     senderName: sender.name || null,
   });
 
   const extracted = ai.ok ? ai.data : null;
+  // Split pages are read from the text handed over ("provided"); remember how
+  // the whole PDF was read, so checks know a typed PDF from a photo.
+  if (extracted && media.readMethod && !extracted.sourceReadMethod) extracted.sourceReadMethod = media.readMethod;
+  // DSC from the PDF's own signature field (the stamp text is often not in the page text).
+  if (extracted && /pdf/i.test(String(media.mimeType || "")) && !extracted.hasDigitalSignature) {
+    const signedHere = media.dscSigned !== undefined ? media.dscSigned : (await pdfSplit.signedPages(buffer)).size > 0;
+    if (signedHere) extracted.hasDigitalSignature = true;
+  }
 
   // 2b. Has a person already TAUGHT us what this shape of document is?
   // Corrections outrank the classifier: a coordinator posts the same
@@ -1992,7 +2238,7 @@ async function handleMedia(msg, media) {
     } catch {
       /* the ledger row below still records it */
     }
-    return store.append({
+    return appendRec({
       id: `doc-${msg.key.id}`, messageId: msg.key.id, receivedAt: receivedAt.toISOString(), sender,
       originalName: media.fileName, mimeType: media.mimeType, sizeBytes: buffer.length, sha256,
       bucket: "_Duplicate", filePath: keptPath, relativePath: keptPath ? path.relative(PATHS.inbox, keptPath) : null, logicalDuplicate: true, duplicateOf: logicalDup.id, duplicateOfPath: logicalDup.relativePath || null,
@@ -2052,8 +2298,8 @@ async function handleMedia(msg, media) {
   let joinAnchor = null;
   if (!isAnchor && !reference && extracted && docType !== "receiving" && docType !== "lab_report") {
     try {
-      const best = staging.bestAnchorFor({ extracted }, supplyAnchors(opts));
-      if (best && !best.ambiguous) joinAnchor = best;
+      const best = supplyMatch.bestSetFor({ extracted, transcription: extracted.transcription || "", receivedAt: receivedAt.toISOString(), sender, bundleId: bundleFields.bundleId || null }, matchingSets().filter((x) => !x.final), { vendors: vendors() });
+      if (best && !best.ambiguous && best.level === "sure") joinAnchor = { anchor: { dir: best.set.dir, reference: best.set.reference }, score: 95, reasons: best.reasons };
     } catch {
       /* falls back to staging */
     }
@@ -2080,7 +2326,7 @@ async function handleMedia(msg, media) {
         anchorDate: suggestion.date || extracted?.documentDate || null,
       });
       const saved = saveFile(plan, buffer);
-      const record = store.append({
+      const record = appendRec({
         id: `doc-${msg.key.id}`, messageId: msg.key.id, receivedAt: receivedAt.toISOString(),
         sender, originalName: media.fileName, mimeType: media.mimeType, sizeBytes: buffer.length,
         sha256, caption: media.caption, bucket: "filed", filePath: saved.filePath,
@@ -2095,7 +2341,7 @@ async function handleMedia(msg, media) {
     // No safe match: put it in Review Queue, never into a guessed supply.
     const plan = planFiling({ reference: null, extracted, originalName: media.fileName, mimeType: media.mimeType, receivedAt, senderName: sender.name || sender.chatJid });
     const saved = saveFile(plan, buffer);
-    return store.append({
+    return appendRec({
       id: `doc-${msg.key.id}`, messageId: msg.key.id, receivedAt: receivedAt.toISOString(), sender,
       originalName: media.fileName, mimeType: media.mimeType, sizeBytes: buffer.length, sha256, caption: media.caption,
       bucket: "unmatched", filePath: saved.filePath, relativePath: path.relative(PATHS.inbox, saved.filePath),
@@ -2109,7 +2355,7 @@ async function handleMedia(msg, media) {
   if (docType === "lab_report") {
     const plan = planFiling({ reference: null, extracted, originalName: media.fileName, mimeType: media.mimeType, receivedAt, senderName: sender.name || sender.chatJid });
     const saved = saveFile(plan, buffer);
-    return store.append({
+    return appendRec({
       id: `doc-${msg.key.id}`, messageId: msg.key.id, receivedAt: receivedAt.toISOString(), sender,
       originalName: media.fileName, mimeType: media.mimeType, sizeBytes: buffer.length, sha256, caption: media.caption,
       bucket: "filed", filePath: saved.filePath, relativePath: path.relative(PATHS.inbox, saved.filePath),
@@ -2126,7 +2372,11 @@ async function handleMedia(msg, media) {
   // buyer is Biome and its date is the vendor's); we reuse the folder our
   // document already sits in. If ours has not arrived yet, the paper is
   // held below and released the moment it does (or by the sweep).
-  if ((!isOurs && reference && reference.canonical) || joinAnchor) {
+  // A FINAL supply set is frozen: a paper naming it is held for a person
+  // (shown under Needs check), never added automatically.
+  const finalHold = Boolean(reference && reference.canonical && setState.isFinal(reference.canonical));
+  if (finalHold) log(`"${media.fileName}" names ${reference.canonical}, which is FINAL — held for a person, not added`);
+  if (!finalHold && ((!isOurs && reference && reference.canonical) || joinAnchor)) {
     const ourFiled = joinAnchor
       ? { filePath: path.join(joinAnchor.anchor.dir, "x") }
       : store.all().find((r) =>
@@ -2146,7 +2396,7 @@ async function handleMedia(msg, media) {
         senderName: sender.name || sender.chatJid,
       });
       const saved = saveFile({ ...namePlan, dir: targetDir, bucket: "filed" }, buffer);
-      const record = store.append({
+      const record = appendRec({
         id: `doc-${msg.key.id}`, messageId: msg.key.id, receivedAt: receivedAt.toISOString(), sender,
         originalName: media.fileName, mimeType: media.mimeType, sizeBytes: buffer.length, sha256,
         caption: media.caption, bucket: "filed", filePath: saved.filePath,
@@ -2175,7 +2425,9 @@ async function handleMedia(msg, media) {
     (!docType || docType === "other") &&
     !extracted.vehicleNo && !extracted.biomeDocNo && !extracted.vendorDocNo && !extracted.ewayBillNo && !extracted.grNumber
   );
-  if (!isOurs && nothingToMatch) {
+  // An unreadable page of a merged PDF is still that supply's paper: it
+  // waits with its sibling pages instead of being set aside.
+  if (!isOurs && nothingToMatch && !(media.partOf && extracted)) {
     const plan = planFiling({ reference: null, extracted: extracted || { documentType: "other" }, originalName: media.fileName, mimeType: media.mimeType, receivedAt, senderName: sender.name || sender.chatJid });
     const unreadable = !extracted;
     const reviewPlan = unreadable
@@ -2183,16 +2435,23 @@ async function handleMedia(msg, media) {
       : plan;
     const saved = saveFile(reviewPlan, buffer);
     log(unreadable ? `"${media.fileName}" could not be read — saved for a person to look at` : `"${media.fileName}" is not supply paperwork — set aside`);
-    return store.append({
+    const skipReason = unreadable
+      ? "Could not read this file — saved for a person to look at."
+      : media.kind === "image"
+        ? "Photo / screenshot with nothing a supply set can use (no document type, vehicle or document number)."
+        : "Not a supply document (no document type, vehicle or document number).";
+    if (!unreadable) noteSkipped({ chat: knownChats.get(normChatJid(sender.chatJid))?.name || sender.chatJid, chatJid: sender.chatJid, fileName: media.fileName, reason: skipReason, id: thisId });
+    return appendRec({
       id: thisId, messageId: msg.key.id, receivedAt: receivedAt.toISOString(), sender,
       originalName: media.fileName, mimeType: media.mimeType, sizeBytes: buffer.length, sha256, caption: media.caption,
       bucket: reviewPlan.bucket, filePath: saved.filePath, relativePath: path.relative(PATHS.inbox, saved.filePath),
       reference: null, extracted, aiStatus: ai.ok ? "ok" : "error", aiMessage: ai.ok ? null : ai.message,
       reviewRequired: unreadable, reviewReason: unreadable ? (ai.message || "No readable text in this file.") : null,
+      skipReason,
     });
   }
 
-  if (!isOurs || (!isAnchor && !reference)) {
+  if (finalHold || !isOurs || (!isAnchor && !reference)) {
     const stagedId = `doc-${msg.key.id}`;
     staging.stage({
       id: stagedId,
@@ -2206,7 +2465,7 @@ async function handleMedia(msg, media) {
       caption: media.caption,
     });
 
-    const held = store.append({
+    const held = appendRec({
       id: stagedId,
       messageId: msg.key.id,
       receivedAt: receivedAt.toISOString(),
@@ -2224,6 +2483,7 @@ async function handleMedia(msg, media) {
       aiStatus: ai.ok ? "ok" : "skipped",
       aiMessage: ai.ok ? null : ai.message,
       replyToMessageId: quotedMessageId(msg),
+      ...(finalHold ? { needsCheck: true, needsCheckReason: `Names ${reference.canonical}, which was already verified and made final — not added automatically. Reopen that set to add it, or move it elsewhere.`, heldForFinal: reference.canonical } : {}),
     });
 
     if (docType && docType !== "other") {
@@ -2285,7 +2545,7 @@ async function handleMedia(msg, media) {
   // landed on disk correctly, which is why it looked like nothing was
   // wrong until you tried to look the document up by reference or open
   // a vendor document that was waiting on it.
-  const record = store.append({
+  const record = appendRec({
     id: `doc-${msg.key.id}`,
     messageId: msg.key.id,
     receivedAt: receivedAt.toISOString(),
@@ -2378,6 +2638,9 @@ async function handleMedia(msg, media) {
       // Staged papers were just offered by the sweep; moving their files
       // here as well would leave the staging index pointing at nothing.
       if (other.reference || !other.extracted || other.id === record.id || other.bucket === "_Staged") continue;
+      // Only client receivings use the FIFO suggestion; every supply paper
+      // goes through the precise matcher (staging sweep) instead.
+      if (other.extracted.documentType !== "receiving") continue;
       autoFileFromSuggestion(other.id, other.extracted);
     }
   }
@@ -2466,6 +2729,8 @@ async function rerunRecord(rec) {
  * read again with the new rules; then the waiting list is swept.
  */
 async function recheckWaitingOnStart() {
+  migrateChatPurposes();
+  try { migrateLayout(log); } catch (err) { log(`folder layout migration failed (nothing deleted): ${err.message}`); }
   const marker = path.join(PATHS.root, "runtime", "wa-recheck.json");
   let done = null;
   try { done = JSON.parse(fs.readFileSync(marker, "utf8")); } catch {}
@@ -2886,7 +3151,7 @@ const server = http.createServer(async (req, res) => {
             const c = settings();
             return c.watchAllChats
               ? ["(all chats)"]
-              : [...new Set([...c.allowedChats, ...c.receivingChats, ...c.labChats])].map((j) => knownChats.get(j)?.name || j);
+              : [...new Set([...c.allowedChats, ...c.receivingChats, ...c.labChats, ...Object.entries(effectivePurposes(c)).filter(([, p]) => p !== "ignore").map(([j]) => j)])].map((j) => knownChats.get(j)?.name || j);
           })(),
           autoProcess: settings().autoProcess,
           log: recentLog.slice(-60),
@@ -2947,6 +3212,68 @@ const server = http.createServer(async (req, res) => {
 
     if (route === "/sets" && req.method === "GET") {
       return json(res, 200, store.supplySets());
+    }
+
+    // ---- Verify & finalise (the coordinator's double-check) ----
+    // The app (Next.js proxy) decides WHO may call these and passes the
+    // signed-in person as `by`; the agent decides WHAT is allowed.
+    if (route === "/sets/finalise" && req.method === "POST") {
+      const body = await readBody(req);
+      const ref = String(body.reference || "").trim();
+      const set = (store.supplySets().sets || []).find((s) => s.reference === ref);
+      if (!set) return json(res, 404, { error: "That supply set does not exist." });
+      if (set.status === "final") return json(res, 409, { error: "This supply set is already final." });
+      if (!set.ourDocumentId) return json(res, 400, { error: "A supply set can only be finalised once our tax invoice / delivery challan is in it." });
+      const failed = (set.checks || []).filter((c) => c.ok === false).map((c) => c.label);
+      const missing = (set.missing || []).map((m) => m.label);
+      const note = String(body.note || "").trim().slice(0, 500);
+      if (set.status !== "ready" && !note) {
+        return json(res, 400, {
+          error: `This set is not ready to verify (${[...failed.map((f) => `check failed: ${f}`), ...missing.map((m) => `missing: ${m}`)].join("; ") || "checklist incomplete"}). Write a note saying why it is correct anyway, then confirm.`,
+          code: "NOTE_REQUIRED",
+        });
+      }
+      const r = setState.finalise(ref, body.by || null, {
+        documentIds: set.documents.map((d) => d.id),
+        checklist: { checks: set.checks, missing: set.missing, dscMissing: set.dscMissing, statusBefore: set.status },
+        note: note || null,
+      });
+      if (!r.ok) return json(res, 409, { error: r.error });
+      log(`supply set ${ref} verified and made FINAL by ${body.by?.name || "?"} (${set.documents.length} document(s))`);
+      return json(res, 200, { ok: true, state: r.state, set: (store.supplySets().sets || []).find((s) => s.reference === ref) || null });
+    }
+
+    if (route === "/sets/reopen" && req.method === "POST") {
+      const body = await readBody(req);
+      const ref = String(body.reference || "").trim();
+      const reason = String(body.reason || "").trim().slice(0, 500);
+      if (!reason) return json(res, 400, { error: "Give a reason for reopening a final supply set." });
+      const r = setState.reopen(ref, body.by || null, reason);
+      if (!r.ok) return json(res, 409, { error: r.error });
+      log(`supply set ${ref} REOPENED by ${body.by?.name || "?"}: ${reason}`);
+      // Frozen papers may now follow the current folder layout again.
+      try { const a = anchorDateFor(ref); if (a) reanchorReference(ref, a, log); } catch { /* stays where it is */ }
+      return json(res, 200, { ok: true, state: r.state });
+    }
+
+    // A person confirms a "Needs check" paper is in the right set.
+    if (route === "/documents/confirm" && req.method === "POST") {
+      const body = await readBody(req);
+      const rec = body.id ? store.byId(body.id) : null;
+      if (!rec) return json(res, 404, { error: "That document is not in the ledger." });
+      if (inFinalSet(rec)) return json(res, 409, { error: FINAL_LOCKED_MSG, code: "SET_FINAL" });
+      const updated = store.update(rec.id, { needsCheck: false, needsCheckReason: null, matchLevel: "confirmed", confirmedBy: body.by || null, confirmedAt: new Date().toISOString() });
+      return json(res, 200, { document: updated });
+    }
+
+    // What was NOT saved, and why (screenshots, Ignore chats, …).
+    if (route === "/skipped" && req.method === "GET") {
+      const fromLedger = store.all().filter((d) => d.skipReason).map((d) => ({ at: d.receivedAt, chat: (d.sender?.chatJid && knownChats.get(normChatJid(d.sender.chatJid))?.name) || d.sender?.chatJid || null, chatJid: d.sender?.chatJid || null, fileName: d.originalName, reason: d.skipReason, id: d.id }));
+      const seen = new Set(fromLedger.map((e) => e.id));
+      const items = [...loadSkipped().filter((e) => !e.id || !seen.has(e.id)), ...fromLedger]
+        .sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")))
+        .slice(0, 300);
+      return json(res, 200, { items });
     }
 
     if (route === "/backfill" && req.method === "POST") {
@@ -3051,6 +3378,10 @@ const server = http.createServer(async (req, res) => {
           error: `"${body.referenceNo}" isn't a readable reference. Use the printed form, e.g. BDC/786/MHI/44.`,
         });
       }
+      if (inFinalSet(rec)) return json(res, 409, { error: FINAL_LOCKED_MSG, code: "SET_FINAL" });
+      if (reference && reference.canonical !== rec.reference?.canonical && setState.isFinal(reference.canonical)) {
+        return json(res, 409, { error: `${reference.canonical} is a FINAL supply set — nothing can be added to it until an admin or the developer reopens it.`, code: "SET_FINAL" });
+      }
 
       const extracted = {
         ...(rec.extracted || {}),
@@ -3124,7 +3455,12 @@ const server = http.createServer(async (req, res) => {
           extracted.documentType === "biome_delivery_challan")
       ) {
         moved = reanchorReference(normalisedRef.canonical, extracted.documentDate, log);
+      } else if (normalisedRef && anchorDate) {
+        // A paper moved into a set lands in that set's folder (our client + our date).
+        moved = reanchorReference(normalisedRef.canonical, anchorDate, log);
       }
+      // A person placed it — it no longer needs checking.
+      if (normalisedRef) store.update(rec.id, { needsCheck: false, needsCheckReason: null, matchLevel: "manual" });
 
       // A person just told us the right answer. That is worth far more
       // than anything inferred, so it's recorded with heavy weight and
@@ -3425,8 +3761,30 @@ const server = http.createServer(async (req, res) => {
       }
       if (typeof body.watchAllChats === "boolean") watchAll = body.watchAllChats;
 
+      // Per-chat purpose: { jid, purpose } for one chat, or { chatPurposes: { jid: purpose|null } }.
+      // purpose null / "" = the chat is not selected at all.
+      const purposes = effectivePurposes({ ...cfg, allowedChats: lists.allowedChats });
+      const purposePatch = { ...(body.chatPurposes && typeof body.chatPurposes === "object" ? body.chatPurposes : {}) };
+      if (body.jid && body.purpose !== undefined) purposePatch[body.jid] = body.purpose;
+      for (const [rawJid, rawPurpose] of Object.entries(purposePatch)) {
+        const j = normChatJid(rawJid);
+        if (!j || !isListableChat(j)) continue;
+        const pu = rawPurpose == null || rawPurpose === "" ? null : String(rawPurpose);
+        if (pu && !PURPOSES.includes(pu)) return json(res, 400, { error: `Unknown purpose "${pu}". Use ${PURPOSES.join(", ")}.` });
+        if (pu) purposes[j] = pu;
+        else delete purposes[j];
+        // The sales list follows the purpose, so older code paths agree.
+        const sales = new Set(lists.allowedChats);
+        if (pu === "sales") sales.add(j);
+        else sales.delete(j);
+        lists.allowedChats = [...sales];
+        if (body.watchAllChats === undefined) watchAll = false;
+      }
+      // A chat removed from the sales list by the old one-click path loses its sales purpose too.
+      for (const [j, pu] of Object.entries(purposes)) if (pu === "sales" && !lists.allowedChats.includes(j)) delete purposes[j];
+
       try {
-        writeChatSettings({ ...lists, watchAllChats: watchAll });
+        writeChatSettings({ ...lists, watchAllChats: watchAll, chatPurposes: purposes });
       } catch (err) {
         return json(res, 500, { error: `Could not save the chat selection: ${err.message}` });
       }
@@ -3511,6 +3869,10 @@ const server = http.createServer(async (req, res) => {
           error: "Say what to delete: `ids`, a `from`/`to` date range, or a `bucket`.",
         });
       }
+      // Papers of a FINAL supply set are never removed in bulk or one by one.
+      const locked = targets.filter((d) => inFinalSet(d));
+      if (locked.length && Array.isArray(ids) && ids.length) return json(res, 409, { error: FINAL_LOCKED_MSG, code: "SET_FINAL" });
+      targets = targets.filter((d) => !inFinalSet(d));
 
       let filesRemoved = 0;
       for (const doc of targets) {
@@ -3549,7 +3911,7 @@ const server = http.createServer(async (req, res) => {
         id: { id: String(b.id || `TEST${Date.now()}${Math.floor(Math.random() * 1e6)}`), remote: b.chat, _serialized: `x_${b.chat}_${b.id || Date.now()}_${Math.random()}` },
         from: b.fromMe ? "me@c.us" : b.chat, to: b.fromMe ? b.chat : "me@c.us", author: b.author || undefined,
         fromMe: Boolean(b.fromMe), type: b.type || "document", hasMedia: b.type !== "chat",
-        timestamp: Math.floor(Date.now() / 1000), body: b.body || "",
+        timestamp: Number(b.timestamp) || Math.floor(Date.now() / 1000), body: b.body || "",
         _data: { mimetype: b.mimetype, filename: b.filename, size: Buffer.byteLength(data, "base64"), notifyName: b.sender || "Tester", caption: b.caption || "" },
         downloadMedia: async () => ({ data, mimetype: b.mimetype, filename: b.filename }),
       };
@@ -3626,6 +3988,7 @@ const server = http.createServer(async (req, res) => {
     if (route === "/reprocess" && req.method === "POST") {
       const body = await readBody(req);
       if (!body.id) return json(res, 400, { error: "An `id` is required." });
+      if (inFinalSet(store.byId(body.id))) return json(res, 409, { error: FINAL_LOCKED_MSG, code: "SET_FINAL" });
       const updated = await reprocess(body.id);
       return json(res, 200, { document: updated });
     }

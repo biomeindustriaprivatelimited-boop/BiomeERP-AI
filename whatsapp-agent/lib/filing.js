@@ -35,7 +35,7 @@ const path = require("path");
 const { PATHS, ensureDir } = require("./paths");
 const { referenceToFolder } = require("./reference");
 const { DOC_TYPE_LABEL, DOC_TYPE_SIDE } = require("./classify");
-const { matchClient } = require("./clients");
+const { matchClient, registerNameFor } = require("./clients");
 const { labReportLocation } = require("./clientDocs");
 
 const MONTH_NAMES = [
@@ -94,7 +94,9 @@ function sanitizeSegment(raw, fallback = "Unknown") {
  */
 function clientFolder(name) {
   const matched = matchClient(name);
-  if (matched) return sanitizeSegment(matched.name, "_Unknown Client");
+  // The owner's own client list ("HTPS, KASIMPUR", "NABHA POWER LIMITED")
+  // names the folders, whichever spelling the client master uses.
+  if (matched) return sanitizeSegment(registerNameFor(matched), "_Unknown Client");
   const clean = sanitizeSegment(name, "");
   return clean || "_Unknown Client";
 }
@@ -183,8 +185,7 @@ function planFiling(input) {
         PATHS.inbox,
         monthFolder(docDate),
         clientFolder(extracted?.clientName),
-        dateFolder(docDate),
-        referenceFolder(reference)
+        dateFolder(docDate)
       ),
       baseName: buildBaseName(docType, extracted, originalName, ext),
       ext,
@@ -226,10 +227,13 @@ function planFiling(input) {
       PATHS.inbox,
       monthFolder(anchorDate),
       clientFolder(extracted?.clientName),
-      dateFolder(anchorDate),
-      referenceFolder(reference)
+      dateFolder(anchorDate)
     ),
-    baseName: buildBaseName(docType, extracted, originalName, ext),
+    // Owner's layout: Month / Client / OUR document date / — every paper
+    // of every supply of that day side by side, each name starting with
+    // its reference so one supply's papers sort together.
+    baseName: `${referenceFolder(reference)} - ${buildBaseName(docType, extracted, originalName, ext, { short: true })}`.slice(0, 150),
+    refPrefix: referenceFolder(reference),
     ext,
     /** True when this landed on a guessed date and should be revisited. */
     anchored: Boolean(parseDate(input.anchorDate)),
@@ -285,7 +289,37 @@ function isMeaninglessName(name) {
  * 37" is the difference between a folder you can scan in two seconds and
  * one you have to open file by file.
  */
-function buildBaseName(docType, extracted, originalName, ext) {
+const FILE_LABEL = {
+  biome_tax_invoice: "Biome Tax Invoice",
+  biome_delivery_challan: "Biome Delivery Challan",
+  biome_eway_bill: "Biome Eway Bill",
+  vendor_tax_invoice: "Vendor Tax Invoice",
+  vendor_delivery_challan: "Vendor Delivery Challan",
+  vendor_eway_bill: "Vendor Eway Bill",
+  bilty_lr: "Bill T",
+  weight_slip: "Weight Slip",
+  consignment_tag: "Consignment Tag",
+};
+
+/** "BDC_841_AA_37 - Biome Tax Invoice 841", "… - Vendor Tax Invoice 37-2026-27", "… - Weight Slip HR63E2262". */
+function shortName(docType, extracted, originalName, ext) {
+  const label = FILE_LABEL[docType] || DOC_TYPE_LABEL[docType] || "Document";
+  const side = DOC_TYPE_SIDE[docType];
+  const coreOf = (v) => { const m = String(v || "").match(/(\d+)\s*$/); return m ? String(Number(m[1])) : null; };
+  let key = null;
+  if (docType === "biome_eway_bill" || docType === "vendor_eway_bill") key = extracted?.ewayBillNo;
+  else if (side === "biome") key = coreOf(extracted?.biomeDocNo) || extracted?.biomeDocNo;
+  else if (side === "vendor") key = extracted?.vendorOwnDocNo || extracted?.vendorDocNo;
+  else if (docType === "bilty_lr") key = extracted?.grNumber || extracted?.vehicleNo;
+  else key = extracted?.vehicleNo || extracted?.grNumber || null;
+  if (!key && (docType === "other" || !docType)) {
+    return isMeaninglessName(originalName) ? label : sanitizeSegment(path.basename(String(originalName || "document"), ext), label);
+  }
+  return sanitizeSegment(key ? `${label} ${String(key).replace(/[\/\\]+/g, "-")}` : label, label);
+}
+
+function buildBaseName(docType, extracted, originalName, ext, opts = {}) {
+  if (opts.short) return shortName(docType, extracted, originalName, ext);
   const label = DOC_TYPE_LABEL[docType] || "Document";
   const side = DOC_TYPE_SIDE[docType];
 

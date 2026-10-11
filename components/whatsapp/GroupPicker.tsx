@@ -23,7 +23,7 @@ import {
   Undo2,
 } from "lucide-react";
 import Portal from "@/components/Portal";
-import type { WaChat, WaChatRole, WaChatsResponse } from "@/lib/whatsapp";
+import { CHAT_PURPOSE_OPTIONS, type WaChat, type WaChatPurpose, type WaChatRole, type WaChatsResponse } from "@/lib/whatsapp";
 
 /**
  * Which chats the agent watches.
@@ -284,6 +284,28 @@ export default function GroupPicker({ connected, onChanged }: { connected: boole
     if (ok) toast({ tone: on ? "info" : "good", text: on ? "Reading EVERY chat on this account" : "Back to only the selected chats" });
   }
 
+  /** Give one chat a purpose (or null = stop watching it), saved at once. */
+  async function setPurpose(c: WaChat, purpose: WaChatPurpose | null) {
+    const prev = c.purpose ?? null;
+    const apply = (p: WaChatPurpose | null) => (d: WaChatsResponse) => ({
+      ...d,
+      watchingAll: false,
+      chats: d.chats.map((x) =>
+        x.jid !== c.jid
+          ? x
+          : { ...x, purpose: p, selected: p === "sales", watched: (!!p && p !== "ignore") || x.receivingSelected || x.labSelected }
+      ),
+    });
+    const ok = await patch({ jid: c.jid, purpose }, apply(purpose), apply(prev), [`${c.jid}:sales`]);
+    if (!ok) return;
+    const label = CHAT_PURPOSE_OPTIONS.find((o) => o.id === purpose)?.label;
+    toast({
+      tone: purpose && purpose !== "ignore" ? "good" : "info",
+      text: purpose ? `“${displayName(c)}” → ${label}` : `Stopped watching “${displayName(c)}”`,
+      undo: () => setPurpose({ ...c, purpose }, prev),
+    });
+  }
+
   const chats = data?.chats || [];
   const watchingAll = data?.watchingAll === true;
   const listState = data?.listState;
@@ -291,7 +313,7 @@ export default function GroupPicker({ connected, onChanged }: { connected: boole
 
   const counts = useMemo(() => {
     const groups = chats.filter((c) => c.isGroup).length;
-    const explicit = chats.filter((c) => c.selected || c.receivingSelected || c.labSelected);
+    const explicit = chats.filter((c) => c.selected || c.receivingSelected || c.labSelected || (c.purpose && c.purpose !== "ignore"));
     return {
       all: chats.length,
       groups,
@@ -305,7 +327,7 @@ export default function GroupPicker({ connected, onChanged }: { connected: boole
     };
   }, [chats, watchingAll]);
 
-  const watchedList = useMemo(() => chats.filter((c) => c.selected || c.receivingSelected || c.labSelected), [chats]);
+  const watchedList = useMemo(() => chats.filter((c) => c.selected || c.receivingSelected || c.labSelected || Boolean(c.purpose)), [chats]);
   const suggestions = useMemo(() => chats.filter((c) => c.suggested && !c.selected), [chats]);
 
   const filtered = useMemo(() => {
@@ -313,7 +335,7 @@ export default function GroupPicker({ connected, onChanged }: { connected: boole
     return chats.filter((c) => {
       if (filter === "groups" && !c.isGroup) return false;
       if (filter === "people" && c.isGroup) return false;
-      if (filter === "watching" && !(watchingAll || c.selected || c.receivingSelected || c.labSelected)) return false;
+      if (filter === "watching" && !(watchingAll || c.selected || c.receivingSelected || c.labSelected || c.purpose)) return false;
       if (!q) return true;
       return [c.name, c.jid, formatNumber(c.jid)].filter(Boolean).some((v) => String(v).toLowerCase().includes(q));
     });
@@ -410,6 +432,8 @@ export default function GroupPicker({ connected, onChanged }: { connected: boole
             >
               {c.isGroup ? <Users size={10} /> : <User size={10} />}
               <span className="max-w-[180px] truncate">{displayName(c)}</span>
+              {c.purpose === "imprest" && <span className="rounded-full bg-biome-sky/15 px-1.5 text-[9px] text-biome-skyBright">Imprest</span>}
+              {c.purpose === "ignore" && <span className="rounded-full bg-biome-hover px-1.5 text-[9px] text-biome-muted">Ignored</span>}
               {c.receivingSelected && <span className="rounded-full bg-biome-sky/15 px-1.5 text-[9px] text-biome-skyBright">Recv</span>}
               {c.labSelected && <span className="rounded-full bg-violet-500/15 px-1.5 text-[9px] text-violet-700 dark:text-violet-300">Lab</span>}
               <button
@@ -418,7 +442,8 @@ export default function GroupPicker({ connected, onChanged }: { connected: boole
                 aria-label={`Stop watching ${displayName(c)}`}
                 onClick={async () => {
                   const roles: WaChatRole[] = (["sales", "receiving", "lab"] as WaChatRole[]).filter((r) => c[ROLE_FIELD[r]]);
-                  for (const r of roles) await setRole([c.jid], r, false);
+                  if (c.purpose) await patch({ jid: c.jid, purpose: null }, (d) => d, (d) => d, [`${c.jid}:sales`]);
+                  for (const r of roles) if (r !== "sales") await setRole([c.jid], r, false);
                   toast({ tone: "info", text: `Stopped watching “${displayName(c)}”` });
                 }}
                 className="flex h-4 w-4 items-center justify-center rounded-full hover:bg-biome-leaf/20"
@@ -551,7 +576,7 @@ export default function GroupPicker({ connected, onChanged }: { connected: boole
                     {c.isGroup ? `Groups · ${counts.groups}` : `People · ${counts.people}`}
                   </p>
                 )}
-                <ChatRow chat={c} watchingAll={watchingAll} pending={pending} onToggle={toggle} />
+                <ChatRow chat={c} watchingAll={watchingAll} pending={pending} onToggle={toggle} onPurpose={setPurpose} />
               </div>
             ))}
             {filtered.length > limit && (
@@ -627,15 +652,18 @@ function ChatRow({
   watchingAll,
   pending,
   onToggle,
+  onPurpose,
 }: {
   chat: WaChat;
   watchingAll: boolean;
   pending: Set<string>;
   onToggle: (c: WaChat, role: WaChatRole) => void;
+  onPurpose?: (c: WaChat, purpose: WaChatPurpose | null) => void;
 }) {
   const name = displayName(c);
-  const on = c.selected;
-  const anyRole = c.selected || c.receivingSelected || c.labSelected;
+  const purpose: WaChatPurpose | null = c.purpose ?? (c.selected ? "sales" : null);
+  const on = purpose !== null && purpose !== "receiving" && purpose !== "lab";
+  const anyRole = on || c.receivingSelected || c.labSelected;
   const busy = pending.has(`${c.jid}:sales`);
   const number = c.isGroup ? null : formatNumber(c.jid);
   const last = relTime(c.lastSeen);
@@ -655,7 +683,7 @@ function ChatRow({
     >
       <button
         type="button"
-        onClick={() => onToggle(c, "sales")}
+        onClick={() => (onPurpose ? onPurpose(c, on ? null : "sales") : onToggle(c, "sales"))}
         className="flex min-w-0 flex-1 items-center gap-3 text-left"
         title={on ? "Click to stop watching" : "Click to watch this chat"}
       >
@@ -690,13 +718,36 @@ function ChatRow({
         <RoleChip active={c.learnFrom} busy={pending.has(`${c.jid}:learn`)} onClick={() => onToggle(c, "learn")} icon={Brain} label="Learn" tone="amber" />
       </div>
 
+      {on && onPurpose && (
+        <select
+          value={purpose || "sales"}
+          onChange={(e) => onPurpose(c, e.target.value as WaChatPurpose)}
+          data-testid="chat-purpose"
+          aria-label={`What ${name} is for`}
+          title={CHAT_PURPOSE_OPTIONS.find((o) => o.id === purpose)?.hint || ""}
+          className={`shrink-0 rounded-lg border px-2 py-1 text-[11px] font-semibold outline-none ${
+            purpose === "ignore"
+              ? "border-biome-line bg-biome-hover text-biome-muted"
+              : purpose === "imprest"
+                ? "border-biome-sky/40 bg-biome-sky/10 text-biome-skyBright"
+                : "border-biome-leaf/40 bg-biome-leaf/10 text-biome-leafBright"
+          }`}
+        >
+          {CHAT_PURPOSE_OPTIONS.map((o) => (
+            <option key={o.id} value={o.id} className="bg-biome-bgSoft text-biome-text">
+              {o.label}
+            </option>
+          ))}
+        </select>
+      )}
+
       <button
         type="button"
         role="switch"
         aria-checked={on}
         aria-label={`Watch ${name}`}
         data-testid="watch-switch"
-        onClick={() => onToggle(c, "sales")}
+        onClick={() => (onPurpose ? onPurpose(c, on ? null : "sales") : onToggle(c, "sales"))}
         className={`flex shrink-0 items-center gap-2 rounded-full border py-1 pl-1 pr-3 text-[11px] font-semibold transition-colors ${
           on
             ? "border-transparent bg-[#9fe870] text-[#163300]"
@@ -714,7 +765,7 @@ function ChatRow({
             {busy && <Loader2 size={9} className="animate-spin text-[#163300]" />}
           </motion.span>
         </span>
-        {on ? "Watching" : watchingAll ? "All on" : "Watch"}
+        {on ? (purpose === "ignore" ? "Ignored" : "Watching") : watchingAll ? "All on" : "Watch"}
       </button>
     </div>
   );

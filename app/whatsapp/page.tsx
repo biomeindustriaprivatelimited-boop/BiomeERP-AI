@@ -37,6 +37,8 @@ import TrainAgentPanel from "@/components/whatsapp/TrainAgentPanel";
 import ManualIngestPanel from "@/components/whatsapp/ManualIngestPanel";
 import HealthPanel from "@/components/whatsapp/HealthPanel";
 import TestUploadPanel from "@/components/whatsapp/TestUploadPanel";
+import SkippedPanel from "@/components/whatsapp/SkippedPanel";
+import NeedsCheckPanel from "@/components/whatsapp/NeedsCheckPanel";
 import { useNotifications } from "@/lib/notifications";
 import type { AgentState, SupplySet, WhatsappDocument } from "@/lib/whatsapp";
 
@@ -221,15 +223,40 @@ export default function WhatsappPage() {
     }
   }
 
+  const [statusFilter, setStatusFilter] = useState<"all" | "collecting" | "ready" | "final" | "check">("all");
+  const statusCounts = useMemo(
+    () => ({
+      all: sets.length,
+      collecting: sets.filter((s) => (s.status || "collecting") === "collecting").length,
+      ready: sets.filter((s) => s.status === "ready").length,
+      final: sets.filter((s) => s.status === "final").length,
+      check: sets.filter((s) => s.status !== "final" && (s.needsCheckCount || 0) > 0).length,
+    }),
+    [sets]
+  );
+  // Papers someone should look at: placed without a printed match, or held
+  // because they name a set that is already final.
+  const needsCheckDocs = useMemo(() => {
+    const finals = new Set(sets.filter((s) => s.status === "final").map((s) => s.reference));
+    return documents.filter((d) => d.needsCheck && !(d.reference?.canonical && finals.has(d.reference.canonical) && d.bucket === "filed"));
+  }, [documents, sets]);
+
   const filteredSets = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return sets;
-    return sets.filter((s) =>
+    const byStatus = sets.filter((s) =>
+      statusFilter === "all"
+        ? true
+        : statusFilter === "check"
+          ? s.status !== "final" && (s.needsCheckCount || 0) > 0
+          : (s.status || "collecting") === statusFilter
+    );
+    if (!q) return byStatus;
+    return byStatus.filter((s) =>
       [s.reference, s.clientName, s.vendorName, s.vendorCode, s.vehicleNo, s.biomeDocNo, s.vendorDocNo]
         .filter(Boolean)
         .some((v) => String(v).toLowerCase().includes(q))
     );
-  }, [sets, query]);
+  }, [sets, query, statusFilter]);
 
   const filteredDocs = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -495,6 +522,7 @@ export default function WhatsappPage() {
                 hideDiagnostics
               />
               <GroupPicker connected={linked} onChanged={refresh} />
+              <SkippedPanel />
               <HealthPanel />
               <HistoricalScan backfill={(state as any)?.backfill ?? null} connected={linked} onDone={refresh} />
             </>
@@ -505,15 +533,41 @@ export default function WhatsappPage() {
               {stats && (
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                   <StatTile icon={Layers} label="Supply sets" value={stats.totalSets} />
-                  <StatTile icon={CheckCircle2} label="Complete sets" value={stats.completeSets} tone="good" />
-                  <StatTile icon={Inbox} label="Documents filed" value={stats.filed} />
-                  <StatTile icon={AlertCircle} label="Needs review" value={stats.needsReview} tone={stats.needsReview > 0 ? "warn" : undefined} />
+                  <StatTile icon={CheckCircle2} label="Ready to verify" value={statusCounts.ready} tone="good" />
+                  <StatTile icon={Inbox} label="Final (verified)" value={statusCounts.final} />
+                  <StatTile icon={AlertCircle} label="Needs check" value={needsCheckDocs.length} tone={needsCheckDocs.length > 0 ? "warn" : undefined} />
                 </div>
               )}
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <SectionIntro title="Supply sets" body="One card per coordination reference — our invoice with every vendor and client paper filed beside it." compact />
                 {searchBox("Reference, client, vendor, vehicle…")}
               </div>
+              <div className="flex flex-wrap gap-1.5" data-testid="set-status-filter">
+                {(
+                  [
+                    ["all", "All"],
+                    ["collecting", "Collecting"],
+                    ["ready", "Ready to verify"],
+                    ["final", "Final"],
+                    ["check", "Needs check"],
+                  ] as const
+                ).map(([k, label]) => (
+                  <button
+                    key={k}
+                    type="button"
+                    onClick={() => setStatusFilter(k)}
+                    aria-pressed={statusFilter === k}
+                    className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                      statusFilter === k
+                        ? "border-biome-leaf/50 bg-biome-leaf/15 text-biome-leafBright"
+                        : "border-biome-line text-biome-muted hover:text-biome-text"
+                    }`}
+                  >
+                    {label} <span className="tabular-nums opacity-70">{statusCounts[k]}</span>
+                  </button>
+                ))}
+              </div>
+              {needsCheckDocs.length > 0 && <NeedsCheckPanel docs={needsCheckDocs} sets={sets} onChanged={refresh} onOpenSet={(r) => setSelectedRef(r)} />}
               {!firstLoadDone ? (
                 <LoadingCard />
               ) : filteredSets.length ? (
@@ -532,7 +586,7 @@ export default function WhatsappPage() {
                   </div>
                   {wide && selectedSet && (
                     <div className="sticky top-[84px]">
-                      <SupplySetPanel key={selectedSet.reference} set={selectedSet} />
+                      <SupplySetPanel key={selectedSet.reference} set={selectedSet} allSets={sets} onChanged={refresh} />
                     </div>
                   )}
                 </div>
@@ -701,7 +755,7 @@ export default function WhatsappPage() {
         <Portal>
           <div className="fixed inset-0 z-50 flex justify-end bg-black/50 backdrop-blur-sm" onClick={() => setSelectedRef(null)}>
             <div className="h-full w-full max-w-md overflow-hidden p-2" onClick={(e) => e.stopPropagation()}>
-              <SupplySetPanel key={selectedSet.reference} set={selectedSet} onClose={() => setSelectedRef(null)} />
+              <SupplySetPanel key={selectedSet.reference} set={selectedSet} allSets={sets} onChanged={refresh} onClose={() => setSelectedRef(null)} />
             </div>
           </div>
         </Portal>
