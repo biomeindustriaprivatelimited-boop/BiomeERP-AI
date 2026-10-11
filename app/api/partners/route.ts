@@ -14,6 +14,9 @@ import {
   Partner, PartnerKind, PartnerStatus, PartnerDocument, VendorCategory, SupplyCategory,
 } from "@/lib/partners";
 import { devStamp } from "@/lib/devEdit";
+import { effectivePermissions } from "@/lib/access";
+import { REQUIREMENTS, REQUIREMENT_KEYS } from "@/lib/whatsapp";
+import { syncClientRegistry, refreshClientMirror } from "@/lib/clientRegistry";
 import { importMasterIntoRegistration, syncMasterFromRegistration } from "@/lib/vendorSync";
 import { recordAudit } from "@/lib/audit";
 
@@ -61,6 +64,39 @@ function frozenFor(p: Partner, role: string): string | null {
   return `This registration was submitted and frozen${p.lockedAt ? ` on ${p.lockedAt.slice(0, 10)}` : ""}${p.lockedByName ? ` by ${p.lockedByName}` : ""}. To change it, ask accounts, the admin or the developer to unlock it.`;
 }
 
+/**
+ * Changing a client's document requirements is its own permission
+ * ("customers.requirements": developer, admin, accounts by role; anyone
+ * else only if granted). Everyone who can see the client can READ them.
+ */
+function canEditRequirementsFor(user: { role: any; access?: any }): boolean {
+  return effectivePermissions(user.role, user.access).includes("customers.requirements");
+}
+
+function reqKeys(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return Array.from(new Set(v.map(String).filter((k) => REQUIREMENT_KEYS.includes(k))));
+}
+
+/** The requirement fields a request carries, or null when it carries none. */
+function readRequirements(body: any): { requires: string[]; dscOn: string[]; requirementNotes: string } | null {
+  if (!body || (body.requires === undefined && body.dscOn === undefined && body.requirementNotes === undefined)) return null;
+  const requires = reqKeys(body.requires);
+  return {
+    requires,
+    dscOn: reqKeys(body.dscOn).filter((k) => requires.includes(k)),
+    requirementNotes: str(body.requirementNotes, 600),
+  };
+}
+
+function sameRequirements(a: { requires?: string[]; dscOn?: string[]; requirementNotes?: string }, b: { requires?: string[]; dscOn?: string[]; requirementNotes?: string }): boolean {
+  const k = (x: string[] = []) => [...x].sort().join(",");
+  return k(a.requires) === k(b.requires) && k(a.dscOn) === k(b.dscOn) && String(a.requirementNotes || "") === String(b.requirementNotes || "");
+}
+
+const REQUIREMENTS_REFUSED =
+  "Only accounts, the admin or the developer can change a client's document requirements. You can view them.";
+
 function suppliesOf(v: unknown): SupplyCategory[] {
   if (!Array.isArray(v)) return [];
   const ok = new Set(SUPPLY_CATEGORIES.map((c) => c.id));
@@ -76,9 +112,12 @@ export async function GET(req: NextRequest) {
   if ("response" in auth) return auth.response;
   // The vendor master lives here now; anything only in vendors.json comes in once.
   try { if (importMasterIntoRegistration()) syncMasterFromRegistration(); } catch { /* best effort */ }
+  // ONE client register: anything still only in the old client master
+  // (config/clients.json) is merged into Registration here.
+  let all: Partner[];
+  try { all = syncClientRegistry(); } catch { all = loadPartners(); }
   const user = findById(auth.session.uid)!;
 
-  const all = loadPartners();
   const mine = visibleTo(all, user.role, auth.session.plant);
 
   // "Suggest a code" on the registration form. Worked out over the records
@@ -98,7 +137,13 @@ export async function GET(req: NextRequest) {
   const status = req.nextUrl.searchParams.get("status");
   const search = (req.nextUrl.searchParams.get("search") || "").trim().toLowerCase();
 
-  let list = mine;
+  // The two registration pages: vendors (vendors, transporters, others)
+  // and clients. Counted and summarised per page.
+  const tab = req.nextUrl.searchParams.get("tab");
+  const inTab = (p: Partner) => (tab === "clients" ? p.kind === "client" : tab === "vendors" ? p.kind !== "client" : true);
+  const scope = mine.filter(inTab);
+
+  let list = scope;
   if (kind && kind !== "all") list = list.filter((p) => p.kind === kind);
   const supply = req.nextUrl.searchParams.get("supplies");
   if (supply && supply !== "all") list = list.filter((p) => p.supplies.includes(supply as SupplyCategory));
@@ -109,7 +154,7 @@ export async function GET(req: NextRequest) {
   if (status && status !== "all") list = list.filter((p) => p.status === status);
   if (search) {
     list = list.filter((p) =>
-      [p.name, p.legalName, p.code, p.gstin, p.pan, p.city, p.contactPerson, p.phone]
+      [p.name, p.legalName, p.code, p.gstin, p.pan, p.city, p.contactPerson, p.phone, p.shortName || "", ...(p.aliases || [])]
         .join(" ").toLowerCase().includes(search)
     );
   }
@@ -121,8 +166,8 @@ export async function GET(req: NextRequest) {
   // The two numbers worth putting at the top: papers that have run out,
   // and papers about to. Both are counted over everything visible, not
   // over the current filter — a filtered-away expiry is still an expiry.
-  const expired = mine.reduce((n, p) => n + gapsFor(p).expired.length, 0);
-  const expiringSoon = mine.reduce((n, p) => n + gapsFor(p).expiringSoon.length, 0);
+  const expired = scope.reduce((n, p) => n + gapsFor(p).expired.length, 0);
+  const expiringSoon = scope.reduce((n, p) => n + gapsFor(p).expiringSoon.length, 0);
 
   return NextResponse.json({
     partners: enriched,
@@ -131,12 +176,21 @@ export async function GET(req: NextRequest) {
     documentTypes: PARTNER_DOCUMENT_TYPES,
     plants: plantOptions(),
     summary: {
-      total: mine.length,
-      active: mine.filter((p) => p.status === "active").length,
-      draft: mine.filter((p) => p.status === "draft").length,
+      total: scope.length,
+      active: scope.filter((p) => p.status === "active").length,
+      draft: scope.filter((p) => p.status === "draft").length,
       expired,
       expiringSoon,
+      // Clients whose document requirements are still empty.
+      requirementsMissing: scope.filter((p) => p.kind === "client" && !(p.requires || []).length).length,
+      frozen: scope.filter((p) => p.lockState === "submitted").length,
     },
+    tabCounts: {
+      vendors: mine.filter((p) => p.kind !== "client").length,
+      clients: mine.filter((p) => p.kind === "client").length,
+    },
+    requirementTypes: REQUIREMENT_KEYS.map((id) => ({ id, label: REQUIREMENTS[id] })),
+    canEditRequirements: canEditRequirementsFor(user),
     myPlant: auth.session.plant,
     myRole: user.role,
     categories: VENDOR_CATEGORIES,
@@ -155,8 +209,11 @@ export async function POST(req: NextRequest) {
   const name = str(body?.name);
   if (!name) return NextResponse.json({ error: "Give the company its name." }, { status: 400 });
 
-  const partners = loadPartners();
   const kind = kindOf(body?.kind);
+  // A client may still sit only in the old client master — merge first so
+  // the duplicate check below sees it.
+  let partners: Partner[];
+  try { partners = kind === "client" ? syncClientRegistry() : loadPartners(); } catch { partners = loadPartners(); }
   let category = categoryOf(body?.category);
 
   // Ownership is decided by role, not by what the form sent: trading is
@@ -188,14 +245,26 @@ export async function POST(req: NextRequest) {
     if (problem) return codeRefusal(problem);
   }
 
+  // Document requirements for a new client: only for those allowed to
+  // set them. Anyone else registers the client and accounts sets them.
+  const reqs = kind === "client" ? readRequirements(body) : null;
+  if (reqs && (reqs.requires.length || reqs.dscOn.length || reqs.requirementNotes) && !canEditRequirementsFor(user)) {
+    return NextResponse.json({ error: REQUIREMENTS_REFUSED }, { status: 403 });
+  }
+
   const partner: Partner = {
     ...blankPartner({ id: user.id, name: user.name }, kind),
     ...readPartner(body, auth.session.plant, user.role),
     category,
+    ...(kind === "client" ? { clientMasterMerged: true } : {}),
+    ...(reqs && kind === "client" && canEditRequirementsFor(user)
+      ? { ...reqs, requirementsUpdatedAt: new Date().toISOString(), requirementsUpdatedBy: user.name }
+      : {}),
   };
 
   savePartners([...partners, partner]);
   try { syncMasterFromRegistration(); } catch { /* agent file is derived; app data is safe */ }
+  if (kind === "client") refreshClientMirror();
   recordAudit({
     action: "PARTNER_REGISTERED",
     userId: user.id, userName: user.name, role: user.role,
@@ -263,8 +332,40 @@ export async function PUT(req: NextRequest) {
     return NextResponse.json({ partner: { ...updated, gaps: gapsFor(updated), freeze: freezeInfoFor(updated), locked: Boolean(frozenFor(updated, user.role)) } });
   }
 
+  // ---- Client document requirements (permission-based, not freeze-based) ----
+  if (body.action === "requirements") {
+    if (existing.kind !== "client") return NextResponse.json({ error: "Only a client has document requirements." }, { status: 400 });
+    if (!canEditRequirementsFor(user)) return NextResponse.json({ error: REQUIREMENTS_REFUSED }, { status: 403 });
+    const reqs = readRequirements(body) || { requires: [], dscOn: [], requirementNotes: "" };
+    if (!reqs.requires.length) {
+      return NextResponse.json({ error: "Tick at least one required document — otherwise no supply to this client can ever be marked complete." }, { status: 400 });
+    }
+    const now = new Date().toISOString();
+    const updated: Partner = {
+      ...existing, ...reqs,
+      requirementsUpdatedAt: now, requirementsUpdatedBy: user.name, updatedAt: now,
+    };
+    savePartners(partners.map((p) => (p.id === updated.id ? updated : p)));
+    refreshClientMirror();
+    recordAudit({
+      action: "CLIENT_REQUIREMENTS_CHANGED",
+      userId: user.id, userName: user.name, role: user.role,
+      targetType: "partner", targetId: updated.id, targetLabel: updated.name,
+      detail: `${reqs.requires.map((k) => REQUIREMENTS[k] || k).join(", ")}${reqs.dscOn.length ? ` · DSC on ${reqs.dscOn.map((k) => REQUIREMENTS[k] || k).join(", ")}` : ""}`,
+    });
+    return NextResponse.json({ partner: { ...updated, gaps: gapsFor(updated), freeze: freezeInfoFor(updated), locked: Boolean(frozenFor(updated, user.role)) } });
+  }
+
   const lock = frozenFor(existing, user.role);
   if (lock) return NextResponse.json({ error: lock }, { status: 423 });
+
+  // An ordinary save may carry the requirements (the registration form
+  // sends the whole record). Unchanged is fine; a CHANGE needs the
+  // permission — the server refuses it, the screen only mirrors that.
+  const incomingReqs = existing.kind === "client" ? readRequirements(body) : null;
+  if (incomingReqs && !sameRequirements(incomingReqs, existing) && !canEditRequirementsFor(user)) {
+    return NextResponse.json({ error: REQUIREMENTS_REFUSED }, { status: 403 });
+  }
 
   {
     const incoming = readPartner(body, auth.session.plant, user.role);
@@ -293,8 +394,23 @@ export async function PUT(req: NextRequest) {
     lockedAt: existing.lockedAt,
     lockedByName: existing.lockedByName,
     lockHistory: existing.lockHistory,
+    ...(existing.kind === "client"
+      ? {
+          // Requirements and POs never change through an ordinary save
+          // unless this person may set them (checked above).
+          requires: incomingReqs && canEditRequirementsFor(user) ? incomingReqs.requires : existing.requires,
+          dscOn: incomingReqs && canEditRequirementsFor(user) ? incomingReqs.dscOn : existing.dscOn,
+          requirementNotes: incomingReqs && canEditRequirementsFor(user) ? incomingReqs.requirementNotes : existing.requirementNotes,
+          poNumbers: existing.poNumbers,
+          clientMasterMerged: existing.clientMasterMerged,
+        }
+      : {}),
     updatedAt: new Date().toISOString(),
   }, existing, { name: user.name, role: user.role }, body.devNote);
+  if (existing.kind === "client" && incomingReqs && !sameRequirements(incomingReqs, existing)) {
+    updated.requirementsUpdatedAt = new Date().toISOString();
+    updated.requirementsUpdatedBy = user.name;
+  }
 
   // Status is where the money risk sits, so it has its own rules.
   const nextStatus = PARTNER_STATUS.some((s) => s.id === body.status) ? (body.status as PartnerStatus) : existing.status;
@@ -346,6 +462,7 @@ export async function PUT(req: NextRequest) {
   }
   savePartners(partners.map((p) => (p.id === updated.id ? updated : p)));
   try { syncMasterFromRegistration(); } catch { /* derived file */ }
+  if (existing.kind === "client") refreshClientMirror();
   return NextResponse.json({ partner: { ...updated, gaps: gapsFor(updated), freeze: freezeInfoFor(updated), locked: false } });
 }
 
@@ -519,5 +636,16 @@ function readPartner(body: any, sessionPlant: string | null, role: string): Part
     agreementTo: str(body?.agreementTo, 10),
     notes: str(body?.notes, 600),
     supplies: suppliesOf(body?.supplies),
+    // Client: the short name and the spellings the WhatsApp agent matches.
+    ...(kindOf(body?.kind) === "client" || body?.shortName !== undefined || body?.aliases !== undefined
+      ? {
+          shortName: str(body?.shortName, 60),
+          aliases: Array.isArray(body?.aliases)
+            ? Array.from(new Set<string>(body.aliases.map((a: any) => str(a, 80).toLowerCase()).filter(Boolean))).slice(0, 30)
+            : typeof body?.aliases === "string"
+              ? Array.from(new Set<string>(body.aliases.split(",").map((a: string) => a.trim().toLowerCase()).filter(Boolean))).slice(0, 30)
+              : [],
+        }
+      : {}),
   };
 }

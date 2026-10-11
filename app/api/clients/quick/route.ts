@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { paths, readJson, writeJsonAtomic, ensureDir } from "@/lib/dataRoot";
-import { Client } from "@/lib/whatsapp";
 import { requirePermission, findById } from "@/lib/authServer";
 import { recordAudit } from "@/lib/audit";
+import { blankPartner, type Partner } from "@/lib/partners";
+import { syncClientRegistry, saveClientsAndMirror, findTradingClient, toMirrorEntry } from "@/lib/clientRegistry";
 
 /**
  * Add a client from wherever you happen to be — the coordination form,
@@ -16,14 +16,12 @@ import { recordAudit } from "@/lib/audit";
  * that is precisely how one vendor ended up in this system three times
  * under three spellings.
  *
- * So the client is created bare and marked as needing setup. The
- * coordination page shows that state plainly rather than pretending the
- * client is ready.
+ * So the client is created bare and marked as needing setup — as a
+ * TRADING client registration (the one client register), which then shows
+ * in Client registration for its papers and in clients.json for the agent.
  */
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-interface ClientFile { clients: Client[]; }
 
 export async function POST(req: NextRequest) {
   const auth = await requirePermission(req, "customers");
@@ -34,31 +32,24 @@ export async function POST(req: NextRequest) {
   const name = String(body?.name ?? "").trim().slice(0, 120);
   if (!name) return NextResponse.json({ error: "A client name is required." }, { status: 400 });
 
-  const file = readJson<ClientFile>(paths.clientsFile, { clients: [] });
-  const clients = file.clients || [];
-
-  const existing = clients.find(
-    (c) =>
-      c.name.trim().toLowerCase() === name.toLowerCase() ||
-      (c.aliases || []).some((a) => a.trim().toLowerCase() === name.toLowerCase())
-  );
+  const partners = syncClientRegistry();
+  const existing = findTradingClient(partners, name);
   // Not an error — the coordinator wanted this client to exist and it
   // does. Handing back the stored record keeps the form moving.
-  if (existing) return NextResponse.json({ client: existing, created: false });
+  if (existing) return NextResponse.json({ client: toMirrorEntry(existing), created: false });
 
-  const client: Client = {
+  const partner: Partner = {
+    ...blankPartner({ id: user.id, name: user.name }, "client"),
     name,
+    category: "trading",
+    supplies: [],
     shortName: String(body?.shortName ?? "").trim().slice(0, 40),
-    aliases: [],
-    requires: [],
-    dscOn: [],
-    notes: "Added from coordination. Document requirements not set yet.",
-    poNumbers: [],
+    requirementNotes: "Added from coordination. Document requirements not set yet.",
+    notes: "Quick-added from coordination. Complete GST, PAN and KYC in Client registration.",
+    clientMasterMerged: true,
   };
-
-  clients.push(client);
-  ensureDir(paths.configDir);
-  writeJsonAtomic(paths.clientsFile, { ...file, clients, updatedAt: new Date().toISOString() });
+  partners.push(partner);
+  saveClientsAndMirror(partners);
 
   recordAudit({
     action: "CLIENT_ADDED",
@@ -67,5 +58,5 @@ export async function POST(req: NextRequest) {
     detail: "Quick-added from coordination — requirements still to be set.",
   });
 
-  return NextResponse.json({ client, created: true }, { status: 201 });
+  return NextResponse.json({ client: toMirrorEntry(partner), created: true }, { status: 201 });
 }

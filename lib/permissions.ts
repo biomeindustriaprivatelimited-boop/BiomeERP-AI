@@ -59,6 +59,11 @@ export type Permission =
   | "reco"
   | "vendors"
   | "customers"
+  // Change the documents each client requires (and which need a DSC).
+  // Everyone with "customers" / "partners" can SEE them; only holders of
+  // this key may edit — developer, admin and accounts by role, anyone else
+  // only if the developer grants it to that person.
+  | "customers.requirements"
   // Commercial registration — agreements, rates, bank details. Its own key
   // because a coordinator holds "vendors" and must NOT hold this: a signed
   // rate card is not something the person chasing weight slips reads.
@@ -92,6 +97,9 @@ export type Permission =
   | "release.read"    // be told a new version exists
   | "release.publish" // announce one
   | "company"
+  // Edit the Company Profile (sections, director photos). Everyone can READ
+  // it; developer and admin hold this by role.
+  | "company.edit"
   | "settings"
   | "users"
   // Developer-only. Deliberately separate from "users": an admin still
@@ -117,6 +125,7 @@ const ALL: Permission[] = [
   "reco",
   "vendors",
   "customers",
+  "customers.requirements",
   "partners",
   "imprest.entry",
   "imprest.view",
@@ -143,6 +152,7 @@ const ALL: Permission[] = [
   "release.read",
   "release.publish",
   "company",
+  "company.edit",
   "settings",
   "users",
   "access.grant",
@@ -185,6 +195,7 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "reco",
     "vendors",
     "customers",
+    "customers.requirements",
     "partners",
     "imprest.entry",
     "imprest.view",
@@ -427,7 +438,9 @@ export const ROUTE_PERMISSIONS: { prefix: string; permission: Permission }[] = [
   { prefix: "/analytics", permission: "tally" },
   { prefix: "/reports", permission: "tally" },
   { prefix: "/company-documents", permission: "company" },
-  { prefix: "/company", permission: "company" },
+  // /company (the Company Profile) is open to every signed-in user — it is
+  // how a new employee learns the business. Editing it needs "company.edit",
+  // checked in /api/company/*.
   { prefix: "/imprest", permission: "imprest.view" },
   // The phone version of the same module — same key, same rules.
   { prefix: "/m/imprest", permission: "imprest.view" },
@@ -439,7 +452,9 @@ export const ROUTE_PERMISSIONS: { prefix: string; permission: Permission }[] = [
   { prefix: "/cloud", permission: "settings" },
   { prefix: "/audit", permission: "users" },
   { prefix: "/organisation", permission: "payroll" },
-  { prefix: "/clients", permission: "customers" },
+  // Old client-master address: now only redirects to Client registration,
+  // so it needs what that page needs.
+  { prefix: "/clients", permission: "partners" },
   { prefix: "/settings", permission: "settings" },
   { prefix: "/users", permission: "users" },
 ];
@@ -579,7 +594,8 @@ export const PERMISSION_INFO: Record<string, { label: string; what: string; why:
   "imprest.viewPlant": { label: "Imprest — my plant", what: "Read every imprest holder's entries at the plant the person is signed in for.", why: "Plant managers.", risk: "medium" },
   coordination: { label: "Coordination", what: "Create and track supply trips, weights, receivings.", why: "Coordinators.", risk: "medium" },
   vendors: { label: "Vendors", what: "Vendor master, codes, balances.", why: "Coordinators and accounts.", risk: "medium" },
-  customers: { label: "Clients", what: "Client master and document requirements.", why: "Coordinators and accounts.", risk: "medium" },
+  customers: { label: "Clients", what: "Client master — view each client's document requirements, add clients and POs from coordination.", why: "Coordinators and accounts.", risk: "medium" },
+  "customers.requirements": { label: "Clients — edit document requirements", what: "Change which documents each client requires and which need a DSC. Without it the requirements are view-only.", why: "Accounts, admin, developer.", risk: "medium" },
   partners: { label: "Registration", what: "Register vendors/transporters with KYC (plant managers: own site, raw material; coordinators: trading).", why: "Whoever onboards suppliers.", risk: "medium" },
   "employee.view": { label: "Employees", what: "Employee master and KYC files.", why: "HR/accounts and plant managers.", risk: "high" },
   "attendance.entry": { label: "Attendance & Leave", what: "Mark attendance and apply/decide leave. (Holiday announcements are admin/developer only.)", why: "Plant managers and accounts.", risk: "medium" },
@@ -587,7 +603,8 @@ export const PERMISSION_INFO: Record<string, { label: string; what: string; why:
   reports: { label: "Reports & Report Builder", what: "Module reports (imprest, coordination, transport, biomass, stock, vendors…) as PDF and Excel — only over data the person can already see.", why: "Management, accounts, and each team for its own data.", risk: "medium" },
   stock: { label: "Plant stock", what: "See spare-part stock, receive parts (GRN), issue parts to machines. Plant managers: own plant.", why: "Plant managers, stores, procurement.", risk: "medium" },
   "stock.manage": { label: "Plant stock — manage", what: "Item & machine masters, adjustments, cancellations, transfers, all plants.", why: "Procurement / stores in-charge.", risk: "medium" },
-  company: { label: "Company", what: "Company profile and company documents.", why: "Admin/accounts.", risk: "medium" },
+  company: { label: "Company documents", what: "Company documents (certificates, licences). The Company Profile itself is open to everyone.", why: "Admin/accounts.", risk: "medium" },
+  "company.edit": { label: "Company Profile — edit", what: "Edit the Company Profile's sections and upload director photos. Everyone else reads it.", why: "Admin, developer.", risk: "medium" },
   settings: { label: "Settings", what: "Appearance, mail, backup, Drive, PO policy, SLA, memory.", why: "Admin. Changes affect everyone.", risk: "high" },
   users: { label: "Users & Audit", what: "Create users, set roles, read the audit log.", why: "Admin only.", risk: "high" },
   support: { label: "Help & Support", what: "Guides and support tickets.", why: "Everyone.", risk: "low" },

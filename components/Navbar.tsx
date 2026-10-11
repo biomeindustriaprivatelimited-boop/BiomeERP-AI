@@ -162,7 +162,7 @@ export default function Navbar() {
                     <KeyRound size={13} /> Security &amp; MPIN
                   </Link>
                   {([
-                    ["/company", "Company profile", "company"],
+                    ["/company", "Company profile", undefined],
                     ["/settings", "Settings", "settings"],
                     ["/vendors", "Vendor registry", "vendors"],
                   ] as const)

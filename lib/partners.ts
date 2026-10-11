@@ -277,6 +277,42 @@ export interface Partner {
   registeredByName: string;
   createdAt: string;
   updatedAt: string;
+
+  /* ---- Client-only fields (kind === "client") ----------------------
+   * The client master that used to live on its own in
+   * config/clients.json (document requirements, DSC rules, aliases, POs)
+   * is now part of the client's ONE registration record. clients.json is
+   * written FROM here (lib/clientRegistry.ts) so the WhatsApp agent,
+   * coordination, billing and reports keep reading it unchanged. */
+  /** Short name used on sheets and folders, e.g. "NTPC Tanda". */
+  shortName?: string;
+  /** How the name appears on paperwork — matched by the WhatsApp agent. */
+  aliases?: string[];
+  /** Documents this client requires for every supply (REQUIREMENT_KEYS). */
+  requires?: string[];
+  /** Of those, the ones that must carry a Digital Signature Certificate. */
+  dscOn?: string[];
+  /** Note shown to coordinators with the requirements. */
+  requirementNotes?: string;
+  /** Client purchase orders (coordination's PO picker). */
+  poNumbers?: ClientPurchaseOrder[];
+  /** Who last changed the document requirements, and when. */
+  requirementsUpdatedAt?: string;
+  requirementsUpdatedBy?: string;
+  /** Set once the old client-master entry was merged into this record. */
+  clientMasterMerged?: boolean;
+}
+
+/** Same shape as lib/whatsapp.ts PurchaseOrder (kept local: no cycle). */
+export interface ClientPurchaseOrder {
+  id: string;
+  number: string;
+  date: string;
+  validTill: string;
+  quantityMt: number;
+  location: string;
+  notes: string;
+  active: boolean;
 }
 
 interface PartnerFile { partners: Partner[]; updatedAt?: string; }
@@ -287,6 +323,13 @@ export function partnersDir(): string {
 function file(): string {
   return path.join(partnersDir(), "partners.json");
 }
+
+const STRING_FIELDS = [
+  "code", "name", "legalName", "gstin", "pan", "material", "contactPerson", "phone", "email",
+  "addressLine", "city", "state", "pincode", "bankName", "accountNumber", "ifsc",
+  "rateTerms", "paymentTerms", "agreementFrom", "agreementTo", "statusReason", "notes",
+  "registeredBy", "registeredByName",
+] as const;
 
 export function loadPartners(): Partner[] {
   const f = readJson<PartnerFile>(file(), { partners: [] });
@@ -300,8 +343,16 @@ export function loadPartners(): Partner[] {
     // manager's record 7 days after registration. Honour that for anything
     // already past it, so nothing that was frozen becomes editable again.
     const legacyFrozen = !p.lockState && Date.now() - new Date(submittedAt).getTime() > PARTNER_FREEZE_DAYS * 86400000;
+    // Text fields a legacy record (or one written by another tool) may
+    // lack — read as "" so no screen or check trips over undefined.
+    const text: Record<string, string> = {};
+    for (const k of STRING_FIELDS) text[k] = p[k] === undefined || p[k] === null ? "" : String(p[k]);
     return {
       ...p,
+      ...text,
+      status: PARTNER_STATUS.some((x) => x.id === p.status) ? p.status : "draft",
+      createdAt: p.createdAt || submittedAt,
+      updatedAt: p.updatedAt || p.createdAt || submittedAt,
       category: p.category === "trading" ? "trading" : "raw_material",
       submittedAt,
       supplies: Array.isArray(p.supplies) ? p.supplies : p.kind === "transporter" ? ["transport"] : p.kind === "biomass_vendor" ? ["biomass"] : [],
@@ -309,8 +360,28 @@ export function loadPartners(): Partner[] {
       lockedAt: p.lockedAt || (legacyFrozen ? submittedAt : ""),
       lockedByName: p.lockedByName || (legacyFrozen ? "Auto-frozen (old 7-day rule)" : ""),
       lockHistory: Array.isArray(p.lockHistory) ? p.lockHistory : [],
+      // Older records (and ones written by other tools) may lack these —
+      // every screen can then rely on the arrays being there.
+      documents: Array.isArray(p.documents) ? p.documents : [],
+      plants: Array.isArray(p.plants) ? p.plants : [],
+      ...(p.kind === "client" ? clientFieldsOf(p) : {}),
     };
   });
+}
+
+/** The client-only fields, always present and well-formed for a client. */
+export function clientFieldsOf(p: any): Required<Pick<Partner, "shortName" | "aliases" | "requires" | "dscOn" | "requirementNotes" | "poNumbers">> {
+  const list = (v: any): string[] => (Array.isArray(v) ? v.map((x) => String(x)).filter(Boolean) : []);
+  const requires = Array.from(new Set(list(p?.requires)));
+  return {
+    shortName: String(p?.shortName ?? ""),
+    aliases: Array.from(new Set(list(p?.aliases).map((a) => a.trim().toLowerCase()).filter(Boolean))),
+    requires,
+    // A DSC can only be demanded on a document the client actually wants.
+    dscOn: Array.from(new Set(list(p?.dscOn))).filter((k) => requires.includes(k)),
+    requirementNotes: String(p?.requirementNotes ?? ""),
+    poNumbers: Array.isArray(p?.poNumbers) ? p.poNumbers.filter((x: any) => x && x.number) : [],
+  };
 }
 
 export function savePartners(partners: Partner[]): void {
@@ -334,6 +405,7 @@ export function blankPartner(by: { id: string; name: string }, kind: PartnerKind
     documents: [], notes: "",
     registeredBy: by.id, registeredByName: by.name,
     createdAt: now, updatedAt: now,
+    ...(kind === "client" ? clientFieldsOf({}) : {}),
   };
 }
 

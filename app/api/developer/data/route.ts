@@ -2,7 +2,7 @@ import fs from "fs";
 import path from "path";
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission, findById } from "@/lib/authServer";
-import { paths, readJson, writeJsonAtomic } from "@/lib/dataRoot";
+import { paths, readJson } from "@/lib/dataRoot";
 import { recordAudit } from "@/lib/audit";
 import {
   WIPE_SCOPES, WIPE_WAIT_MS, previewWipe, issueWipeToken, checkWipeToken, consumeWipeToken, performWipe,
@@ -10,6 +10,7 @@ import {
 import { runBackup } from "@/lib/backupEngine";
 import { loadPartners, savePartners, partnersDir } from "@/lib/partners";
 import { syncMasterFromRegistration } from "@/lib/vendorSync";
+import { dropFromClientMirror, findTradingClient } from "@/lib/clientRegistry";
 import { loadTrips, saveTrips } from "@/lib/coordination";
 import { loadPoFile, savePoFile } from "@/lib/po";
 
@@ -85,10 +86,22 @@ export async function POST(req: NextRequest) {
       savePartners(all.filter((x) => x.id !== id));
       try { fs.rmSync(path.join(partnersDir(), p.id), { recursive: true, force: true }); } catch { /* files gone */ }
       try { syncMasterFromRegistration(p.kind === "biomass_vendor" && p.code ? [p.code] : []); } catch { /* derived */ }
+      // clients.json is derived from the client registrations; drop the
+      // row too, or the next sync would re-create the client from it.
+      if (p.kind === "client") dropFromClientMirror(p.id);
     } else if (kind === "client") {
       const f = readJson<{ clients: any[] }>(paths.clientsFile, { clients: [] });
-      if (!(f.clients || []).some((c: any) => c.name === id)) return NextResponse.json({ error: "Not found." }, { status: 404 });
-      writeJsonAtomic(paths.clientsFile, { ...f, clients: f.clients.filter((c: any) => c.name !== id) });
+      const row = (f.clients || []).find((c: any) => c.name === id);
+      if (!row) return NextResponse.json({ error: "Not found." }, { status: 404 });
+      // One client register: the row in clients.json mirrors a client
+      // registration. Remove both, or the sync would bring it back.
+      const all = loadPartners();
+      const reg = findTradingClient(all, row.id || row.name);
+      if (reg) {
+        savePartners(all.filter((x) => x.id !== reg.id));
+        try { fs.rmSync(path.join(partnersDir(), reg.id), { recursive: true, force: true }); } catch { /* files gone */ }
+      }
+      dropFromClientMirror(row.id || row.name);
     } else if (kind === "trip") {
       const all = loadTrips();
       const t = all.find((x) => x.id === id);

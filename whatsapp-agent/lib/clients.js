@@ -216,8 +216,44 @@ function loadPlants() {
 function ensureSeeded() {
   ensureVendorsSeeded();
   loadPlants();
-  if (fs.existsSync(PATHS.clientsFile)) return;
+  if (fs.existsSync(PATHS.clientsFile)) {
+    // The app now writes this file FROM client Registration (one client
+    // register — lib/clientRegistry.ts). If Registration wrote it before
+    // the agent ever ran, the SOP list was never seeded: add the SOP
+    // clients that are not there yet, once. Entries are written without an
+    // id; the app merges them into Registration on its next sync.
+    try {
+      const f = JSON.parse(fs.readFileSync(PATHS.clientsFile, "utf8"));
+      if (!f.seededAt) {
+        const list = Array.isArray(f.clients) ? f.clients : [];
+        const have = new Set(list.map((c) => normalise(c && c.name)));
+        for (const c of seedClientRows()) if (!have.has(normalise(c.name))) list.push(c);
+        f.clients = list;
+        f.seededFrom = f.seededFrom || "SOP for Coordinators, section 7";
+        f.seededAt = new Date().toISOString();
+        fs.writeFileSync(PATHS.clientsFile, JSON.stringify(f, null, 2), "utf8");
+      }
+    } catch { /* unreadable — leave it for the app to rewrite */ }
+    return;
+  }
   ensureDir(PATHS.configDir);
+  fs.writeFileSync(
+    PATHS.clientsFile,
+    JSON.stringify(
+      {
+        clients: seedClientRows(),
+        seededFrom: "SOP for Coordinators, section 7",
+        seededAt: new Date().toISOString(),
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+}
+
+/** SOP section 7 plus the company's client list, as clients.json rows. */
+function seedClientRows() {
   // Clients with SOP requirements keep them; the rest are seeded with a
   // sensible default so they're recognised immediately and can be tuned.
   const known = new Map(SEED_CLIENTS.map((c) => [c.name.toLowerCase(), c]));
@@ -238,20 +274,7 @@ function ensureSeeded() {
       notes: "Seeded from the client list — confirm what this client actually requires.",
     });
   }
-
-  fs.writeFileSync(
-    PATHS.clientsFile,
-    JSON.stringify(
-      {
-        clients: merged,
-        seededFrom: "SOP for Coordinators, section 7",
-        seededAt: new Date().toISOString(),
-      },
-      null,
-      2
-    ),
-    "utf8"
-  );
+  return merged;
 }
 
 function loadClients() {
