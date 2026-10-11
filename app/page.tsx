@@ -224,21 +224,23 @@ export default function DashboardPage() {
                     <Scramble value={inrShort(t.value)} />
                   )}
                 </p>
-                {!loading && (() => {
-                  const le = lastEntryLine(t.key, t.value);
-                  return le ? (
-                    <p className="truncate text-[10.5px] font-medium text-biome-text/80" title={le.title} data-testid="kpi-last-entry">
-                      {le.text}
-                    </p>
-                  ) : null;
-                })()}
-                {!loading && t.sub ? (
-                  <p className="truncate text-[9px] text-biome-muted/90" title={t.sub} data-testid="kpi-period">
-                    {t.sub}
-                  </p>
-                ) : null}
               </div>
             </div>
+            {/* Under the figure, full tile width: the date of the last voucher
+                behind it, then (smaller) the period it is for. */}
+            {!loading && (() => {
+              const le = lastEntryLine(t.key, t.value);
+              return le ? (
+                <p className="mt-1.5 truncate text-[10.5px] font-medium tabular-nums text-biome-text/80" title={le.title} data-testid="kpi-last-entry">
+                  {le.text}
+                </p>
+              ) : null;
+            })()}
+            {!loading && t.sub ? (
+              <p className="truncate text-[9px] text-biome-muted/90" title={t.sub} data-testid="kpi-period">
+                {t.sub}
+              </p>
+            ) : null}
           </TiltCard>
         ))}
       </div>

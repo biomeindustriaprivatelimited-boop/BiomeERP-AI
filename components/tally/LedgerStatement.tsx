@@ -91,6 +91,13 @@ interface Statement {
   };
 }
 
+const PAPER_CSS = `
+[data-ledger-paper] table.lp-main > thead th { background: #14532d; color: #ffffff; border-color: #14532d; }
+[data-ledger-paper] table.lp-sub th { background: transparent; color: #64748b; border-color: #e2e8f0; }
+[data-ledger-paper] tbody td { color: #0f172a; border-color: #e2e8f0; }
+[data-ledger-paper] tbody tr:hover { background: #ecfdf5; }
+`;
+
 const conn = () => {
   const s = getTallySettings();
   return { mode: s.mode, host: s.host, port: s.port, agentUrl: s.agentUrl, agentApiKey: s.agentApiKey, company: s.companyName };
@@ -389,7 +396,10 @@ export default function LedgerStatement({ initialLedger }: { initialLedger: stri
           ))}
 
           {/* ---------- The printed-ledger "paper" (fixed light colours so it reads the same in every theme) ---------- */}
-          <div className="overflow-hidden rounded-2xl border border-slate-300 bg-white text-slate-900 shadow-xl" data-testid="statement-paper">
+          <div className="overflow-hidden rounded-2xl border border-slate-300 bg-white text-slate-900 shadow-xl" data-testid="statement-paper" data-ledger-paper="">
+            {/* The theme's table rules (app/themes.css) colour every th/td
+                from the theme tokens; the paper keeps its own ink instead. */}
+            <style>{PAPER_CSS}</style>
             <div className="h-1.5 bg-[#14532d]" />
             <div className="relative px-6 pb-4 pt-5 text-center">
               {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -419,7 +429,7 @@ export default function LedgerStatement({ initialLedger }: { initialLedger: stri
 
             {/* Ledger table */}
             <div className="overflow-x-auto px-6 pb-6">
-              <table className="w-full border-collapse text-[12px]" data-testid="statement-table">
+              <table className="lp-main w-full border-collapse text-[12px]" data-testid="statement-table">
                 <thead>
                   <tr className="bg-[#14532d] text-white">
                     <th className="w-6 px-1 py-2" />
@@ -449,7 +459,10 @@ export default function LedgerStatement({ initialLedger }: { initialLedger: stri
                       <Fragment key={`${r.date}-${r.voucherNumber}-${i}`}>
                         <tr
                           className={`cursor-pointer border-b border-slate-100 align-top hover:bg-emerald-50 ${i % 2 ? "bg-slate-50/60" : ""}`}
-                          onDoubleClick={() => toggle(i)}
+                          onDoubleClick={() => {
+                            window.getSelection()?.removeAllRanges();
+                            toggle(i);
+                          }}
                           data-testid="statement-row"
                         >
                           <td className="px-1 py-1.5 text-slate-400">
@@ -476,7 +489,7 @@ export default function LedgerStatement({ initialLedger }: { initialLedger: stri
                           <tr className="border-b border-slate-200 bg-emerald-50/60" data-testid="statement-entries">
                             <td />
                             <td colSpan={7} className="px-2 py-2">
-                              <table className="w-full max-w-2xl text-[11.5px]">
+                              <table className="lp-sub w-full max-w-2xl text-[11.5px]">
                                 <thead>
                                   <tr className="text-slate-500">
                                     <th className="py-0.5 text-left font-semibold">Ledger</th>

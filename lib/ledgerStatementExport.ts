@@ -50,7 +50,7 @@ export const amt = (n: number) => (n ? Math.abs(n).toLocaleString("en-IN", { min
 export const drcr = (n: number) => (n < 0 ? "Dr" : n > 0 ? "Cr" : "");
 export const balText = (n: number) => (n ? `${amt(n)} ${drcr(n)}` : "0.00");
 /** jsPDF's built-in fonts have no ₹ and no long dashes. */
-const pdfText = (s: string) => String(s ?? "").replace(/₹/g, "Rs.").replace(/[—–]/g, "-").replace(/[^\x20-\x7E\n]/g, "");
+const pdfText = (s: string) => String(s ?? "").replace(/₹/g, "Rs.").replace(/[—–]/g, "-").replace(/·/g, "-").replace(/[^\x20-\x7E\n]/g, "");
 
 export function fileBase(ledger: string, periodText: string) {
   return `Ledger - ${ledger} - ${periodText}`.replace(/[\\/:*?"<>|]+/g, "-").slice(0, 120);
@@ -136,8 +136,8 @@ export async function exportStatementPdf(d: StatementExportData) {
         doc.text(pdfText(k), x, yy);
         doc.setFont("helvetica", "normal");
         doc.setTextColor(...INK);
-        const lines = doc.splitTextToSize(pdfText(v), W / 2 - 42);
-        doc.text(lines, x + 26, yy);
+        const lines = doc.splitTextToSize(pdfText(v), W / 2 - 49);
+        doc.text(lines, x + 31, yy);
         yy += 4 * Math.max(1, lines.length);
       }
       maxY = Math.max(maxY, yy);
@@ -186,6 +186,7 @@ export async function exportStatementPdf(d: StatementExportData) {
     head: [["Date", "Particulars", "Vch Type", "Vch No.", "Debit", "Credit", "Balance"]],
     body,
     theme: "grid",
+    rowPageBreak: "avoid",
     styles: { fontSize: 7.6, cellPadding: 1.4, textColor: INK, lineColor: [225, 230, 235], lineWidth: 0.1, valign: "top" },
     headStyles: { fillColor: BRAND, textColor: 255, fontStyle: "bold", halign: "center" },
     columnStyles: {

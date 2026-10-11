@@ -43,10 +43,26 @@ function partnerFor(name: string, role: string, plant: string | null): Record<st
   );
   if (!hit) return null;
   const any = hit as any;
-  const responsible =
-    [any.responsiblePerson, any.responsibleName, any.responsiblePersonName, any.responsible?.name, any.responsible]
-      .map((v) => (typeof v === "string" ? v.trim() : ""))
-      .find(Boolean) || null;
+  // Optional fields (added by the partner-responsibility work): a user id
+  // and/or a plain name, a backup, and a team. Any may be missing.
+  const nameOf = (id: unknown, fallback: unknown) => {
+    const n = typeof fallback === "string" ? fallback.trim() : "";
+    if (n) return n;
+    if (typeof id === "string" && id) {
+      const u = findById(id);
+      return u ? u.name || u.username : "";
+    }
+    return "";
+  };
+  const teamLabel = typeof any.team === "string" && any.team ? any.team.charAt(0).toUpperCase() + any.team.slice(1) : "";
+  const main =
+    nameOf(any.responsibleUserId, any.responsibleName) ||
+    [any.responsiblePerson, any.responsible?.name].map((v) => (typeof v === "string" ? v.trim() : "")).find(Boolean) ||
+    "";
+  const backup = nameOf(any.backupUserId, any.backupName);
+  const responsible = main
+    ? `${main}${teamLabel ? ` (${teamLabel})` : ""}${backup ? ` · backup: ${backup}` : ""}`
+    : null;
   return {
     id: hit.id,
     kind: hit.kind,
