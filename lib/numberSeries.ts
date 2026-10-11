@@ -331,6 +331,7 @@ export function loadSeriesFile(): SeriesFile {
   if (!Array.isArray(stored.series) || stored.series.length === 0) {
     const seeded = seed();
     migrate(seeded);
+    seeded.series = seeded.series.map(normaliseSeries);
     saveSeriesFile(seeded);
     return seeded;
   }
