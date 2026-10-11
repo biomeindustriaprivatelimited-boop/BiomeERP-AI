@@ -3549,7 +3549,7 @@ const server = http.createServer(async (req, res) => {
         id: { id: String(b.id || `TEST${Date.now()}${Math.floor(Math.random() * 1e6)}`), remote: b.chat, _serialized: `x_${b.chat}_${b.id || Date.now()}_${Math.random()}` },
         from: b.fromMe ? "me@c.us" : b.chat, to: b.fromMe ? b.chat : "me@c.us", author: b.author || undefined,
         fromMe: Boolean(b.fromMe), type: b.type || "document", hasMedia: b.type !== "chat",
-        timestamp: Math.floor(Date.now() / 1000), body: b.body || "",
+        timestamp: Number(b.timestamp) || Math.floor(Date.now() / 1000), body: b.body || "",
         _data: { mimetype: b.mimetype, filename: b.filename, size: Buffer.byteLength(data, "base64"), notifyName: b.sender || "Tester", caption: b.caption || "" },
         downloadMedia: async () => ({ data, mimetype: b.mimetype, filename: b.filename }),
       };
