@@ -724,7 +724,9 @@ function consistencyChecks(set, ourDoc) {
   const o = ourDoc?.extracted || {};
   const plateOf = (v) => String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, "") || null;
   const core = (v) => { const m = String(v || "").match(/^(\d{1,6})\s*\/\s*20\d{2}-?\d{2}$/) || String(v || "").match(/(\d+)\s*$/); return m ? String(Number(m[1])) : null; };
-  const kgOf = (e) => Number(String(e?.quantityKg || e?.netWeight || "").replace(/[^\d.]/g, "")) || null;
+  const kgOf = (e) => { const k = Number(String(e?.netWeight || e?.quantityKg || "").replace(/[^\d.]/g, "")) || null; return k && k >= 1000 && k <= 90000 ? k : null; };
+  const photo = (d) => !/pdf_text/.test(String(d.extracted?.readMethod || ""));
+  const close1 = (a, b) => { const x = String(Math.round(a)), y = String(Math.round(b)); if (x.length !== y.length) return false; let n = 0; for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) n++; return n <= 1; };
   const docs = set.documents.filter((d) => d !== ourDoc);
   const isMfg = /\/(REW|GKD)\//.test(set.reference);
   let adj = 0;
@@ -736,9 +738,11 @@ function consistencyChecks(set, ourDoc) {
   }
   const refOur = set.biomeDocNo ? String(Number(String(set.biomeDocNo).replace(/\D/g, "")) || "") : null;
   const ourCore = core(o.biomeDocNo);
-  out.push({ key: "our_no", label: "Our document number matches the reference", ok: refOur && ourCore ? refOur === ourCore : null, detail: `${o.biomeDocNo || "?"} · reference ${set.reference}` });
-  if (isMfg && set.vendorDocNo && refOur && String(Number(String(set.vendorDocNo).replace(/\D/g, ""))) !== refOur) {
-    out.push({ key: "mfg_ref", label: "Plant reference repeats our invoice number", ok: false, detail: `${set.reference} — both numbers should be ${ourCore || refOur}` });
+  if (isMfg) {
+    const refOther = set.vendorDocNo ? String(Number(String(set.vendorDocNo).replace(/\D/g, ""))) : null;
+    out.push({ key: "our_no", label: "Plant reference = BDC / our invoice no / plant / our invoice no", ok: ourCore ? refOur === ourCore && refOther === ourCore : null, detail: `${o.biomeDocNo || "?"} · reference ${set.reference}${ourCore && (refOur !== ourCore || refOther !== ourCore) ? ` — both numbers should be ${ourCore} (typing mistake on the invoice?)` : ""}` });
+  } else {
+    out.push({ key: "our_no", label: "Our document number matches the reference", ok: refOur && ourCore ? refOur === ourCore : null, detail: `${o.biomeDocNo || "?"} · reference ${set.reference}` });
   }
   if (!isMfg) {
     const vt = docs.filter((d) => d.extracted?.documentType === "vendor_tax_invoice");
@@ -752,20 +756,22 @@ function consistencyChecks(set, ourDoc) {
   }
   const ourPlate = plateOf(o.vehicleNo);
   const plates = docs.map((d) => ({ d, p: plateOf(d.extracted?.vehicleNo) })).filter((x) => x.p && x.p.length >= 8);
-  const badPlates = plates.filter((x) => ourPlate && x.p !== ourPlate);
+  const oneOff = (a, b) => a && b && a.length === b.length && [...a].filter((ch, i) => ch !== b[i]).length === 1;
+  const badPlates = plates.filter((x) => ourPlate && x.p !== ourPlate && !(photo(x.d) && oneOff(x.p, ourPlate)));
   out.push({ key: "vehicle", label: "Same vehicle on every paper", ok: ourPlate ? badPlates.length === 0 : null, detail: badPlates.length ? `${ourPlate} on ours; ${badPlates.map((x) => `${x.p} on ${x.d.originalName}`).join(", ")}` : ourPlate || "Vehicle not readable on our document" });
   const ourKg = kgOf(o);
   const weighed = docs.filter((d) => ["vendor_tax_invoice", "weight_slip", "consignment_tag"].includes(d.extracted?.documentType) && kgOf(d.extracted));
   const badKg = weighed.filter((d) => {
     const k = kgOf(d.extracted);
     const diff = ourKg - k;
+    if (photo(d) && (close1(ourKg, k) || (adj && (close1(ourKg - 400, k) || close1(ourKg - 500, k))))) return false;
     if (d.extracted.documentType === "weight_slip" && adj > 0) return !(diff >= -60 && diff <= adj + 150);
     return Math.abs(diff) > Math.max(60, ourKg * 0.01);
   });
   out.push({ key: "weight", label: "Weights agree", ok: ourKg && weighed.length ? badKg.length === 0 : null, detail: ourKg ? `${ourKg} kg on ours${weighed.length ? "; " + weighed.map((d) => `${kgOf(d.extracted)} kg on ${d.originalName}`).join(", ") : ""}${adj ? ` (plant slip may be ${adj - 100}–${adj} kg lower)` : ""}` : "Weight not readable on our document" });
   const day = (v) => { const x = new Date(String(v || "").slice(0, 10)); return isNaN(x) ? null : x.getTime() / 86400000; };
   const ourDay = day(o.documentDate);
-  const dated = docs.filter((d) => day(d.extracted?.documentDate) != null && /^(vendor_|weight_slip|consignment_tag|biome_eway)/.test(d.extracted?.documentType || ""));
+  const dated = docs.filter((d) => !photo(d) && day(d.extracted?.documentDate) != null && /^(vendor_|weight_slip|consignment_tag|biome_eway)/.test(d.extracted?.documentType || ""));
   const badDates = dated.filter((d) => Math.abs(day(d.extracted.documentDate) - ourDay) > 3);
   out.push({ key: "dates", label: "Dates within 3 days of our document", ok: ourDay != null && dated.length ? badDates.length === 0 : null, detail: `${o.documentDate || "?"} on ours${badDates.length ? "; " + badDates.map((d) => `${d.extracted.documentDate} on ${d.originalName}`).join(", ") : ""}` });
   const unsure = set.documents.filter((d) => d.needsCheck);

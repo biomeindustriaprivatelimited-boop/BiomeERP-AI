@@ -613,6 +613,13 @@ function readWeightSlip(text) {
 function readLayout(text, ctx = {}) {
   const t = String(text || "");
   if (t.replace(/\s/g, "").length < 15) return null;
+  const r = readAny(t, ctx);
+  // A Digital Signature Certificate leaves "Digitally signed by …" on the page.
+  if (r && /digitally\s*signed\s*by/i.test(t)) r.hasDigitalSignature = true;
+  return r;
+}
+
+function readAny(t, ctx) {
   return (
     readOurEwayOrVendorEway(t) ||
     readConsignmentTag(t, ctx) ||

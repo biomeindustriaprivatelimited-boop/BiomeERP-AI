@@ -375,7 +375,7 @@ function coerce(result, ctx) { // result may be replaced by the layout reading b
     const v = result?.[f];
     out[f] = v === null || v === undefined || v === "" ? null : String(v).trim();
   }
-  out.hasDigitalSignature = result?.hasDigitalSignature === true;
+  out.hasDigitalSignature = result?.hasDigitalSignature === true || /digitally\s*signed\s*by/i.test(String(result?.transcription || ""));
   // Carried through so the supply-set checklist can credit every
   // document inside a merged PDF, and so the UI can explain itself.
   if (Array.isArray(result?.containedDocumentTypes)) out.containedDocumentTypes = result.containedDocumentTypes;
