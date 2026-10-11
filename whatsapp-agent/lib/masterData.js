@@ -122,4 +122,18 @@ const SEED_CLIENT_NAMES = [
   { name: "Walbha Industries Pvt. Ltd", aliases: ["walbha", "walbha industries pvt ltd"] },
 ];
 
-module.exports = { SEED_VENDORS, SEED_PLANTS, SEED_CLIENT_NAMES };
+/**
+ * The client master (SOP section 7) spells some clients differently from
+ * the owner's sales-register list, which names the folders. Register name
+ * → the SOP client it is (requirements live on the SOP entry).
+ */
+const REGISTER_TO_SOP = {
+  "HTPS, KASIMPUR": "HTPS Aligarh",
+  "NABHA POWER LIMITED": "Nabha Power Limited",
+  "NTPC LIMITED ( Mouda )": "NTPC Limited – Mouda",
+  "NTPC TANDA": "NTPC Limited – Tanda",
+  "NTPC LTD ( SOLAPUR )": "NTPC Limited – Solapur",
+  "ARAVALI POWER COMPANY PVT LTD": "Aravali Power Company Private Limited (APCPL Jharli)",
+};
+
+module.exports = { SEED_VENDORS, SEED_PLANTS, SEED_CLIENT_NAMES, REGISTER_TO_SOP };

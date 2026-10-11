@@ -46,6 +46,9 @@ const staging = require("./lib/staging");
 const patterns = require("./lib/patterns");
 const { parseFileName, applyFileNameHints } = require("./lib/fileNameParser");
 const verify = require("./lib/verify");
+const pdfSplit = require("./lib/pdfSplit");
+const supplyMatch = require("./lib/supplyMatch");
+const setState = require("./lib/setState");
 const gemini = require("./lib/gemini");
 
 const HOST = "127.0.0.1";
@@ -192,6 +195,10 @@ function settings() {
     labChats: Array.isArray(s.labChats) ? s.labChats : [],
     /** Groups the agent may study in full — every message, not just media. */
     learnChats: Array.isArray(s.learnChats) ? s.learnChats : [],
+    /** Per-chat purpose: { jid: "sales" | "imprest" | "receiving" | "lab" | "ignore" }.
+     *  A chat only feeds the workflow it was given; chats selected by an
+     *  older build (allowedChats with no purpose) count as "sales". */
+    chatPurposes: s.chatPurposes && typeof s.chatPurposes === "object" ? s.chatPurposes : {},
     /** Ignore messages we ourselves sent from the linked phone. */
     // Defaults to FALSE: our own invoices are posted by us, and they are
     // the documents that carry the reference.
@@ -1218,6 +1225,36 @@ function inScope(list, jid) {
   });
 }
 
+const PURPOSES = ["sales", "imprest", "receiving", "lab", "ignore"];
+const PURPOSE_LABEL = {
+  sales: "Sales documents (supply sets)",
+  imprest: "Imprest / expenses",
+  receiving: "Client receivings",
+  lab: "Lab reports",
+  ignore: "Ignore",
+};
+
+/** The purpose a chat was given, or null when it is not selected at all. */
+function purposeOf(jid, cfg = settings()) {
+  if (!jid) return null;
+  const j = normChatJid(jid);
+  for (const [k, v] of Object.entries(cfg.chatPurposes || {})) {
+    if (PURPOSES.includes(v) && inScope([k], j)) return v;
+  }
+  if (inScope(cfg.allowedChats, j)) return "sales";
+  if (inScope(cfg.receivingChats, j)) return "receiving";
+  if (inScope(cfg.labChats, j)) return "lab";
+  if (cfg.watchAllChats) return "sales";
+  return null;
+}
+
+/** Documents a chat's purpose does not cover are skipped — and listed, with the reason. */
+const skippedLog = [];
+function noteSkipped(entry) {
+  skippedLog.unshift({ at: new Date().toISOString(), ...entry });
+  if (skippedLog.length > 300) skippedLog.length = 300;
+}
+
 function enqueue(msg) {
   const cfg = settings();
   if (!msg?.key?.id) return;
@@ -1237,7 +1274,7 @@ function enqueue(msg) {
 
   const jid = normChatJid(msg.key.remoteJid || "");
   if (jid === "status@broadcast") return; // WhatsApp Status posts
-  const workflowChat = inScope(cfg.allowedChats, jid) || inScope(cfg.receivingChats, jid) || inScope(cfg.labChats, jid);
+  const workflowChat = inScope(cfg.allowedChats, jid) || inScope(cfg.receivingChats, jid) || inScope(cfg.labChats, jid) || Boolean(purposeOf(jid, cfg));
   if (!cfg.watchAllChats && !workflowChat) {
     if (!describeMedia(msg) || !jid.endsWith("@g.us")) return;
     const nothingChosenYet = !cfg.allowedChats.length && !cfg.receivingChats.length && !cfg.labChats.length;
@@ -1263,6 +1300,13 @@ function enqueue(msg) {
 
   const media = describeMedia(msg);
   if (!media) { diag.noMedia += 1; return; } // plain text, sticker, call, etc.
+  const purpose = purposeOf(jid, cfg);
+  if (purpose === "ignore") {
+    diag.ignoredByPurpose = (diag.ignoredByPurpose || 0) + 1;
+    noteSkipped({ chat: knownChats.get(jid)?.name || jid, chatJid: jid, fileName: media.fileName, reason: "This chat's purpose is set to Ignore." });
+    return;
+  }
+  media.purpose = purpose || "sales";
   if (store.hasMessage(msg.key.id)) { diag.alreadyHandled += 1; return; } // already handled
   diag.queued += 1;
   diag.lastDocumentAt = new Date().toISOString();
@@ -1542,38 +1586,105 @@ function autoSelectSalesGroups() {
  * It is safe to run repeatedly: markConsumed() removes anything matched.
  */
 function sweepStaged({ logFn = log } = {}) {
-  const opts = { companyCodes: settings().companyCodes, vendorCodes: vendors().map((v) => v.code) };
-  let anchors = [];
-  try {
-    anchors = supplyAnchors(opts);
-  } catch (err) {
-    logFn(`could not list the supply sets: ${err.message}`);
-  }
-  let promoted = 0, fromTrips = 0, ambiguous = 0;
-  if (anchors.length) {
+  let promoted = 0, needsCheck = 0, ambiguous = 0, waitingOnFinal = 0;
+  // Several passes: a page placed by its number lets its sibling pages
+  // (same merged PDF) follow in the next pass.
+  for (let pass = 0; pass < 4; pass++) {
+    let sets = [];
+    try {
+      sets = matchingSets();
+    } catch (err) {
+      logFn(`could not list the supply sets: ${err.message}`);
+      break;
+    }
+    if (!sets.length) break;
+    const bundleHome = new Map();
+    for (const st of sets) for (const d of st.docs) if (d.bundleId && !bundleHome.has(d.bundleId)) bundleHome.set(d.bundleId, st.reference.canonical);
+    let movedThisPass = 0;
     for (const entry of staging.pending()) {
+      const rec = store.byId(entry.id) || {};
+      const doc = {
+        id: entry.id,
+        extracted: entry.extracted || rec.extracted || {},
+        transcription: (entry.extracted || rec.extracted || {}).transcription || "",
+        receivedAt: rec.receivedAt || entry.receivedAt,
+        sender: rec.sender || entry.sender,
+        bundleId: rec.bundleId || null,
+      };
       let best = null;
       try {
-        best = staging.bestAnchorFor(entry, anchors);
-      } catch {
+        best = supplyMatch.bestSetFor(doc, sets, { vendors: vendors(), bundleHome });
+      } catch (err) {
+        logFn(`matching "${entry.fileName}" failed: ${err.message}`);
         continue;
       }
       if (!best) continue;
       if (best.ambiguous) {
-        ambiguous += 1;
-        logFn(`"${entry.fileName}" fits ${best.candidates.map((c) => `${c.reference} (${c.score})`).join(" and ")} equally — left for a person to choose`);
+        if (pass === 0) {
+          ambiguous += 1;
+          store.update(entry.id, { matchNote: `Fits ${best.candidates.map((c) => c.reference).join(" and ")} equally — choose the right supply set.`, matchCandidates: best.candidates });
+          logFn(`"${entry.fileName}" fits ${best.candidates.map((c) => c.reference).join(" and ")} equally — left for a person to choose`);
+        }
         continue;
       }
-      const a = best.anchor;
-      const done = promoteStagedVendorDoc(entry, a.reference, a.dir, a.supplyType, logFn, best.reasons, best.score);
+      if (best.set.final) {
+        if (pass === 0) {
+          waitingOnFinal += 1;
+          store.update(entry.id, { matchNote: `Belongs to ${best.key}, which is FINAL — reopen that set to add it.` });
+        }
+        continue;
+      }
+      const done = promoteStagedVendorDoc(entry, best.set.reference, best.set.dir, best.set.supplyType, logFn, best.reasons, best.level === "sure" ? 95 : 60);
       if (done) {
         promoted += 1;
-        if (a.source === "trip") fromTrips += 1;
+        movedThisPass += 1;
+        if (best.level === "check") {
+          needsCheck += 1;
+          store.update(entry.id, { needsCheck: true, needsCheckReason: best.reasons.join("; "), matchLevel: "check", matchNote: null });
+        } else {
+          store.update(entry.id, { matchLevel: "sure", needsCheck: false, matchNote: null });
+        }
       }
     }
+    if (!movedThisPass) break;
   }
-  logFn(`staging sweep: ${promoted} document(s) filed (${fromTrips} via coordination trips) against ${anchors.length} supply set(s); ${staging.pending().length} still waiting${ambiguous ? `, ${ambiguous} ambiguous` : ""}`);
-  return { promoted, examined: anchors.length, fromTrips, ambiguous, stillWaiting: staging.pending().length };
+  const stillWaiting = staging.pending().length;
+  logFn(`staging sweep: ${promoted} document(s) placed (${needsCheck} marked Needs check); ${stillWaiting} still waiting${ambiguous ? `, ${ambiguous} ambiguous` : ""}${waitingOnFinal ? `, ${waitingOnFinal} belong to a final set` : ""}`);
+  return { promoted, needsCheck, ambiguous, waitingOnFinal, stillWaiting, fromTrips: 0, examined: 0 };
+}
+
+/**
+ * Every supply set that papers can join: a set exists once OUR tax
+ * invoice / challan is filed. Carries what supplyMatch needs.
+ */
+function matchingSets() {
+  const plants = loadPlants();
+  const finals = setState.finalReferences();
+  const byRef = new Map();
+  for (const r of store.all()) {
+    const canon = r.reference?.canonical;
+    if (r.bucket !== "filed" || !canon || !r.filePath) continue;
+    if (!byRef.has(canon)) byRef.set(canon, { reference: r.reference, docs: [], our: null });
+    const g = byRef.get(canon);
+    g.docs.push(r);
+    if (!g.our && ANCHOR_TYPES.includes(r.extracted?.documentType)) g.our = r;
+  }
+  const opts = { companyCodes: settings().companyCodes, vendorCodes: vendors().map((v) => v.code), plantCodes: plants.map((p) => p.code) };
+  const out = [];
+  for (const [canon, g] of byRef) {
+    if (!g.our) continue;
+    const parsed = parseReference(canon, opts) || { ...g.reference };
+    const plant = parsed.plantCode ? plants.find((p) => String(p.code || "").toUpperCase() === parsed.plantCode) : null;
+    out.push({
+      reference: parsed,
+      supplyType: parsed.plantCode ? "manufacturing" : "trading",
+      plantAdjustmentKg: Number(plant?.weightAdjustmentKg) || 0,
+      final: finals.has(canon),
+      docs: g.docs,
+      dir: path.dirname(g.our.filePath),
+    });
+  }
+  return out;
 }
 
 const ANCHOR_TYPES = ["biome_tax_invoice", "biome_delivery_challan"];
@@ -1788,6 +1899,13 @@ async function handleMedia(msg, media) {
     Number(msg.messageTimestamp || 0) * 1000 || Date.now()
   );
   const sender = media.senderOverride || senderOf(msg);
+  // Pages split out of one merged PDF remember where they came from, so a
+  // page with nothing printed on it still follows its sibling pages.
+  const bundleFields = media.partOf
+    ? { bundleId: media.partOf.bundleId, bundlePages: media.partOf.pages, bundleOf: media.partOf.of, bundleFile: media.partOf.fileName }
+    : {};
+  const chatPurpose = media.purpose || purposeOf(sender.chatJid);
+  const appendRec = (r) => store.append(r && typeof r === "object" ? { ...r, ...bundleFields, chatPurpose } : r);
   log(`incoming ${media.kind} "${media.fileName}" from ${sender.name || sender.chatJid}`);
 
   // 1. Download from WhatsApp's media servers.
@@ -1807,7 +1925,7 @@ async function handleMedia(msg, media) {
     );
   } catch (err) {
     log(`could not download "${media.fileName}": ${err.message}`);
-    store.append({
+    appendRec({
       id: `doc-${msg.key.id}`,
       messageId: msg.key.id,
       receivedAt: receivedAt.toISOString(),
@@ -1852,7 +1970,7 @@ async function handleMedia(msg, media) {
   const alreadyHave = store.findByHash(sha256);
   if (alreadyHave && alreadyHave.id !== thisId && !media.reprocess) {
     log(`skipped "${media.fileName}" — same file already handled as ${alreadyHave.originalName}`);
-    return store.append({
+    return appendRec({
       id: `doc-${msg.key.id}`,
       messageId: msg.key.id,
       receivedAt: receivedAt.toISOString(),
@@ -1872,6 +1990,62 @@ async function handleMedia(msg, media) {
     });
   }
 
+  // ---- 1a. Imprest / expense chats: kept for the imprest workflow, never matched to a supply ----
+  if (chatPurpose === "imprest") {
+    const d = receivedAt;
+    const plan = {
+      dir: path.join(PATHS.inbox, "_Imprest", `${["January","February","March","April","May","June","July","August","September","October","November","December"][d.getMonth()]}-${d.getFullYear()}`, d.toISOString().slice(0, 10)),
+      baseName: path.basename(String(media.fileName || "document"), path.extname(String(media.fileName || ""))).replace(/[<>:"/\\|?*\u0000-\u001F]/g, " ").slice(0, 90) || "document",
+      ext: path.extname(String(media.fileName || "")) || (/pdf/.test(media.mimeType || "") ? ".pdf" : ".jpg"),
+    };
+    const saved = saveFile(plan, buffer);
+    log(`imprest chat: saved "${media.fileName}" for the imprest workflow (not a supply document)`);
+    return appendRec({
+      id: `doc-${msg.key.id}`, messageId: msg.key.id, receivedAt: receivedAt.toISOString(), sender,
+      originalName: media.fileName, mimeType: media.mimeType, sizeBytes: buffer.length, sha256, caption: media.caption,
+      bucket: "imprest", filePath: saved.filePath, relativePath: path.relative(PATHS.inbox, saved.filePath),
+      reference: null, extracted: null, aiStatus: "skipped", aiMessage: "Imprest / expenses chat — kept for the imprest workflow.",
+    });
+  }
+
+  // ---- 1b. A merged PDF is split page-wise into its documents ----
+  if (!media.partOf && /pdf/i.test(String(media.mimeType || "")) && !media.noSplit) {
+    let read = null;
+    try { read = await readLocally(buffer, "application/pdf", media.fileName); } catch { read = null; }
+    if (read && Array.isArray(read.pages) && read.pages.length > 1) {
+      let segs = [];
+      try { segs = pdfSplit.segmentPages(read.pages, { clients: loadClients() }); } catch { segs = []; }
+      if (segs.length > 1) {
+        log(`"${media.fileName}" holds ${segs.length} documents on ${read.pages.length} pages — splitting: ${segs.map((g) => `${g.documentType || "unknown"} (p${g.pages.map((i) => i + 1).join(",")})`).join(", ")}`);
+        try {
+          const ext = ".pdf";
+          const stem = path.basename(String(media.fileName || "merged"), path.extname(String(media.fileName || ""))).replace(/[<>:"/\\|?*\u0000-\u001F]/g, " ").slice(0, 80) || "merged";
+          saveFile({ dir: path.join(PATHS.inbox, "_Originals", receivedAt.toISOString().slice(0, 10)), baseName: stem, ext }, buffer);
+        } catch { /* the parts below are what matters */ }
+        const stem = path.basename(String(media.fileName || "document"), path.extname(String(media.fileName || ""))).slice(0, 80) || "document";
+        let first = null;
+        for (const seg of segs) {
+          const range = seg.pages.length > 1 ? `${seg.pages[0] + 1}-${seg.pages[seg.pages.length - 1] + 1}` : `${seg.pages[0] + 1}`;
+          let part;
+          try { part = await pdfSplit.extractPages(buffer, seg.pages); } catch (err) { log(`could not cut pages ${range} out of "${media.fileName}": ${err.message}`); continue; }
+          const partMsg = { ...msg, key: { ...msg.key, id: `${msg.key.id}_p${range}` } };
+          const rec = await handleMedia(partMsg, {
+            ...media,
+            buffer: part,
+            fileName: `${stem} (page ${range}).pdf`,
+            mimeType: "application/pdf",
+            ocrPages: seg.pages.map((i) => read.pages[i]),
+            readMethod: read.method,
+            partOf: { bundleId: msg.key.id, pages: seg.pages.map((i) => i + 1), of: read.pages.length, fileName: media.fileName },
+          });
+          if (!first) first = rec;
+        }
+        try { sweepStaged({ logFn: () => {} }); } catch { /* next sweep */ }
+        return first;
+      }
+    }
+  }
+
   // 2. Read it, giving the AI the surrounding chat as context — the
   //    "documents for JPL" line that names the client the papers belong to.
   const vendorList = vendors();
@@ -1889,6 +2063,7 @@ async function handleMedia(msg, media) {
     chatContext,
     caption: media.caption,
     fileName: media.fileName,
+    ...(Array.isArray(media.ocrPages) && media.ocrPages.join("").trim().length > 20 ? { pages: media.ocrPages } : {}),
     senderName: sender.name || null,
   });
 
@@ -1992,7 +2167,7 @@ async function handleMedia(msg, media) {
     } catch {
       /* the ledger row below still records it */
     }
-    return store.append({
+    return appendRec({
       id: `doc-${msg.key.id}`, messageId: msg.key.id, receivedAt: receivedAt.toISOString(), sender,
       originalName: media.fileName, mimeType: media.mimeType, sizeBytes: buffer.length, sha256,
       bucket: "_Duplicate", filePath: keptPath, relativePath: keptPath ? path.relative(PATHS.inbox, keptPath) : null, logicalDuplicate: true, duplicateOf: logicalDup.id, duplicateOfPath: logicalDup.relativePath || null,
@@ -2052,8 +2227,8 @@ async function handleMedia(msg, media) {
   let joinAnchor = null;
   if (!isAnchor && !reference && extracted && docType !== "receiving" && docType !== "lab_report") {
     try {
-      const best = staging.bestAnchorFor({ extracted }, supplyAnchors(opts));
-      if (best && !best.ambiguous) joinAnchor = best;
+      const best = supplyMatch.bestSetFor({ extracted, transcription: extracted.transcription || "", receivedAt: receivedAt.toISOString(), sender, bundleId: bundleFields.bundleId || null }, matchingSets().filter((x) => !x.final), { vendors: vendors() });
+      if (best && !best.ambiguous && best.level === "sure") joinAnchor = { anchor: { dir: best.set.dir, reference: best.set.reference }, score: 95, reasons: best.reasons };
     } catch {
       /* falls back to staging */
     }
@@ -2080,7 +2255,7 @@ async function handleMedia(msg, media) {
         anchorDate: suggestion.date || extracted?.documentDate || null,
       });
       const saved = saveFile(plan, buffer);
-      const record = store.append({
+      const record = appendRec({
         id: `doc-${msg.key.id}`, messageId: msg.key.id, receivedAt: receivedAt.toISOString(),
         sender, originalName: media.fileName, mimeType: media.mimeType, sizeBytes: buffer.length,
         sha256, caption: media.caption, bucket: "filed", filePath: saved.filePath,
@@ -2095,7 +2270,7 @@ async function handleMedia(msg, media) {
     // No safe match: put it in Review Queue, never into a guessed supply.
     const plan = planFiling({ reference: null, extracted, originalName: media.fileName, mimeType: media.mimeType, receivedAt, senderName: sender.name || sender.chatJid });
     const saved = saveFile(plan, buffer);
-    return store.append({
+    return appendRec({
       id: `doc-${msg.key.id}`, messageId: msg.key.id, receivedAt: receivedAt.toISOString(), sender,
       originalName: media.fileName, mimeType: media.mimeType, sizeBytes: buffer.length, sha256, caption: media.caption,
       bucket: "unmatched", filePath: saved.filePath, relativePath: path.relative(PATHS.inbox, saved.filePath),
@@ -2109,7 +2284,7 @@ async function handleMedia(msg, media) {
   if (docType === "lab_report") {
     const plan = planFiling({ reference: null, extracted, originalName: media.fileName, mimeType: media.mimeType, receivedAt, senderName: sender.name || sender.chatJid });
     const saved = saveFile(plan, buffer);
-    return store.append({
+    return appendRec({
       id: `doc-${msg.key.id}`, messageId: msg.key.id, receivedAt: receivedAt.toISOString(), sender,
       originalName: media.fileName, mimeType: media.mimeType, sizeBytes: buffer.length, sha256, caption: media.caption,
       bucket: "filed", filePath: saved.filePath, relativePath: path.relative(PATHS.inbox, saved.filePath),
@@ -2146,7 +2321,7 @@ async function handleMedia(msg, media) {
         senderName: sender.name || sender.chatJid,
       });
       const saved = saveFile({ ...namePlan, dir: targetDir, bucket: "filed" }, buffer);
-      const record = store.append({
+      const record = appendRec({
         id: `doc-${msg.key.id}`, messageId: msg.key.id, receivedAt: receivedAt.toISOString(), sender,
         originalName: media.fileName, mimeType: media.mimeType, sizeBytes: buffer.length, sha256,
         caption: media.caption, bucket: "filed", filePath: saved.filePath,
@@ -2183,12 +2358,19 @@ async function handleMedia(msg, media) {
       : plan;
     const saved = saveFile(reviewPlan, buffer);
     log(unreadable ? `"${media.fileName}" could not be read — saved for a person to look at` : `"${media.fileName}" is not supply paperwork — set aside`);
-    return store.append({
+    const skipReason = unreadable
+      ? "Could not read this file — saved for a person to look at."
+      : media.kind === "image"
+        ? "Photo / screenshot with nothing a supply set can use (no document type, vehicle or document number)."
+        : "Not a supply document (no document type, vehicle or document number).";
+    if (!unreadable) noteSkipped({ chat: knownChats.get(normChatJid(sender.chatJid))?.name || sender.chatJid, chatJid: sender.chatJid, fileName: media.fileName, reason: skipReason, id: thisId });
+    return appendRec({
       id: thisId, messageId: msg.key.id, receivedAt: receivedAt.toISOString(), sender,
       originalName: media.fileName, mimeType: media.mimeType, sizeBytes: buffer.length, sha256, caption: media.caption,
       bucket: reviewPlan.bucket, filePath: saved.filePath, relativePath: path.relative(PATHS.inbox, saved.filePath),
       reference: null, extracted, aiStatus: ai.ok ? "ok" : "error", aiMessage: ai.ok ? null : ai.message,
       reviewRequired: unreadable, reviewReason: unreadable ? (ai.message || "No readable text in this file.") : null,
+      skipReason,
     });
   }
 
@@ -2206,7 +2388,7 @@ async function handleMedia(msg, media) {
       caption: media.caption,
     });
 
-    const held = store.append({
+    const held = appendRec({
       id: stagedId,
       messageId: msg.key.id,
       receivedAt: receivedAt.toISOString(),
@@ -2285,7 +2467,7 @@ async function handleMedia(msg, media) {
   // landed on disk correctly, which is why it looked like nothing was
   // wrong until you tried to look the document up by reference or open
   // a vendor document that was waiting on it.
-  const record = store.append({
+  const record = appendRec({
     id: `doc-${msg.key.id}`,
     messageId: msg.key.id,
     receivedAt: receivedAt.toISOString(),
@@ -2378,6 +2560,9 @@ async function handleMedia(msg, media) {
       // Staged papers were just offered by the sweep; moving their files
       // here as well would leave the staging index pointing at nothing.
       if (other.reference || !other.extracted || other.id === record.id || other.bucket === "_Staged") continue;
+      // Only client receivings use the FIFO suggestion; every supply paper
+      // goes through the precise matcher (staging sweep) instead.
+      if (other.extracted.documentType !== "receiving") continue;
       autoFileFromSuggestion(other.id, other.extracted);
     }
   }

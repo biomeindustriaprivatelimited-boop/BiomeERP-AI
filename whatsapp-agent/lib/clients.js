@@ -14,7 +14,7 @@
 const fs = require("fs");
 const path = require("path");
 const { PATHS, ensureDir } = require("./paths");
-const { SEED_VENDORS, SEED_PLANTS, SEED_CLIENT_NAMES } = require("./masterData");
+const { SEED_VENDORS, SEED_PLANTS, SEED_CLIENT_NAMES, REGISTER_TO_SOP } = require("./masterData");
 
 /** Every kind of paper or data point coordination collects. */
 const REQUIREMENTS = {
@@ -356,6 +356,30 @@ function matchClient(rawName, clients = loadClients()) {
 }
 
 
+/** The owner's register spelling of a client — used for folder names. */
+function registerNameFor(client) {
+  if (!client) return null;
+  const name = String(client.name || client);
+  if (client.folderName) return String(client.folderName);
+  for (const [reg, sop] of Object.entries(REGISTER_TO_SOP)) if (normalise(sop) === normalise(name)) return reg;
+  return name;
+}
+
+/**
+ * The client a raw name resolves to, preferring the SOP entry (which
+ * carries the requirements) over its register-name twin.
+ */
+function resolveClient(rawName, clients = loadClients()) {
+  const c = matchClient(rawName, clients);
+  if (!c) return null;
+  const sopName = REGISTER_TO_SOP[c.name] || Object.entries(REGISTER_TO_SOP).find(([reg]) => normalise(reg) === normalise(c.name))?.[1];
+  if (sopName) {
+    const sop = clients.find((x) => normalise(x.name) === normalise(sopName));
+    if (sop) return sop;
+  }
+  return c;
+}
+
 /** Which requirement does a given document type satisfy? */
 const DOC_TYPE_SATISFIES = {
   biome_tax_invoice: "tax_invoice",
@@ -374,6 +398,8 @@ const DOC_TYPE_SATISFIES = {
 };
 
 module.exports = {
+  registerNameFor,
+  resolveClient,
   loadPlants,
   REQUIREMENTS,
   SEED_CLIENTS,

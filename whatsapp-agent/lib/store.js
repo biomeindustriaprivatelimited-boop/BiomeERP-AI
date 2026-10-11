@@ -12,7 +12,8 @@
 const fs = require("fs");
 const path = require("path");
 const { PATHS, ensureDir } = require("./paths");
-const { matchClient, loadClients, REQUIREMENTS, DOC_TYPE_SATISFIES } = require("./clients");
+const { matchClient, loadClients, REQUIREMENTS, DOC_TYPE_SATISFIES, resolveClient, registerNameFor, loadPlants } = require("./clients");
+const setState = require("./setState");
 const { dedupeSetDocuments } = require("./setDedupe");
 
 /** Every document we've ever handled, newest last. */
@@ -145,9 +146,11 @@ function logicalKey(docType, ex) {
   if (!docType || !ex) return null;
   const n = (v) => String(v || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
   if (docType === "biome_tax_invoice" || docType === "biome_delivery_challan") return n(ex.biomeDocNo) ? `${docType}:${n(ex.biomeDocNo)}` : null;
-  if (docType === "vendor_tax_invoice" || docType === "vendor_delivery_challan") return n(ex.vendorDocNo) ? `${docType}:${n(ex.vendorCode)}:${n(ex.vendorDocNo)}` : null;
+  // A vendor number only means something together with the vendor.
+  if (docType === "vendor_tax_invoice" || docType === "vendor_delivery_challan") return n(ex.vendorDocNo) && (n(ex.vendorGstin) || n(ex.vendorCode)) ? `${docType}:${n(ex.vendorGstin) || n(ex.vendorCode)}:${n(ex.vendorDocNo)}` : null;
   if (docType === "biome_eway_bill" || docType === "vendor_eway_bill") return n(ex.ewayBillNo) ? `eway:${n(ex.ewayBillNo)}` : null;
-  if (docType === "bilty_lr") return n(ex.grNumber || ex.lrNumber) ? `bilty:${n(ex.grNumber || ex.lrNumber)}` : null;
+  // Transporters reuse LR numbers (Shiv Logistics "317" on two trips a day apart): the vehicle and date must agree too.
+  if (docType === "bilty_lr") return n(ex.grNumber || ex.lrNumber) && n(ex.vehicleNo) && ex.documentDate ? `bilty:${n(ex.grNumber || ex.lrNumber)}:${n(ex.vehicleNo)}:${String(ex.documentDate).slice(0, 10)}` : null;
   if (docType === "receiving") return n(ex.vehicleNo) && ex.documentDate ? `receiving:${n(ex.vehicleNo)}:${String(ex.documentDate).slice(0, 10)}:${n(ex.clientName).slice(0, 12)}` : null;
   if (docType === "weight_slip") return n(ex.vehicleNo) && ex.documentDate && ex.netWeightKg ? `weight:${n(ex.vehicleNo)}:${String(ex.documentDate).slice(0, 10)}:${Math.round(Number(ex.netWeightKg) || 0)}` : null;
   if (docType === "consignment_tag") return n(ex.vehicleNo) && n(ex.biomeDocNo || ex.referenceNo) ? `tag:${n(ex.vehicleNo)}:${n(ex.biomeDocNo || ex.referenceNo)}` : null;
@@ -624,7 +627,10 @@ function supplySets() {
   //
   // Weights are compared in kilograms because the same load is written
   // 33,995 KG by us, 33.995 Ton by the vendor and 339.95 QTL elsewhere.
-  attachUnreferenced(sets, unmatched);
+  // Papers without a reference are NOT attached here any more: the view
+  // used to add them on the vehicle alone, which merged different trips
+  // of one truck. Membership is decided once, by supplyMatch, and shown
+  // exactly as filed.
 
   const list = [...sets.values()].sort(
     (a, b) => new Date(b.lastSeen).getTime() - new Date(a.lastSeen).getTime()
@@ -646,7 +652,11 @@ function supplySets() {
     set.duplicates = folded.duplicates;
     set.duplicateCount = folded.duplicates.length;
 
-    const client = matchClient(set.clientName, clients);
+    // The client is the one on OUR invoice / challan, never a vendor paper's guess.
+    const ourDoc = set.documents.find((d) => /^biome_(tax_invoice|delivery_challan)$/.test(d.extracted?.documentType || ""));
+    if (ourDoc?.extracted?.clientName) set.clientName = ourDoc.extracted.clientName;
+    set.ourDocumentId = ourDoc ? ourDoc.id : null;
+    const client = resolveClient(set.clientName, clients);
     set.clientMatched = Boolean(client);
     set.clientCanonicalName = client?.name || set.clientName || null;
     set.clientNotes = client?.notes || "";
@@ -687,9 +697,80 @@ function supplySets() {
     set.complete = client ? set.missing.length === 0 && set.dscMissing.length === 0 : false;
     set.requiredCount = required.length;
     set.satisfiedCount = required.filter((r) => satisfied.has(r)).length;
+    set.clientFolderName = client ? registerNameFor(client) : set.clientName;
+
+    // ---- Verification: Collecting → Ready to verify → Final ----
+    set.supplyType = /\/(REW|GKD)\//.test(set.reference) ? "manufacturing" : "trading";
+    set.checks = consistencyChecks(set, ourDoc);
+    set.needsCheckCount = set.documents.filter((d) => d.needsCheck).length;
+    const st = setState.get(set.reference);
+    set.finalState = st || null;
+    if (st && st.status === "final") set.status = "final";
+    else if (ourDoc && set.complete && !set.checks.some((c) => c.ok === false)) set.status = "ready";
+    else set.status = "collecting";
+    set.statusLabel = { final: "Final", ready: "Ready to verify", collecting: "Collecting" }[set.status];
   }
 
   return { sets: list, unmatched };
+}
+
+/**
+ * The coordinator's checklist for one set: do the key fields of its
+ * papers agree? Each item is { label, ok: true | false | null, detail }.
+ * null = could not be checked (field not readable) — shown, not failed.
+ */
+function consistencyChecks(set, ourDoc) {
+  const out = [];
+  const o = ourDoc?.extracted || {};
+  const plateOf = (v) => String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, "") || null;
+  const core = (v) => { const m = String(v || "").match(/^(\d{1,6})\s*\/\s*20\d{2}-?\d{2}$/) || String(v || "").match(/(\d+)\s*$/); return m ? String(Number(m[1])) : null; };
+  const kgOf = (e) => Number(String(e?.quantityKg || e?.netWeight || "").replace(/[^\d.]/g, "")) || null;
+  const docs = set.documents.filter((d) => d !== ourDoc);
+  const isMfg = /\/(REW|GKD)\//.test(set.reference);
+  let adj = 0;
+  try { const code = (set.reference.split("/")[2] || "").toUpperCase(); adj = Number((loadPlants().find((p) => String(p.code).toUpperCase() === code) || {}).weightAdjustmentKg) || 0; } catch { adj = 0; }
+
+  if (!ourDoc) {
+    out.push({ key: "our_doc", label: "Our tax invoice / delivery challan", ok: false, detail: "Not in this set yet" });
+    return out;
+  }
+  const refOur = set.biomeDocNo ? String(Number(String(set.biomeDocNo).replace(/\D/g, "")) || "") : null;
+  const ourCore = core(o.biomeDocNo);
+  out.push({ key: "our_no", label: "Our document number matches the reference", ok: refOur && ourCore ? refOur === ourCore : null, detail: `${o.biomeDocNo || "?"} · reference ${set.reference}` });
+  if (isMfg && set.vendorDocNo && refOur && String(Number(String(set.vendorDocNo).replace(/\D/g, ""))) !== refOur) {
+    out.push({ key: "mfg_ref", label: "Plant reference repeats our invoice number", ok: false, detail: `${set.reference} — both numbers should be ${ourCore || refOur}` });
+  }
+  if (!isMfg) {
+    const vt = docs.filter((d) => d.extracted?.documentType === "vendor_tax_invoice");
+    const want = set.vendorDocNo ? core(set.vendorDocNo) : null;
+    out.push({
+      key: "vendor_no",
+      label: "Vendor invoice number matches the reference",
+      ok: vt.length ? vt.every((d) => core(d.extracted?.vendorOwnDocNo || d.extracted?.vendorDocNo) === want) : null,
+      detail: vt.length ? vt.map((d) => d.extracted?.vendorOwnDocNo || d.extracted?.vendorDocNo || "?").join(", ") + ` · reference says ${want || "?"}` : "No vendor tax invoice in the set yet",
+    });
+  }
+  const ourPlate = plateOf(o.vehicleNo);
+  const plates = docs.map((d) => ({ d, p: plateOf(d.extracted?.vehicleNo) })).filter((x) => x.p && x.p.length >= 8);
+  const badPlates = plates.filter((x) => ourPlate && x.p !== ourPlate);
+  out.push({ key: "vehicle", label: "Same vehicle on every paper", ok: ourPlate ? badPlates.length === 0 : null, detail: badPlates.length ? `${ourPlate} on ours; ${badPlates.map((x) => `${x.p} on ${x.d.originalName}`).join(", ")}` : ourPlate || "Vehicle not readable on our document" });
+  const ourKg = kgOf(o);
+  const weighed = docs.filter((d) => ["vendor_tax_invoice", "weight_slip", "consignment_tag"].includes(d.extracted?.documentType) && kgOf(d.extracted));
+  const badKg = weighed.filter((d) => {
+    const k = kgOf(d.extracted);
+    const diff = ourKg - k;
+    if (d.extracted.documentType === "weight_slip" && adj > 0) return !(diff >= -60 && diff <= adj + 150);
+    return Math.abs(diff) > Math.max(60, ourKg * 0.01);
+  });
+  out.push({ key: "weight", label: "Weights agree", ok: ourKg && weighed.length ? badKg.length === 0 : null, detail: ourKg ? `${ourKg} kg on ours${weighed.length ? "; " + weighed.map((d) => `${kgOf(d.extracted)} kg on ${d.originalName}`).join(", ") : ""}${adj ? ` (plant slip may be ${adj - 100}–${adj} kg lower)` : ""}` : "Weight not readable on our document" });
+  const day = (v) => { const x = new Date(String(v || "").slice(0, 10)); return isNaN(x) ? null : x.getTime() / 86400000; };
+  const ourDay = day(o.documentDate);
+  const dated = docs.filter((d) => day(d.extracted?.documentDate) != null && /^(vendor_|weight_slip|consignment_tag|biome_eway)/.test(d.extracted?.documentType || ""));
+  const badDates = dated.filter((d) => Math.abs(day(d.extracted.documentDate) - ourDay) > 3);
+  out.push({ key: "dates", label: "Dates within 3 days of our document", ok: ourDay != null && dated.length ? badDates.length === 0 : null, detail: `${o.documentDate || "?"} on ours${badDates.length ? "; " + badDates.map((d) => `${d.extracted.documentDate} on ${d.originalName}`).join(", ") : ""}` });
+  const unsure = set.documents.filter((d) => d.needsCheck);
+  if (unsure.length) out.push({ key: "needs_check", label: "Papers placed without a printed match", ok: null, detail: unsure.map((d) => `${d.originalName}: ${d.needsCheckReason || "please confirm"}`).join(" · ") });
+  return out;
 }
 
 /** Counts for the dashboard header. */
