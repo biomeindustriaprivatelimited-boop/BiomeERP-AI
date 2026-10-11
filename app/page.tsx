@@ -27,6 +27,8 @@ import {
   Building2,
 } from "lucide-react";
 import { useTallyFull, tallyBasisLine, inrShort as inrShortShared } from "@/lib/useTallyFull";
+import { useTallyLastEntries, prettyIso } from "@/lib/useTallyLastEntries";
+import { useTallyPeriod } from "@/lib/tallyPeriod";
 
 interface Summary {
   cashInHand: number | null;
@@ -96,7 +98,14 @@ export default function DashboardPage() {
     periodChoice,
     setPeriodChoice,
   } = useTallyFull({ includeVouchers: false });
-  const load = reload;
+  // Date of the last voucher behind each figure — read after the balances
+  // are on screen, so the figures never wait for it.
+  const { dates: periodDates } = useTallyPeriod();
+  const lastEntries = useTallyLastEntries({ ...periodDates, enabled: Boolean(full) });
+  const load = () => {
+    lastEntries.markFresh();
+    reload(true);
+  };
 
   useEffect(() => {
     setData(full as any);
@@ -117,13 +126,27 @@ export default function DashboardPage() {
   const asOn = full?.period?.asOn ? `as on ${full.period.asOn}` : "";
   const inPeriod = full?.period?.label ?? "";
   const stats = [
-    { label: "Cash in Hand", value: s?.cashInHand, sub: asOn, icon: Wallet, tint: "text-emerald-600 bg-emerald-100" },
-    { label: "Bank Balance", value: s?.bankBalance, sub: asOn, icon: Landmark, tint: "text-blue-600 bg-blue-100" },
-    { label: "Receivables", value: s?.receivables, sub: asOn, icon: ArrowDownLeft, tint: "text-teal-600 bg-teal-100" },
-    { label: "Payables", value: s?.payables, sub: asOn, icon: ArrowUpRight, tint: "text-rose-600 bg-rose-100" },
-    { label: "Sales", value: s?.sales, sub: inPeriod, icon: FileClock, tint: "text-violet-600 bg-violet-100" },
-    { label: "Purchases", value: s?.purchases, sub: inPeriod, icon: FileWarning, tint: "text-amber-600 bg-amber-100" },
+    { key: "cashInHand", label: "Cash in Hand", value: s?.cashInHand, sub: asOn, icon: Wallet, tint: "text-emerald-600 bg-emerald-100" },
+    { key: "bankBalance", label: "Bank Balance", value: s?.bankBalance, sub: asOn, icon: Landmark, tint: "text-blue-600 bg-blue-100" },
+    { key: "receivables", label: "Receivables", value: s?.receivables, sub: asOn, icon: ArrowDownLeft, tint: "text-teal-600 bg-teal-100" },
+    { key: "payables", label: "Payables", value: s?.payables, sub: asOn, icon: ArrowUpRight, tint: "text-rose-600 bg-rose-100" },
+    { key: "sales", label: "Sales", value: s?.sales, sub: inPeriod, icon: FileClock, tint: "text-violet-600 bg-violet-100" },
+    { key: "purchases", label: "Purchases", value: s?.purchases, sub: inPeriod, icon: FileWarning, tint: "text-amber-600 bg-amber-100" },
   ];
+  /** "Last entry: 07-Oct-2026" under a figure (the owner's ask: the date of
+   *  the last voucher, not the day the app was opened). */
+  const lastEntryLine = (key: string, value: number | null | undefined): { text: string; title: string } | null => {
+    if (!full || value === null || value === undefined) return null;
+    if (lastEntries.loading || (!lastEntries.data && !lastEntries.error)) return { text: "Last entry: reading…", title: "Finding the last voucher in Tally" };
+    if (lastEntries.error) return { text: "Last entry: —", title: lastEntries.error };
+    const d = lastEntries.data?.kpis?.[key];
+    if (!d) return { text: "No entry in this period", title: `No voucher touched these ledgers in ${inPeriod}` };
+    const partial = lastEntries.data && !lastEntries.data.complete;
+    return {
+      text: `Last entry: ${prettyIso(d)}${partial ? "*" : ""}`,
+      title: partial ? lastEntries.data?.error || "Some months couldn't be read" : `Date of the last voucher in Tally for ${key === "sales" || key === "purchases" ? "this figure" : "these ledgers"} within ${inPeriod}`,
+    };
+  };
 
   return (
     <div className="mx-auto max-w-[1500px] space-y-4 pb-8">
@@ -201,8 +224,16 @@ export default function DashboardPage() {
                     <Scramble value={inrShort(t.value)} />
                   )}
                 </p>
+                {!loading && (() => {
+                  const le = lastEntryLine(t.key, t.value);
+                  return le ? (
+                    <p className="truncate text-[10.5px] font-medium text-biome-text/80" title={le.title} data-testid="kpi-last-entry">
+                      {le.text}
+                    </p>
+                  ) : null;
+                })()}
                 {!loading && t.sub ? (
-                  <p className="truncate text-[10px] text-biome-muted" title={t.sub} data-testid="kpi-period">
+                  <p className="truncate text-[9px] text-biome-muted/90" title={t.sub} data-testid="kpi-period">
                     {t.sub}
                   </p>
                 ) : null}
@@ -338,7 +369,7 @@ export default function DashboardPage() {
           were shortcuts the sidebar already gives. The owner asked for this
           page to carry only reports of the app's data, so each card is a
           live summary with a link to its full report. */}
-      <HomeReports tally={full as any} tallyLoading={tallyLoading} wa={wa} />
+      <HomeReports tally={full as any} tallyLoading={tallyLoading} wa={wa} lastEntry={lastEntries.data?.kpis ?? null} />
 
       {/* ================= Bottom row ================= */}
       <div className="grid gap-4 xl:grid-cols-[1.6fr_1fr]">

@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { useSession } from "@/lib/session";
 import type { TallyFull } from "@/lib/useTallyFull";
+import { prettyIso } from "@/lib/useTallyLastEntries";
 
 /**
  * The home page's "Reports" section: a summary card per report the
@@ -66,13 +67,14 @@ function monthLabel(k: string) {
 }
 
 /** "Receivable as on 04-Oct-2026 · sales for FY 2026-27 till today" */
-function periodNote(d: TallyFull, balance: string): string | undefined {
+function periodNote(d: TallyFull, balance: string, lastEntry?: string | null): string | undefined {
   if (!d.period?.label) return undefined;
   const asOn = d.period.asOn ? `${balance} as on ${d.period.asOn} · ` : "";
-  return `${asOn}${balance === "Receivable" ? "sales" : "purchases"} for ${d.period.label}`;
+  const last = lastEntry ? ` · last entry ${prettyIso(lastEntry)}` : "";
+  return `${asOn}${balance === "Receivable" ? "sales" : "purchases"} for ${d.period.label}${last}`;
 }
 
-export default function HomeReports({ tally, tallyLoading, wa }: { tally: TallyFull | null; tallyLoading: boolean; wa: any }) {
+export default function HomeReports({ tally, tallyLoading, wa, lastEntry }: { tally: TallyFull | null; tallyLoading: boolean; wa: any; lastEntry?: Record<string, string | null> | null }) {
   const { can, visible } = useSession();
   const [server, setServer] = useState<Card[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -102,7 +104,7 @@ export default function HomeReports({ tally, tallyLoading, wa }: { tally: TallyF
       rows: debtors.sort((a, b) => Math.abs(b.closingBalance) - Math.abs(a.closingBalance)).slice(0, 5)
         .map((p) => ({ label: p.name, value: p.closingBalance, kind: "money" as Kind, sub: p.transactionCount ? `${p.transactionCount} vouchers` : undefined })),
       empty: !d || (!debtors.length && d.summary.receivables == null),
-      note: !d ? "Appears once Tally is connected." : periodNote(d, "Receivable"),
+      note: !d ? "Appears once Tally is connected." : periodNote(d, "Receivable", lastEntry?.receivables),
     });
     finance.push({
       id: "payables", title: "Vendor payables", module: "Finance", href: "/vendors", reportHref: "/reports",
@@ -115,7 +117,7 @@ export default function HomeReports({ tally, tallyLoading, wa }: { tally: TallyF
       rows: creditors.sort((a, b) => Math.abs(b.closingBalance) - Math.abs(a.closingBalance)).slice(0, 5)
         .map((p) => ({ label: p.name, value: Math.abs(p.closingBalance), kind: "money" as Kind, sub: p.transactionCount ? `${p.transactionCount} vouchers` : undefined })),
       empty: !d || (!creditors.length && d.summary.payables == null),
-      note: !d ? "Appears once Tally is connected." : periodNote(d, "Payable"),
+      note: !d ? "Appears once Tally is connected." : periodNote(d, "Payable", lastEntry?.payables),
     });
     const series = (d?.monthlySeries || []).slice(-6);
     finance.push({
@@ -138,7 +140,9 @@ export default function HomeReports({ tally, tallyLoading, wa }: { tally: TallyF
           { label: "Sales vouchers", value: Object.entries(vt).filter(([k]) => /sales/i.test(k)).reduce((t, [, v]) => t + v.count, 0), kind: "count" },
           { label: "Purchase vouchers", value: Object.entries(vt).filter(([k]) => /purchase/i.test(k)).reduce((t, [, v]) => t + v.count, 0), kind: "count" },
         ],
-        note: d ? "Reconcile GSTR-2B / GSTR-1 against these books in GST Compliance." : "Appears once Tally is connected.",
+        note: d
+          ? `${lastEntry?.taxLiability ? `Last tax entry ${prettyIso(lastEntry.taxLiability)} · ` : ""}Reconcile GSTR-2B / GSTR-1 against these books in GST Compliance.`
+          : "Appears once Tally is connected.",
         empty: !d || d.summary.taxLiability == null,
       });
     }
