@@ -144,8 +144,21 @@ function profile(set) {
   return p;
 }
 
-function weightFits(p, slipKg) {
+/** Same number of digits, one digit different — an OCR slip (47765 for 17765). */
+function digitClose(a, b) {
+  const x = String(Math.round(a)), y = String(Math.round(b));
+  if (x.length !== y.length) return false;
+  let d = 0;
+  for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) d++;
+  return d <= 1;
+}
+
+function weightFits(p, slipKg, ocr = false) {
   if (!p.kg || !slipKg) return null;
+  if (ocr && digitClose(p.kg, slipKg)) return true;
+  if (ocr && p.plantAdjustmentKg > 0) {
+    for (const adj of [400, 500]) if (digitClose(p.kg - adj, slipKg)) return true;
+  }
   const diff = p.kg - slipKg; // our document minus the slip
   if (p.plantAdjustmentKg > 0) {
     // Gangakhed: our papers are raised 400–500 kg over the weighbridge.
@@ -225,20 +238,23 @@ function evaluate(doc, p) {
 
   if (t === "weight_slip") {
     const kg = num(e.netWeight) || num(e.quantityKg);
-    const fits = weightFits(p, kg);
+    const fromPhoto = /ocr/i.test(String(e.readMethod || "")) || !/pdf_text/.test(String(e.readMethod || ""));
+    const fits = weightFits(p, kg, fromPhoto);
     const dateOk = dd === null || Math.abs(dd) <= 3;
-    if (vehicleConflict) return { level: null, conflict: `different vehicle (${vehicle} vs ${anyVehicle})`, reasons };
+    if (vehicleConflict && !fromPhoto) return { level: null, conflict: `different vehicle (${vehicle} vs ${anyVehicle})`, reasons };
+    if (vehicleConflict) return { level: null, reasons: [`vehicle read as ${vehicle} (photo)`] };
     if ((vehicleSame || vehicleNear) && fits && dateOk) {
       return { level: "sure", reasons: [`${vehicleSame ? "same" : "nearly the same"} vehicle ${vehicle}`, `net weight ${kg} kg fits ${p.kg} kg${p.plantAdjustmentKg ? " (plant adds 400–500 kg)" : ""}`] };
     }
-    if ((vehicleSame || vehicleNear) && fits === false) return { level: null, conflict: `weight ${kg} kg does not fit ${p.kg} kg`, reasons };
+    if ((vehicleSame || vehicleNear) && fits === false && !fromPhoto) return { level: null, conflict: `weight ${kg} kg does not fit ${p.kg} kg`, reasons };
     // garbled photo: look for the set's vehicle and weight inside the text
     const text = doc.transcription || e.transcription || "";
     if (text && anyVehicle) {
       const vHit = containsApprox(text, anyVehicle, 2) || loosePlate(text, anyVehicle);
       const kgHit = p.kg ? containsNumber(text, Math.round(p.kg - (p.plantAdjustmentKg ? 450 : 0)), 1) || containsNumber(text, Math.round(p.kg), 1) : false;
       if (vHit && kgHit) return { level: "sure", reasons: [`vehicle ${anyVehicle} and weight ${p.kg} kg read on the slip`] };
-      if ((vehicleSame || vehicleNear || vHit) && dateOk && fits === null) return { level: "check", reasons: [`vehicle ${anyVehicle} on the slip, weight unreadable`] };
+      if ((vehicleSame || vehicleNear || vHit) && dateOk && fits !== true) return { level: "check", reasons: [`vehicle ${anyVehicle} on the slip, weight not readable for certain`] };
+      if (vHit && fits === true && dateOk) return { level: "sure", reasons: [`vehicle ${anyVehicle} read on the slip`, `net weight ${kg} kg fits ${p.kg} kg (photo)`] };
     }
     return { level: null, reasons };
   }
@@ -251,7 +267,7 @@ function loosePlate(text, plateNo) {
   const st = p.slice(0, 2);
   const tail = p.slice(-4);
   if (!/^[A-Z]{2}$/.test(st) || !/^\d{4}$/.test(tail)) return false;
-  const tokens = String(text || "").toUpperCase().match(/[A-Z0-9]{8,11}/g) || [];
+  const tokens = String(text || "").toUpperCase().replace(/[^A-Z0-9\s]/g, "").match(/[A-Z0-9]{7,11}/g) || [];
   return tokens.some((tk) => tk.startsWith(st) && tk.endsWith(tail));
 }
 
@@ -330,6 +346,7 @@ function bestSetFor(doc, sets, opts = {}) {
     if (home && !full(home.p, t)) {
       const r = evaluate(doc, home.p);
       if (!r.conflict && !(home.p.supplyType === "manufacturing" && /^vendor_/.test(t))) {
+        if (t === "other") return { set: home.set, key, level: "check", reasons: ["page could not be read — it came in the same merged PDF as this supply's other papers"] };
         return { set: home.set, key, level: "sure", reasons: [`arrived in the same merged PDF as this supply's other papers`, ...r.reasons] };
       }
     }
@@ -349,7 +366,7 @@ function bestSetFor(doc, sets, opts = {}) {
     const wanting = profiles
       .filter(({ p }) => !p.final && !full(p, t) && !(p.supplyType === "trading" && p.has.has(t)))
       .map((x) => {
-        const ours = x.p.arrivals.filter((a) => a.our && a.at >= docAt - 60000 && (!chat || !a.chat || a.chat === chat));
+        const ours = x.p.arrivals.filter((a) => a.our && a.at >= docAt && (!chat || !a.chat || a.chat === chat));
         const dist = ours.length ? Math.min(...ours.map((a) => a.at - docAt)) : Infinity;
         return { ...x, dist, r: evaluate(doc, x.p) };
       })

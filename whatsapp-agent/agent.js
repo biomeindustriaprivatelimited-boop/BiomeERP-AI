@@ -2350,7 +2350,9 @@ async function handleMedia(msg, media) {
     (!docType || docType === "other") &&
     !extracted.vehicleNo && !extracted.biomeDocNo && !extracted.vendorDocNo && !extracted.ewayBillNo && !extracted.grNumber
   );
-  if (!isOurs && nothingToMatch) {
+  // An unreadable page of a merged PDF is still that supply's paper: it
+  // waits with its sibling pages instead of being set aside.
+  if (!isOurs && nothingToMatch && !(media.partOf && extracted)) {
     const plan = planFiling({ reference: null, extracted: extracted || { documentType: "other" }, originalName: media.fileName, mimeType: media.mimeType, receivedAt, senderName: sender.name || sender.chatJid });
     const unreadable = !extracted;
     const reviewPlan = unreadable

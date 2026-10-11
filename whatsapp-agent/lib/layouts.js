@@ -542,7 +542,7 @@ function readBilty(text) {
   if (/T\s?A\s?X\s*I\s?N\s?V\s?O\s?[IL]\s?C\s?E/i.test(head(t, 400)) || isEwayPage(t)) return null;
   const hits = countHits(t, BILTY_WORDS);
   const named = t.match(KNOWN_TRANSPORTERS);
-  if (hits < 2 && !(hits >= 1 && named)) return null;
+  if (hits < 2 && !named) return null;
   const slipHits = countHits(t, SLIP_WORDS.slice(0, 12));
   if (slipHits >= 3 && hits < 3) return null;
   const no =
@@ -571,7 +571,8 @@ function readWeightSlip(text) {
   // weighing — two stamps like "30/07/26,23:23" survive even when the
   // dot-matrix words do not.
   const stamps = (t.match(/\d{1,2}\s?[\/.-]\s?\d{1,2}\s?[\/.-]\s?\d{2,4}\s*[, ]?\s*(?:time\s*[:s]?\s*)?\d{1,2}\s?[:.]\s?\d{2}/gi) || []).length;
-  const hits = countHits(t, SLIP_WORDS) + (stamps >= 2 && /veh|vehicle|weight|wt|gross|tare|net|kg|ky/i.test(t) ? 2 : 0);
+  const hits = countHits(t, SLIP_WORDS) + (stamps >= 2 && /veh|vehicle|weight|wt|gross|tare|net|kg|ky/i.test(t) ? 2 : 0) +
+    (allDates(t).length >= 1 && /tim[e]/i.test(t) && /vehicle\s*no|veh\.?\s*no/i.test(t) ? 2 : 0);
   if (hits < 2) return null;
   const biltyHits = countHits(t, BILTY_WORDS);
   if (biltyHits >= 3 && hits < 4) return null;
@@ -581,9 +582,9 @@ function readWeightSlip(text) {
     const n = Number(String(v).replace(/[^\d]/g, ""));
     return n >= 1000 && n <= 90000 ? n : null;
   };
-  let net = num(/Net{1,2}\s*(?:Wt|Weight)?\.?\s*[:=«]?\s*\|?\s*([\d,]{4,7})\s*(?:kg|Kg|KG|Ky)?/i);
-  const gross = num(/Gross\s*(?:Wt|Weight)?\.?\s*[:=«]?\s*\|?\s*([\d,]{4,7})/i);
-  const tare = num(/Tare\s*(?:Wt|Weight)?\.?\s*[:=«]?\s*\|?\s*([\d,]{4,7})/i);
+  let net = num(/Net{1,2}\s*(?:Wt|Weight)?\.?[^\d\n]{0,4}([\d,]{4,7})\s*(?:kg|Kg|KG|Ky)?/i);
+  const gross = num(/Gross\s*(?:Wt|Weight)?\.?[^\d\n]{0,4}([\d,]{4,7})/i);
+  const tare = num(/Tare\s*(?:Wt|Weight)?\.?[^\d\n]{0,4}([\d,]{4,7})/i);
   if (!net && gross && tare && gross > tare) net = gross - tare;
   const loaded = num(/Loaded[\s\S]{0,40}?([\d,]{4,7})/i);
   const empty = num(/Empty[\s\S]{0,40}?([\d,]{4,7})/i);
