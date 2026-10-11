@@ -328,6 +328,27 @@ export interface WaChat {
   learnFrom: boolean;
   /** A group whose name looks like the supply/sales group. */
   suggested: boolean;
+  /** What this chat is for; null = not selected. Older selections count as "sales". */
+  purpose?: WaChatPurpose | null;
+}
+
+export type WaChatPurpose = "sales" | "imprest" | "receiving" | "lab" | "ignore";
+
+/** The purposes the owner chooses between in the chat picker. */
+export const CHAT_PURPOSE_OPTIONS: { id: WaChatPurpose; label: string; hint: string }[] = [
+  { id: "sales", label: "Sales documents (supply sets)", hint: "Invoices, e-way bills, Bill T, weight slips — built into supply sets." },
+  { id: "imprest", label: "Imprest / expenses", hint: "Bills and expense photos — kept for imprest, never put in a supply set." },
+  { id: "ignore", label: "Ignore", hint: "Nothing from this chat is saved." },
+];
+
+/** A file the agent did NOT save, and why. */
+export interface WaSkippedItem {
+  at: string;
+  chat: string | null;
+  chatJid?: string | null;
+  fileName: string | null;
+  reason: string;
+  id?: string;
 }
 
 export type WaChatRole = "sales" | "receiving" | "lab" | "learn";
@@ -339,6 +360,7 @@ export interface WaChatsResponse {
   receivingChats: string[];
   labChats: string[];
   learnChats: string[];
+  chatPurposes?: Record<string, WaChatPurpose>;
   listState?: {
     status: AgentStatus | string;
     engine: string | null;

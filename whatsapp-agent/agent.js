@@ -49,6 +49,7 @@ const verify = require("./lib/verify");
 const pdfSplit = require("./lib/pdfSplit");
 const supplyMatch = require("./lib/supplyMatch");
 const setState = require("./lib/setState");
+const { migrateLayout } = require("./lib/layoutMigrate");
 const gemini = require("./lib/gemini");
 
 const HOST = "127.0.0.1";
@@ -956,7 +957,7 @@ function chatsPayload() {
   // A chat that is selected but no longer in the list (renamed, history
   // cleared) still shows, so it can be unselected.
   const all = new Map(knownChats);
-  for (const jid of [...allowed, ...receiving, ...lab, ...learn]) {
+  for (const jid of [...allowed, ...receiving, ...lab, ...learn, ...Object.keys(cfg.chatPurposes || {}).map(normChatJid)]) {
     if (!all.has(jid) && isListableChat(jid)) {
       all.set(jid, { jid, name: null, isGroup: jid.endsWith("@g.us"), lastSeen: null, documentCount: 0, messageCount: 0 });
     }
@@ -966,7 +967,8 @@ function chatsPayload() {
     .map((c) => {
       const participants = c.participants ?? c.participantCount ?? null;
       const { participantCount, ...rest } = c;
-      const watched = cfg.watchAllChats || allowed.includes(c.jid) || receiving.includes(c.jid) || lab.includes(c.jid);
+      const p = purposeOf(c.jid, cfg);
+      const watched = cfg.watchAllChats || allowed.includes(c.jid) || receiving.includes(c.jid) || lab.includes(c.jid) || (Boolean(p) && p !== "ignore");
       return {
         ...rest,
         participants,
@@ -976,6 +978,7 @@ function chatsPayload() {
         receivingSelected: receiving.includes(c.jid),
         labSelected: lab.includes(c.jid),
         learnFrom: learn.includes(c.jid),
+        purpose: purposeOf(c.jid, cfg),
         suggested: Boolean(c.isGroup && SUGGEST.test(String(c.name || ""))),
       };
     })
@@ -994,6 +997,8 @@ function chatsPayload() {
     receivingChats: receiving,
     labChats: lab,
     learnChats: learn,
+    chatPurposes: effectivePurposes(cfg),
+    purposeOptions: PURPOSES.map((id) => ({ id, label: PURPOSE_LABEL[id] })),
     listState: {
       status: state.status,
       engine: state.engine || null,
@@ -1248,11 +1253,67 @@ function purposeOf(jid, cfg = settings()) {
   return null;
 }
 
+/** Every selected chat with its purpose; chats on the old sales list count as "sales". */
+function effectivePurposes(cfg = settings()) {
+  const out = {};
+  for (const j of cfg.allowedChats || []) out[normChatJid(j)] = "sales";
+  for (const [k, v] of Object.entries(cfg.chatPurposes || {})) if (PURPOSES.includes(v)) out[normChatJid(k)] = v;
+  return out;
+}
+
+/**
+ * One-time upgrade: chats picked by an older build (allowedChats with no
+ * purpose) are written down as "Sales documents" so the picker shows it.
+ */
+function migrateChatPurposes() {
+  try {
+    const raw = readJsonSafe(PATHS.settingsFile, {});
+    const cur = raw.chatPurposes && typeof raw.chatPurposes === "object" ? raw.chatPurposes : {};
+    const next = { ...cur };
+    let added = 0;
+    for (const j of Array.isArray(raw.allowedChats) ? raw.allowedChats : []) {
+      const k = normChatJid(j);
+      if (k && !Object.keys(next).some((x) => normChatJid(x) === k)) { next[k] = "sales"; added += 1; }
+    }
+    if (added) {
+      writeChatSettings({ chatPurposes: next });
+      log(`chat purposes: ${added} chat(s) selected earlier set to "Sales documents (supply sets)"`);
+    }
+  } catch (err) {
+    log(`chat purposes migration skipped: ${err.message}`);
+  }
+}
+
 /** Documents a chat's purpose does not cover are skipped — and listed, with the reason. */
-const skippedLog = [];
+// Kept on disk (db/skipped.json) so the list survives a restart.
+const skippedFile = () => path.join(PATHS.dbDir, "skipped.json");
+function loadSkipped() {
+  try {
+    const j = JSON.parse(fs.readFileSync(skippedFile(), "utf8"));
+    return Array.isArray(j.items) ? j.items : [];
+  } catch {
+    return [];
+  }
+}
 function noteSkipped(entry) {
-  skippedLog.unshift({ at: new Date().toISOString(), ...entry });
-  if (skippedLog.length > 300) skippedLog.length = 300;
+  const items = loadSkipped();
+  items.unshift({ at: new Date().toISOString(), ...entry });
+  if (items.length > 300) items.length = 300;
+  try {
+    ensureDir(PATHS.dbDir);
+    const tmp = `${skippedFile()}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify({ items }, null, 1), "utf8");
+    fs.renameSync(tmp, skippedFile());
+  } catch {
+    /* the log line still says it */
+  }
+}
+
+/** A filed paper of a FINAL supply set — frozen: never moved, re-read or removed. */
+const FINAL_LOCKED_MSG = "This document belongs to a FINAL supply set and is locked. An admin or the developer must reopen the set first.";
+function inFinalSet(rec) {
+  const ref = rec?.reference?.canonical;
+  return Boolean(ref && rec.bucket === "filed" && setState.isFinal(ref));
 }
 
 function enqueue(msg) {
@@ -2301,7 +2362,11 @@ async function handleMedia(msg, media) {
   // buyer is Biome and its date is the vendor's); we reuse the folder our
   // document already sits in. If ours has not arrived yet, the paper is
   // held below and released the moment it does (or by the sweep).
-  if ((!isOurs && reference && reference.canonical) || joinAnchor) {
+  // A FINAL supply set is frozen: a paper naming it is held for a person
+  // (shown under Needs check), never added automatically.
+  const finalHold = Boolean(reference && reference.canonical && setState.isFinal(reference.canonical));
+  if (finalHold) log(`"${media.fileName}" names ${reference.canonical}, which is FINAL — held for a person, not added`);
+  if (!finalHold && ((!isOurs && reference && reference.canonical) || joinAnchor)) {
     const ourFiled = joinAnchor
       ? { filePath: path.join(joinAnchor.anchor.dir, "x") }
       : store.all().find((r) =>
@@ -2376,7 +2441,7 @@ async function handleMedia(msg, media) {
     });
   }
 
-  if (!isOurs || (!isAnchor && !reference)) {
+  if (finalHold || !isOurs || (!isAnchor && !reference)) {
     const stagedId = `doc-${msg.key.id}`;
     staging.stage({
       id: stagedId,
@@ -2408,6 +2473,7 @@ async function handleMedia(msg, media) {
       aiStatus: ai.ok ? "ok" : "skipped",
       aiMessage: ai.ok ? null : ai.message,
       replyToMessageId: quotedMessageId(msg),
+      ...(finalHold ? { needsCheck: true, needsCheckReason: `Names ${reference.canonical}, which was already verified and made final — not added automatically. Reopen that set to add it, or move it elsewhere.`, heldForFinal: reference.canonical } : {}),
     });
 
     if (docType && docType !== "other") {
@@ -2653,6 +2719,8 @@ async function rerunRecord(rec) {
  * read again with the new rules; then the waiting list is swept.
  */
 async function recheckWaitingOnStart() {
+  migrateChatPurposes();
+  try { migrateLayout(log); } catch (err) { log(`folder layout migration failed (nothing deleted): ${err.message}`); }
   const marker = path.join(PATHS.root, "runtime", "wa-recheck.json");
   let done = null;
   try { done = JSON.parse(fs.readFileSync(marker, "utf8")); } catch {}
@@ -3136,6 +3204,66 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, store.supplySets());
     }
 
+    // ---- Verify & finalise (the coordinator's double-check) ----
+    // The app (Next.js proxy) decides WHO may call these and passes the
+    // signed-in person as `by`; the agent decides WHAT is allowed.
+    if (route === "/sets/finalise" && req.method === "POST") {
+      const body = await readBody(req);
+      const ref = String(body.reference || "").trim();
+      const set = (store.supplySets().sets || []).find((s) => s.reference === ref);
+      if (!set) return json(res, 404, { error: "That supply set does not exist." });
+      if (set.status === "final") return json(res, 409, { error: "This supply set is already final." });
+      if (!set.ourDocumentId) return json(res, 400, { error: "A supply set can only be finalised once our tax invoice / delivery challan is in it." });
+      const failed = (set.checks || []).filter((c) => c.ok === false).map((c) => c.label);
+      const missing = (set.missing || []).map((m) => m.label);
+      const note = String(body.note || "").trim().slice(0, 500);
+      if (set.status !== "ready" && !note) {
+        return json(res, 400, {
+          error: `This set is not ready to verify (${[...failed.map((f) => `check failed: ${f}`), ...missing.map((m) => `missing: ${m}`)].join("; ") || "checklist incomplete"}). Write a note saying why it is correct anyway, then confirm.`,
+          code: "NOTE_REQUIRED",
+        });
+      }
+      const r = setState.finalise(ref, body.by || null, {
+        documentIds: set.documents.map((d) => d.id),
+        checklist: { checks: set.checks, missing: set.missing, dscMissing: set.dscMissing, statusBefore: set.status },
+        note: note || null,
+      });
+      if (!r.ok) return json(res, 409, { error: r.error });
+      log(`supply set ${ref} verified and made FINAL by ${body.by?.name || "?"} (${set.documents.length} document(s))`);
+      return json(res, 200, { ok: true, state: r.state, set: (store.supplySets().sets || []).find((s) => s.reference === ref) || null });
+    }
+
+    if (route === "/sets/reopen" && req.method === "POST") {
+      const body = await readBody(req);
+      const ref = String(body.reference || "").trim();
+      const reason = String(body.reason || "").trim().slice(0, 500);
+      if (!reason) return json(res, 400, { error: "Give a reason for reopening a final supply set." });
+      const r = setState.reopen(ref, body.by || null, reason);
+      if (!r.ok) return json(res, 409, { error: r.error });
+      log(`supply set ${ref} REOPENED by ${body.by?.name || "?"}: ${reason}`);
+      return json(res, 200, { ok: true, state: r.state });
+    }
+
+    // A person confirms a "Needs check" paper is in the right set.
+    if (route === "/documents/confirm" && req.method === "POST") {
+      const body = await readBody(req);
+      const rec = body.id ? store.byId(body.id) : null;
+      if (!rec) return json(res, 404, { error: "That document is not in the ledger." });
+      if (inFinalSet(rec)) return json(res, 409, { error: FINAL_LOCKED_MSG, code: "SET_FINAL" });
+      const updated = store.update(rec.id, { needsCheck: false, needsCheckReason: null, matchLevel: "confirmed", confirmedBy: body.by || null, confirmedAt: new Date().toISOString() });
+      return json(res, 200, { document: updated });
+    }
+
+    // What was NOT saved, and why (screenshots, Ignore chats, …).
+    if (route === "/skipped" && req.method === "GET") {
+      const fromLedger = store.all().filter((d) => d.skipReason).map((d) => ({ at: d.receivedAt, chat: (d.sender?.chatJid && knownChats.get(normChatJid(d.sender.chatJid))?.name) || d.sender?.chatJid || null, chatJid: d.sender?.chatJid || null, fileName: d.originalName, reason: d.skipReason, id: d.id }));
+      const seen = new Set(fromLedger.map((e) => e.id));
+      const items = [...loadSkipped().filter((e) => !e.id || !seen.has(e.id)), ...fromLedger]
+        .sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")))
+        .slice(0, 300);
+      return json(res, 200, { items });
+    }
+
     if (route === "/backfill" && req.method === "POST") {
       const body = await readBody(req);
       backfill.fromDate = body.fromDate || null;
@@ -3238,6 +3366,10 @@ const server = http.createServer(async (req, res) => {
           error: `"${body.referenceNo}" isn't a readable reference. Use the printed form, e.g. BDC/786/MHI/44.`,
         });
       }
+      if (inFinalSet(rec)) return json(res, 409, { error: FINAL_LOCKED_MSG, code: "SET_FINAL" });
+      if (reference && reference.canonical !== rec.reference?.canonical && setState.isFinal(reference.canonical)) {
+        return json(res, 409, { error: `${reference.canonical} is a FINAL supply set — nothing can be added to it until an admin or the developer reopens it.`, code: "SET_FINAL" });
+      }
 
       const extracted = {
         ...(rec.extracted || {}),
@@ -3311,7 +3443,12 @@ const server = http.createServer(async (req, res) => {
           extracted.documentType === "biome_delivery_challan")
       ) {
         moved = reanchorReference(normalisedRef.canonical, extracted.documentDate, log);
+      } else if (normalisedRef && anchorDate) {
+        // A paper moved into a set lands in that set's folder (our client + our date).
+        moved = reanchorReference(normalisedRef.canonical, anchorDate, log);
       }
+      // A person placed it — it no longer needs checking.
+      if (normalisedRef) store.update(rec.id, { needsCheck: false, needsCheckReason: null, matchLevel: "manual" });
 
       // A person just told us the right answer. That is worth far more
       // than anything inferred, so it's recorded with heavy weight and
@@ -3612,8 +3749,30 @@ const server = http.createServer(async (req, res) => {
       }
       if (typeof body.watchAllChats === "boolean") watchAll = body.watchAllChats;
 
+      // Per-chat purpose: { jid, purpose } for one chat, or { chatPurposes: { jid: purpose|null } }.
+      // purpose null / "" = the chat is not selected at all.
+      const purposes = effectivePurposes({ ...cfg, allowedChats: lists.allowedChats });
+      const purposePatch = { ...(body.chatPurposes && typeof body.chatPurposes === "object" ? body.chatPurposes : {}) };
+      if (body.jid && body.purpose !== undefined) purposePatch[body.jid] = body.purpose;
+      for (const [rawJid, rawPurpose] of Object.entries(purposePatch)) {
+        const j = normChatJid(rawJid);
+        if (!j || !isListableChat(j)) continue;
+        const pu = rawPurpose == null || rawPurpose === "" ? null : String(rawPurpose);
+        if (pu && !PURPOSES.includes(pu)) return json(res, 400, { error: `Unknown purpose "${pu}". Use ${PURPOSES.join(", ")}.` });
+        if (pu) purposes[j] = pu;
+        else delete purposes[j];
+        // The sales list follows the purpose, so older code paths agree.
+        const sales = new Set(lists.allowedChats);
+        if (pu === "sales") sales.add(j);
+        else sales.delete(j);
+        lists.allowedChats = [...sales];
+        if (body.watchAllChats === undefined) watchAll = false;
+      }
+      // A chat removed from the sales list by the old one-click path loses its sales purpose too.
+      for (const [j, pu] of Object.entries(purposes)) if (pu === "sales" && !lists.allowedChats.includes(j)) delete purposes[j];
+
       try {
-        writeChatSettings({ ...lists, watchAllChats: watchAll });
+        writeChatSettings({ ...lists, watchAllChats: watchAll, chatPurposes: purposes });
       } catch (err) {
         return json(res, 500, { error: `Could not save the chat selection: ${err.message}` });
       }
@@ -3698,6 +3857,10 @@ const server = http.createServer(async (req, res) => {
           error: "Say what to delete: `ids`, a `from`/`to` date range, or a `bucket`.",
         });
       }
+      // Papers of a FINAL supply set are never removed in bulk or one by one.
+      const locked = targets.filter((d) => inFinalSet(d));
+      if (locked.length && Array.isArray(ids) && ids.length) return json(res, 409, { error: FINAL_LOCKED_MSG, code: "SET_FINAL" });
+      targets = targets.filter((d) => !inFinalSet(d));
 
       let filesRemoved = 0;
       for (const doc of targets) {
@@ -3813,6 +3976,7 @@ const server = http.createServer(async (req, res) => {
     if (route === "/reprocess" && req.method === "POST") {
       const body = await readBody(req);
       if (!body.id) return json(res, 400, { error: "An `id` is required." });
+      if (inFinalSet(store.byId(body.id))) return json(res, 409, { error: FINAL_LOCKED_MSG, code: "SET_FINAL" });
       const updated = await reprocess(body.id);
       return json(res, 200, { document: updated });
     }

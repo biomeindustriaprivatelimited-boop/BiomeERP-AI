@@ -15,6 +15,7 @@ const path = require("path");
 const { PATHS } = require("./paths");
 const { planFiling, saveFile } = require("./filing");
 const store = require("./store");
+const setState = require("./setState");
 
 /**
  * The date the whole supply set is filed under: the date on OUR tax
@@ -60,6 +61,8 @@ function anchorClientFor(referenceCanonical) {
  */
 function reanchorReference(referenceCanonical, anchorDate, logFn = () => {}) {
   if (!referenceCanonical || !anchorDate) return 0;
+  // A FINAL set is frozen — its papers stay exactly where they were verified.
+  if (setState.isFinal(referenceCanonical)) return 0;
   let moved = 0;
   const anchorClient = anchorClientFor(referenceCanonical);
 

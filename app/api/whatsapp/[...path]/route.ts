@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission } from "@/lib/authServer";
+import { requirePermission, findById } from "@/lib/authServer";
 import { agentFetch, AgentUnavailableError } from "@/lib/whatsappAgent";
+import { userCan } from "@/lib/access";
+import { recordAudit } from "@/lib/audit";
+import type { Permission } from "@/lib/permissions";
 
 /**
  * Thin proxy between the browser and the background WhatsApp agent.
@@ -51,6 +54,29 @@ const ALLOWED: Record<string, ("GET" | "POST")[]> = {
   why: ["GET"],
   // Engine, groups, last message, OCR engine, Gemini live test, disk.
   "health-check": ["GET"],
+  // What was not saved, and why (screenshots, chats set to Ignore, …).
+  skipped: ["GET"],
+  // Verify & finalise / reopen a supply set; confirm a "Needs check" paper.
+  // Who may do these is decided below (GUARDED), not by the UI.
+  "sets/finalise": ["POST"],
+  "sets/reopen": ["POST"],
+  "documents/confirm": ["POST"],
+};
+
+/**
+ * Routes that change a supply set's verified state need more than the
+ * "whatsapp" permission, and the agent is told who the person is (the
+ * body's `by` is always overwritten here, never trusted from the browser).
+ *   finalise / confirm — whoever works the coordination register
+ *                        (coordinator, accounts, admin, developer; any
+ *                        future role given both keys).
+ *   reopen            — app-settings holders only (admin, developer).
+ */
+const GUARDED: Record<string, { perms: Permission[]; audit?: string; deny: string }> = {
+  "sets/finalise": { perms: ["whatsapp", "coordination"], audit: "WA_SET_FINALISED", deny: "Only a coordinator, accounts, admin or the developer can verify and finalise a supply set." },
+  "documents/confirm": { perms: ["whatsapp", "coordination"], deny: "Only a coordinator, accounts, admin or the developer can confirm a document's set." },
+  classify: { perms: ["whatsapp", "coordination"], deny: "Only a coordinator, accounts, admin or the developer can move a document to a supply set." },
+  "sets/reopen": { perms: ["whatsapp", "settings"], audit: "WA_SET_REOPENED", deny: "Only an admin or the developer can reopen a final supply set." },
 };
 
 function unavailable(err: AgentUnavailableError) {
@@ -60,7 +86,7 @@ function unavailable(err: AgentUnavailableError) {
 
 const ALLOWED_DELETE: Record<string, true> = { documents: true, patterns: true, samples: true };
 
-async function proxy(req: NextRequest, segments: string[], method: "GET" | "POST" | "DELETE") {
+async function proxy(req: NextRequest, segments: string[], method: "GET" | "POST" | "DELETE", uid?: string) {
   const route = segments.join("/");
   if (method === "DELETE") {
     if (!ALLOWED_DELETE[route]) {
@@ -71,7 +97,24 @@ async function proxy(req: NextRequest, segments: string[], method: "GET" | "POST
   }
 
   const search = req.nextUrl.search || "";
-  const body = method === "POST" || method === "DELETE" ? await req.text() : undefined;
+  let body = method === "POST" || method === "DELETE" ? await req.text() : undefined;
+
+  const guard = method === "POST" ? GUARDED[route] : undefined;
+  let actor: { id: string; name: string; role: string } | null = null;
+  let parsed: any = null;
+  if (guard) {
+    const user = uid ? findById(uid) : undefined;
+    if (!user || !guard.perms.every((p) => userCan(user.role, user.access, p))) {
+      return NextResponse.json({ error: guard.deny }, { status: 403 });
+    }
+    actor = { id: user.id, name: user.name || user.username, role: user.role };
+    try {
+      parsed = body ? JSON.parse(body) : {};
+    } catch {
+      parsed = {};
+    }
+    body = JSON.stringify({ ...parsed, by: { ...actor, at: new Date().toISOString() } });
+  }
 
   try {
     const res = await agentFetch(`/${route}${search}`, {
@@ -101,6 +144,20 @@ async function proxy(req: NextRequest, segments: string[], method: "GET" | "POST
     }
 
     const json = await res.json().catch(() => ({}));
+    if (guard?.audit && actor) {
+      recordAudit({
+        action: guard.audit,
+        userId: actor.id,
+        userName: actor.name,
+        role: actor.role,
+        targetType: "supply_set",
+        targetId: String(parsed?.reference || ""),
+        targetLabel: String(parsed?.reference || ""),
+        detail: String(parsed?.note || parsed?.reason || "").slice(0, 300) || undefined,
+        outcome: res.ok ? "ok" : "failed",
+        errorMessage: res.ok ? undefined : String((json as any)?.error || res.status),
+      });
+    }
     return NextResponse.json(json, { status: res.status });
   } catch (err) {
     if (err instanceof AgentUnavailableError) return unavailable(err);
@@ -122,7 +179,7 @@ export async function POST(req: NextRequest, { params }: { params: { path: strin
   const auth = await requirePermission(req, "whatsapp");
   if ("response" in auth) return auth.response;
 
-  return proxy(req, params.path || [], "POST");
+  return proxy(req, params.path || [], "POST", auth.session.uid);
 }
 
 export async function DELETE(req: NextRequest, { params }: { params: { path: string[] } }) {

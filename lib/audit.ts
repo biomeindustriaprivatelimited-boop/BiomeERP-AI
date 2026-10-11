@@ -59,6 +59,7 @@ function categoryFor(action: string): AuditCategory {
   if (a.startsWith("SHEET_") || a.startsWith("PLANT_") || a.startsWith("SLIP_")) return "plant";
   if (a.startsWith("SUPPORT_")) return "support";
   if (a.startsWith("TALLY_")) return "tally";
+  if (a.startsWith("WA_")) return "documents"; // WhatsApp supply sets: finalise / reopen
   return "settings";
 }
 
