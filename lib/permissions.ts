@@ -53,6 +53,10 @@ export type Permission =
   // A plant manager needs plant and transport entry but must NOT see the
   // coordination register, and the two were sharing one permission.
   | "coordination"
+  // The number-series master (invoice / challan / voucher number books):
+  // add, edit, retire a series. Accounts / admin / developer — a
+  // coordinator only PICKS from the active books.
+  | "series.manage"
   // Plant ↔ coordination reconciliation: both sides' figures for every
   // mismatch, the 3-day red flags, and sending the teams a notice.
   // Accounts / admin / developer — never a plant manager or a coordinator.
@@ -126,6 +130,7 @@ const ALL: Permission[] = [
   "plant",
   "plant.unlock",
   "coordination",
+  "series.manage",
   "reco",
   "vendors",
   "customers",
@@ -197,6 +202,7 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "plant",
     "plant.unlock",
     "coordination",
+    "series.manage",
     "reco",
     "vendors",
     "customers",
@@ -598,6 +604,7 @@ export const PERMISSION_INFO: Record<string, { label: string; what: string; why:
   "plant.unlock": { label: "Plant sheets — unlock frozen rows", what: "Approve or reject a plant manager's request to edit a biomass / transport row that froze 5 days after submission.", why: "Accounts, admin, developer.", risk: "medium" },
   plant: { label: "Plant sheets", what: "Biomass sheet, transport sheet and weight-slip checks — own plant only for a plant manager.", why: "Plant managers; accounts to verify.", risk: "medium" },
   "imprest.viewPlant": { label: "Imprest — my plant", what: "Read every imprest holder's entries at the plant the person is signed in for.", why: "Plant managers.", risk: "medium" },
+  "series.manage": { label: "Number series — manage", what: "Add, edit and retire invoice / challan / voucher number series (prefix, format, next number, which plants and clients use it).", why: "Accounts, admin, developer. Coordinators only pick from the active series.", risk: "high" },
   coordination: { label: "Coordination", what: "Create and track supply trips, weights, receivings.", why: "Coordinators.", risk: "medium" },
   vendors: { label: "Vendors", what: "Vendor master, codes, balances.", why: "Coordinators and accounts.", risk: "medium" },
   customers: { label: "Clients", what: "Client master — view each client's document requirements, add clients and POs from coordination.", why: "Coordinators and accounts.", risk: "medium" },

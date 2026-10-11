@@ -1,39 +1,126 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission, findById } from "@/lib/authServer";
-import { hasPermission } from "@/lib/permissions";
+import { effectivePermissions } from "@/lib/access";
 import {
-  loadSeriesFile, saveSeriesFile, previewNext, formatSeriesNumber,
-  NumberSeries, DOC_TYPES, NUMBERING_METHODS, methodOf,
+  loadSeriesFile, saveSeriesFile, previewNext, formatSeriesNumber, hasSeqToken, resolvedPattern,
+  NumberSeries, DOC_TYPES, NUMBERING_METHODS, methodOf, defaultVoucherType, financialYearFor,
 } from "@/lib/numberSeries";
+import { loadPlants, STATES } from "@/lib/plants";
 import { recordAudit } from "@/lib/audit";
 
 /**
- * The invoice and challan number books.
+ * The number-series master — invoice, challan and other voucher books.
  *
- * Readable by anyone who can see coordination — a coordinator needs to
- * know what the next number will be. Only an admin may change a pattern or
- * move a count, because moving a count is how a book ends up with a
- * duplicate or a hole, and both are found much later by someone else.
+ * Readable by anyone who can see coordination: a coordinator needs to know
+ * which books exist and what the next number will be. Adding, changing or
+ * retiring a book needs "series.manage" (accounts, admin, developer — and
+ * anyone the developer grants it to), checked HERE, because moving a count
+ * is how a book ends up with a duplicate or a hole, and both are found much
+ * later by someone else.
  */
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-function canEdit(role: string): boolean {
-  return hasPermission(role as any, "settings");
+function canManage(user: { role: any; access?: any }): boolean {
+  return effectivePermissions(user.role, user.access).includes("series.manage");
+}
+
+const DENIED = "Only accounts, an admin or the developer can manage number series.";
+
+const upList = (v: unknown): string[] =>
+  Array.isArray(v)
+    ? [...new Set(v.map((x) => String(x).trim().toUpperCase()).filter(Boolean))]
+    : String(v ?? "").split(",").map((x) => x.trim().toUpperCase()).filter(Boolean);
+
+const strList = (v: unknown): string[] =>
+  Array.isArray(v)
+    ? [...new Set(v.map((x) => String(x).trim()).filter(Boolean))]
+    : String(v ?? "").split(",").map((x) => x.trim()).filter(Boolean);
+
+const scopeKey = (s: Pick<NumberSeries, "plants" | "states">) =>
+  `${[...(s.plants || [])].sort().join(",")}|${[...(s.states || [])].sort().join(",")}`;
+
+/** Rules every saved series must pass — the same for add and edit. */
+function validate(s: NumberSeries, others: NumberSeries[], issued: { number: string }[]): string | null {
+  if (!s.name.trim()) return "Give the series a name.";
+  if (!hasSeqToken(s.pattern)) return "The format must contain {n} (or {SEQ}) — that is where the running number goes.";
+  if (s.minDigits > 10) return "Padding above 10 digits is not a real number book.";
+  if (others.some((o) => o.name.trim().toLowerCase() === s.name.trim().toLowerCase())) {
+    return `A series called "${s.name}" already exists.`;
+  }
+  // Two books printing the same numbers would hand one number to two documents.
+  const mine = resolvedPattern(s);
+  const twin = others.find((o) => resolvedPattern(o) === mine);
+  if (twin) return `"${twin.name}" already prints numbers in this exact format (${mine}). Change the prefix, suffix or format.`;
+  const next = formatSeriesNumber(s, s.nextSeq);
+  if (issued.some((i) => i.number.trim().toUpperCase() === next.trim().toUpperCase())) {
+    return `That would issue ${next} again — it is already on the books. Set the next number past the last one actually used.`;
+  }
+  return null;
+}
+
+function readSeries(body: any, before: NumberSeries | undefined): NumberSeries {
+  const b = before;
+  const pick = <T,>(key: string, read: (v: any) => T, fallback: T): T => (body[key] !== undefined ? read(body[key]) : fallback);
+  const docType = pick("docType", (v) => (v === "tax_invoice" ? "tax_invoice" : "delivery_challan"), b?.docType || "tax_invoice") as NumberSeries["docType"];
+  return {
+    ...(b || ({} as NumberSeries)),
+    id: b?.id || "",
+    name: pick("name", (v) => String(v).trim().slice(0, 80), b?.name || ""),
+    docType,
+    voucherType: pick("voucherType", (v) => String(v).trim().slice(0, 60), b?.voucherType || "") || defaultVoucherType(docType),
+    business: pick("business", (v) => (["trading", "manufacturing", "both"].includes(v) ? v : "both"), b?.business || "both"),
+    prefix: pick("prefix", (v) => String(v).trim().slice(0, 30), b?.prefix || ""),
+    suffix: pick("suffix", (v) => String(v).trim().slice(0, 30), b?.suffix || ""),
+    pattern: pick("pattern", (v) => String(v).trim().slice(0, 80), b?.pattern || "{PREFIX}/{FYSHORT}/{SEQ}") || b?.pattern || "",
+    minDigits: pick("minDigits", (v) => (Number(v) > 0 ? Math.trunc(Number(v)) : 1), b?.minDigits || 1),
+    nextSeq: pick("nextSeq", (v) => (Number(v) > 0 ? Math.trunc(Number(v)) : 1), b?.nextSeq || 1),
+    resetOn: pick("resetOn", (v) => (v === "financial_year" ? "financial_year" : "never"), b?.resetOn || "never"),
+    fy: pick("fy", (v) => String(v).trim(), b?.fy || "") || b?.fy || financialYearFor(new Date()),
+    clientHints: pick("clientHints", strList, b?.clientHints || []),
+    plants: pick("plants", upList, b?.plants || []),
+    states: pick("states", upList, b?.states || []),
+    isDefault: pick("isDefault", (v) => v === true, b?.isDefault === true),
+    note: pick("note", (v) => String(v).slice(0, 500), b?.note || ""),
+    active: pick("active", (v) => v !== false, b ? b.active : true),
+    method: pick("method", (v) => methodOf({ method: v }), methodOf(b)),
+  };
+}
+
+/** Only one default per document type within the same plant / state scope. */
+function settleDefault(all: NumberSeries[], s: NumberSeries): string[] {
+  if (!s.isDefault) return [];
+  const cleared: string[] = [];
+  for (const o of all) {
+    if (o.id !== s.id && o.isDefault && o.docType === s.docType && scopeKey(o) === scopeKey(s)) {
+      o.isDefault = false;
+      cleared.push(o.name);
+    }
+  }
+  return cleared;
+}
+
+function view(s: NumberSeries) {
+  return { ...s, method: methodOf(s), next: previewNext(s), resolved: resolvedPattern(s) };
 }
 
 export async function GET(req: NextRequest) {
   const auth = await requirePermission(req, "coordination");
   if ("response" in auth) return auth.response;
   const user = findById(auth.session.uid)!;
+  const manage = canManage(user);
 
   const f = loadSeriesFile();
   return NextResponse.json({
-    series: f.series.map((s) => ({ ...s, method: methodOf(s), next: previewNext(s) })),
+    series: f.series.map(view),
     methods: NUMBERING_METHODS,
-    issued: f.issued.slice(0, 50),
+    // The full issued list is for the people who keep the books.
+    issued: manage ? f.issued.slice(0, 50) : [],
     docTypes: DOC_TYPES,
-    canEdit: canEdit(user.role),
+    plants: loadPlants().filter((p) => p.active).map((p) => ({ code: p.code, label: p.label, state: p.state })),
+    states: STATES.map((s) => ({ code: s.code, label: s.label })),
+    canEdit: manage,
+    canManage: manage,
     seededAt: f.seededAt,
   });
 }
@@ -42,43 +129,24 @@ export async function POST(req: NextRequest) {
   const auth = await requirePermission(req, "coordination");
   if ("response" in auth) return auth.response;
   const user = findById(auth.session.uid)!;
-  if (!canEdit(user.role)) {
-    return NextResponse.json({ error: "Only an admin can add a number series." }, { status: 403 });
-  }
+  if (!canManage(user)) return NextResponse.json({ error: DENIED }, { status: 403 });
 
   const body = await req.json().catch(() => null);
-  const name = String(body?.name ?? "").trim();
-  const pattern = String(body?.pattern ?? "").trim();
-  if (!name || !pattern) return NextResponse.json({ error: "A name and a pattern are required." }, { status: 400 });
-  if (!pattern.includes("{SEQ}")) {
-    return NextResponse.json(
-      { error: "The pattern must contain {SEQ} — that is where the running number goes." },
-      { status: 400 }
-    );
-  }
+  if (!body) return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
 
   const f = loadSeriesFile();
-  const id = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || `series-${Date.now()}`;
-  if (f.series.some((s) => s.id === id)) {
-    return NextResponse.json({ error: `A series called "${name}" already exists.` }, { status: 409 });
-  }
+  const series = readSeries(body, undefined);
+  const base = series.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "series";
+  let id = base;
+  for (let n = 2; f.series.some((s) => s.id === id); n++) id = `${base}-${n}`;
+  const now = new Date().toISOString();
+  Object.assign(series, { id, builtIn: false, createdAt: now, createdBy: user.name, updatedAt: now, updatedBy: user.name });
+  if (!body.fy) series.fy = financialYearFor(now.slice(0, 10));
 
-  const series: NumberSeries = {
-    id,
-    name,
-    docType: body.docType === "tax_invoice" ? "tax_invoice" : "delivery_challan",
-    business: ["trading", "manufacturing", "both"].includes(body.business) ? body.business : "both",
-    pattern,
-    minDigits: Number(body.minDigits) > 0 ? Number(body.minDigits) : 1,
-    nextSeq: Number(body.nextSeq) > 0 ? Math.trunc(Number(body.nextSeq)) : 1,
-    resetOn: body.resetOn === "financial_year" ? "financial_year" : "never",
-    fy: String(body.fy || "").trim() || new Date().toISOString().slice(0, 4),
-    clientHints: Array.isArray(body.clientHints) ? body.clientHints.map(String) : [],
-    note: String(body.note ?? "").slice(0, 500),
-    active: body.active !== false,
-    method: methodOf({ method: body.method }),
-  };
+  const problem = validate(series, f.series, f.issued);
+  if (problem) return NextResponse.json({ error: problem }, { status: problem.includes("already") ? 409 : 400 });
 
+  const cleared = settleDefault(f.series, series);
   f.series = [...f.series, series];
   saveSeriesFile(f);
 
@@ -86,19 +154,19 @@ export async function POST(req: NextRequest) {
     action: "SERIES_CREATED",
     userId: user.id, userName: user.name, role: user.role,
     targetType: "series", targetId: series.id, targetLabel: series.name,
-    detail: `${series.pattern} starting at ${previewNext(series)}`,
+    detail: `${series.voucherType} · ${series.pattern}${series.prefix ? ` (prefix ${series.prefix})` : ""} starting at ${previewNext(series)}${
+      series.plants?.length ? ` · plants ${series.plants.join(",")}` : ""}${series.states?.length ? ` · states ${series.states.join(",")}` : ""}${
+      cleared.length ? ` · now the default (was: ${cleared.join(", ")})` : ""}`,
   });
 
-  return NextResponse.json({ series: { ...series, next: previewNext(series) } }, { status: 201 });
+  return NextResponse.json({ series: view(series) }, { status: 201 });
 }
 
 export async function PUT(req: NextRequest) {
   const auth = await requirePermission(req, "coordination");
   if ("response" in auth) return auth.response;
   const user = findById(auth.session.uid)!;
-  if (!canEdit(user.role)) {
-    return NextResponse.json({ error: "Only an admin can change a number series." }, { status: 403 });
-  }
+  if (!canManage(user)) return NextResponse.json({ error: DENIED }, { status: 403 });
 
   const body = await req.json().catch(() => null);
   if (!body?.id) return NextResponse.json({ error: "Which series?" }, { status: 400 });
@@ -107,57 +175,48 @@ export async function PUT(req: NextRequest) {
   const index = f.series.findIndex((s) => s.id === body.id);
   if (index === -1) return NextResponse.json({ error: "That series no longer exists." }, { status: 404 });
 
-  const before = f.series[index];
-  const updated: NumberSeries = {
-    ...before,
-    name: body.name !== undefined ? String(body.name).trim() || before.name : before.name,
-    pattern: body.pattern !== undefined ? String(body.pattern).trim() || before.pattern : before.pattern,
-    minDigits: body.minDigits !== undefined && Number(body.minDigits) > 0 ? Math.trunc(Number(body.minDigits)) : before.minDigits,
-    nextSeq: body.nextSeq !== undefined && Number(body.nextSeq) > 0 ? Math.trunc(Number(body.nextSeq)) : before.nextSeq,
-    resetOn: body.resetOn !== undefined ? (body.resetOn === "financial_year" ? "financial_year" : "never") : before.resetOn,
-    fy: body.fy !== undefined ? String(body.fy).trim() || before.fy : before.fy,
-    business: body.business !== undefined && ["trading", "manufacturing", "both"].includes(body.business) ? body.business : before.business,
-    clientHints: Array.isArray(body.clientHints) ? body.clientHints.map(String) : before.clientHints,
-    note: body.note !== undefined ? String(body.note).slice(0, 500) : before.note,
-    active: body.active !== undefined ? body.active !== false : before.active,
-    method: body.method !== undefined ? methodOf({ method: body.method }) : methodOf(before),
-  };
+  const before = { ...f.series[index] };
+  const updated = readSeries(body, before);
+  updated.updatedAt = new Date().toISOString();
+  updated.updatedBy = user.name;
 
-  if (!updated.pattern.includes("{SEQ}")) {
-    return NextResponse.json({ error: "The pattern must contain {SEQ}." }, { status: 400 });
-  }
+  const problem = validate(updated, f.series.filter((s) => s.id !== updated.id), f.issued);
+  if (problem) return NextResponse.json({ error: problem }, { status: problem.includes("already") || problem.includes("again") ? 409 : 400 });
 
-  // Moving the count backwards over numbers already handed out would put
-  // two documents on one number. Say which one, so it can be fixed rather
-  // than guessed at.
-  const nextNumber = formatSeriesNumber(updated, updated.nextSeq);
-  const clash = f.issued.find((i) => i.number === nextNumber);
-  if (clash) {
-    return NextResponse.json(
-      {
-        error: `That would issue ${nextNumber} again — it is already on trip ${clash.tripId ? `#${clash.seq || ""}` : "record"} from ${clash.at.slice(0, 10)}. Set the count past the last number actually used.`,
-      },
-      { status: 409 }
-    );
-  }
-
+  const cleared = settleDefault(f.series, updated);
   f.series[index] = updated;
   saveSeriesFile(f);
 
   const changes: string[] = [];
-  if (before.pattern !== updated.pattern) changes.push(`pattern ${before.pattern} → ${updated.pattern}`);
-  if (before.nextSeq !== updated.nextSeq) changes.push(`next count ${before.nextSeq} → ${updated.nextSeq}`);
-  if (before.minDigits !== updated.minDigits) changes.push(`padding ${before.minDigits} → ${updated.minDigits}`);
-  if (before.active !== updated.active) changes.push(updated.active ? "switched on" : "switched off");
-  if (methodOf(before) !== methodOf(updated)) changes.push(`numbering ${methodOf(before)} → ${methodOf(updated)}`);
-  if (before.name !== updated.name) changes.push(`name ${before.name} → ${updated.name}`);
+  const diff = (label: string, a: unknown, b: unknown) => {
+    const x = Array.isArray(a) ? a.join(",") : String(a ?? "");
+    const y = Array.isArray(b) ? b.join(",") : String(b ?? "");
+    if (x !== y) changes.push(`${label} ${x || "—"} → ${y || "—"}`);
+  };
+  diff("name", before.name, updated.name);
+  diff("voucher type", before.voucherType, updated.voucherType);
+  diff("document type", before.docType, updated.docType);
+  diff("prefix", before.prefix, updated.prefix);
+  diff("suffix", before.suffix, updated.suffix);
+  diff("format", before.pattern, updated.pattern);
+  diff("padding", before.minDigits, updated.minDigits);
+  diff("next number", before.nextSeq, updated.nextSeq);
+  diff("restart", before.resetOn, updated.resetOn);
+  diff("register", before.business, updated.business);
+  diff("plants", before.plants, updated.plants);
+  diff("states", before.states, updated.states);
+  diff("clients", before.clientHints, updated.clientHints);
+  diff("numbering", methodOf(before), methodOf(updated));
+  if (before.isDefault !== updated.isDefault) changes.push(updated.isDefault ? "made default" : "no longer default");
+  if (before.active !== updated.active) changes.push(updated.active ? "switched on" : "deactivated");
+  if (cleared.length) changes.push(`default taken from ${cleared.join(", ")}`);
 
   recordAudit({
-    action: "SERIES_UPDATED",
+    action: before.active && !updated.active ? "SERIES_DEACTIVATED" : "SERIES_UPDATED",
     userId: user.id, userName: user.name, role: user.role,
     targetType: "series", targetId: updated.id, targetLabel: updated.name,
     detail: changes.join("; ") || "no change",
   });
 
-  return NextResponse.json({ series: { ...updated, next: previewNext(updated) } });
+  return NextResponse.json({ series: view(updated) });
 }

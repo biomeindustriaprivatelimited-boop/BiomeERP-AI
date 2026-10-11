@@ -1,17 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission, findById } from "@/lib/authServer";
 import { hasPermission } from "@/lib/permissions";
+import { effectivePermissions } from "@/lib/access";
+import { companyCodes } from "@/lib/tripDocs";
+import { registeredVendors } from "@/lib/coordinationImport";
+import { loadPlants } from "@/lib/plants";
 import { paths, readJson } from "@/lib/dataRoot";
 import { Client, Vendor } from "@/lib/whatsapp";
 import { checkConsumption, loadPoFile, savePoFile, vendorQtyOf, clientQtyOf } from "@/lib/po";
 import {
   loadTrips, saveTrips, blankTrip, shortageFor, derivedStatus, summarise,
   byParty, gapsFor, lockStateFor, pendingRequestFor, loadEditRequests,
-  TRIP_STATUS, DEFAULT_SHORTAGE_RULES, FREEZE_DAYS, Trip, readTripInput,
+  TRIP_STATUS, DEFAULT_SHORTAGE_RULES, FREEZE_DAYS, Trip, readTripInput, settleReference,
 } from "@/lib/coordination";
 import {
   issueNumber, voidNumber, numberClash, registerManualNumber, seriesById, methodOf,
-  previewNext, loadSeriesFile, BUSINESS_TYPES, DOC_TYPES, BusinessType, DocType,
+  previewNext, loadSeriesFile, BUSINESS_TYPES, DOC_TYPES, BusinessType, DocType, seriesApplies,
 } from "@/lib/numberSeries";
 import { recordAudit } from "@/lib/audit";
 import { isOverrideActive, recordOverrideUse, lockedMessage } from "@/lib/override";
@@ -45,6 +49,40 @@ function loadClients(): Client[] {
 function loadVendors(): Vendor[] {
   const f = readJson<{ vendors: Vendor[] }>(paths.vendorsFile, { vendors: [] });
   return Array.isArray(f.vendors) ? f.vendors : [];
+}
+
+/**
+ * Trading vendors for the picker, with the code the reference needs.
+ *
+ * Registration (lib/partners.ts) is the source of the code; the derived
+ * vendor master fills in the seeded list. A registered trading vendor with
+ * NO code is still offered — the form then says "Vendor has no code — add
+ * it in Vendor registration" instead of the vendor silently missing.
+ */
+function tradingVendors(): { code: string; name: string; supplyType?: string }[] {
+  const out: { code: string; name: string; supplyType?: string }[] = [];
+  const seen = new Set<string>();
+  for (const v of registeredVendors()) {
+    if (v.category !== "trading" || v.blocked) continue;
+    const key = v.name.trim().toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ code: v.code, name: v.name, supplyType: "trading" });
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** The registry's code for a vendor name (trading first), "" when it has none. */
+function vendorCodeFor(name: string): string {
+  const n = name.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (!n) return "";
+  const list = registeredVendors().filter((v) => v.category === "trading");
+  const hit = list.find((v) => v.name.toLowerCase().replace(/[^a-z0-9]/g, "") === n) || list.find((v) => v.keys.includes(n));
+  return hit?.code || "";
+}
+
+function canManageSeries(user: { role: any; access?: any }): boolean {
+  return effectivePermissions(user.role, user.access).includes("series.manage");
 }
 
 export async function GET(req: NextRequest) {
@@ -103,7 +141,7 @@ export async function GET(req: NextRequest) {
   }
   if (search) {
     trips = trips.filter((t) =>
-      [t.client, t.supplier, t.vehicleNumber, t.vendorChallanNo, t.ourDocNo, t.poNumber, t.vendorInvoiceNo]
+      [t.client, t.supplier, t.vehicleNumber, t.vendorChallanNo, t.ourDocNo, t.poNumber, t.vendorInvoiceNo, t.referenceNo || ""]
         .join(" ").toLowerCase().includes(search)
     );
   }
@@ -125,8 +163,13 @@ export async function GET(req: NextRequest) {
     .sort((a, b) => (b.vehicleEntryDate || "").localeCompare(a.vehicleEntryDate || "") || b.serial - a.serial);
 
   const clients = loadClients();
-  const vendors = loadVendors().filter((v) => v.active !== false);
+  const vendors = tradingVendors();
   const seriesAll = loadSeriesFile().series.filter((s) => s.active);
+  // References already on the sheet, so the form can warn before saving.
+  // A plant manager only learns about rows they can already see.
+  const refSource = user.role === "plant_manager" ? trips : all;
+  const references: Record<string, { id: string; label: string }> = {};
+  for (const t of refSource) if (t.referenceNo) references[t.referenceNo.toUpperCase()] = { id: t.id, label: `${t.business} trip #${t.serial}` };
 
   return NextResponse.json({
     business: reg,
@@ -141,9 +184,14 @@ export async function GET(req: NextRequest) {
     freezeDays: FREEZE_DAYS,
     pendingRequests: requests.filter((r) => r.status === "pending").length,
     series: seriesAll.map((s) => ({
-      id: s.id, name: s.name, docType: s.docType, business: s.business,
-      pattern: s.pattern, clientHints: s.clientHints, next: previewNext(s),
+      id: s.id, name: s.name, docType: s.docType, business: s.business, voucherType: s.voucherType,
+      pattern: s.pattern, prefix: s.prefix, suffix: s.suffix, clientHints: s.clientHints,
+      plants: s.plants || [], states: s.states || [], isDefault: s.isDefault === true,
+      method: methodOf(s), next: previewNext(s),
     })),
+    plantStates: Object.fromEntries(loadPlants().map((p) => [p.code.toUpperCase(), String(p.state || "").toUpperCase()])),
+    referenceCompany: companyCodes()[0] || "BDC",
+    references,
     // Masters lead the pickers. Names that only exist in old rows are kept
     // separately so a historic entry never vanishes from the filters, but
     // nobody picks one by accident when adding something new.
@@ -154,7 +202,7 @@ export async function GET(req: NextRequest) {
         needsSetup: !(c.requires || []).length,
         poNumbers: (c.poNumbers || []).filter((po) => po.active !== false),
       })),
-      vendors: vendors.map((v) => ({ code: v.code, name: v.name, supplyType: v.supplyType })),
+      vendors,
       unlistedClients: [...new Set(all.map((t) => t.client).filter(Boolean))]
         .filter((n) => !clients.some((c) => c.name.trim().toLowerCase() === n.trim().toLowerCase()))
         .sort(),
@@ -166,7 +214,7 @@ export async function GET(req: NextRequest) {
     },
     canEdit: hasPermission(user.role, "vendors"),
     canApprove: hasPermission(user.role, "users"),
-    canManageSeries: hasPermission(user.role, "settings"),
+    canManageSeries: canManageSeries(user),
   });
 }
 
@@ -208,8 +256,20 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  if (reg === "trading" && !trip.supplierCode) trip.supplierCode = vendorCodeFor(trip.supplier);
+  const seriesProblem = checkSeriesFits(trip);
+  if (seriesProblem) return NextResponse.json({ error: seriesProblem }, { status: 400 });
+
+  // The reference is checked BEFORE a number is taken, so a clash never
+  // burns a serial — then built again once the number exists.
+  const preRef = settleReference(predictNumber(trip, body), all, body, companyCodes()[0]);
+  if (preRef.error) return NextResponse.json({ error: preRef.error }, { status: 409 });
+
   const assigned = assignDocumentNumber(trip, body, user);
   if (assigned.error) return NextResponse.json({ error: assigned.error }, { status: assigned.status || 400 });
+
+  const ref = settleReference(trip, all, body, companyCodes()[0]);
+  if (ref.error) return NextResponse.json({ error: `${ref.error} (Document number ${trip.ourDocNo} stays on the books.)` }, { status: 409 });
 
   saveTrips([...all, trip]);
 
@@ -280,8 +340,19 @@ export async function PUT(req: NextRequest) {
     );
   }
 
+  if (reg === "trading" && !updated.supplierCode) updated.supplierCode = vendorCodeFor(updated.supplier);
+  const seriesProblem = updated.seriesId !== existing.seriesId || body.reissue === true || (body.issueNumber === true && !existing.ourDocNo)
+    ? checkSeriesFits(updated) : null;
+  if (seriesProblem) return NextResponse.json({ error: seriesProblem }, { status: 400 });
+
+  const preRef = settleReference(predictNumber(updated, body), all, body, companyCodes()[0]);
+  if (preRef.error) return NextResponse.json({ error: preRef.error }, { status: 409 });
+
   const assigned = assignDocumentNumber(updated, body, user);
   if (assigned.error) return NextResponse.json({ error: assigned.error }, { status: assigned.status || 400 });
+
+  const ref = settleReference(updated, all, body, companyCodes()[0]);
+  if (ref.error) return NextResponse.json({ error: ref.error }, { status: 409 });
 
   // A cancelled trip keeps its number — the book must not develop a hole —
   // but the number is marked, so anyone reading the register knows why it
@@ -435,6 +506,41 @@ function poGuard(trip: Trip, existing: Trip | null, override: boolean): { error:
   }
   return null;
 }
+/**
+ * A copy of the trip carrying the document number it is ABOUT to get —
+ * typed, or the series' next — so the reference can be checked before
+ * anything is written to the number book.
+ */
+function predictNumber(trip: Trip, body: any): Trip {
+  const copy = { ...trip };
+  const typed = str(body.ourDocNo, 60);
+  if (body.reissue === true || (!typed && !copy.ourDocNo && body.issueNumber === true)) {
+    const s = trip.seriesId ? seriesById(trip.seriesId) : undefined;
+    copy.ourDocNo = s ? previewNext(s, trip.ourDocDate || trip.vehicleEntryDate) : "";
+  } else if (typed) {
+    copy.ourDocNo = typed;
+  }
+  return copy;
+}
+
+/**
+ * A coordinator picks from ACTIVE books that fit the document — enforced
+ * here as well as in the picker, so a hand-written request cannot number a
+ * Rewari dispatch from the Maharashtra book or use a retired series.
+ */
+function checkSeriesFits(trip: Trip): string | null {
+  if (!trip.seriesId) return null;
+  const s = seriesById(trip.seriesId);
+  if (!s) return "That number series no longer exists — pick another.";
+  if (!s.active) return `The series "${s.name}" has been deactivated — pick an active one.`;
+  const plant = trip.business === "manufacturing" ? String(trip.plant || "").toUpperCase() : "";
+  const state = plant ? String(loadPlants().find((p) => p.code.toUpperCase() === plant)?.state || "").toUpperCase() : "";
+  if (!seriesApplies(s, { docType: trip.docType, business: trip.business, client: trip.client, plant, state })) {
+    return `"${s.name}" is not for this document (${trip.docType === "tax_invoice" ? "tax invoice" : "delivery challan"}${plant ? `, plant ${plant}` : ""}). Pick a series that fits.`;
+  }
+  return null;
+}
+
 /** One reader for the form and the data import — see readTripInput. */
 function readTrip(body: any, reg: BusinessType): Partial<Trip> {
   return readTripInput(body, reg);

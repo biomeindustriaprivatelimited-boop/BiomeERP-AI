@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as XLSX from "xlsx";
 import { requirePermission, findById } from "@/lib/authServer";
-import { loadTrips, saveTrips, lockStateFor } from "@/lib/coordination";
+import { loadTrips, saveTrips, lockStateFor, builtReferenceFor } from "@/lib/coordination";
+import { seriesForNumber, numberClash, registerManualNumber } from "@/lib/numberSeries";
+import { companyCodes } from "@/lib/tripDocs";
+import { sameReference } from "@/lib/coordReference";
 import { hasPermission } from "@/lib/permissions";
 import {
   detectColumns, readRows, matchRows, summariseImport,
@@ -154,6 +157,15 @@ export async function PUT(req: NextRequest) {
       continue;
     }
 
+    const incomingNo = String(item.docNo || "").trim();
+    if (incomingNo && !trip.ourDocNo) {
+      const clash = numberClash(incomingNo, trip.id);
+      if (clash) {
+        skipped.push({ tripSerial: trip.serial, why: `${incomingNo} is already on another entry (recorded ${clash.at.slice(0, 10)}).` });
+        continue;
+      }
+    }
+
     trip.billing = {
       invoiceDate: String(item.invoiceDate || "").slice(0, 10),
       invoiceWeightKg: Number(item.weightKg) || 0,
@@ -166,11 +178,23 @@ export async function PUT(req: NextRequest) {
     };
     // The document number is filled only when the register has none. An
     // import must never rename a document that has already been issued.
+    // Filed into the series it belongs to (number-series master), and
+    // registered on the books so the same number cannot be issued again.
     const docNo = String(item.docNo || "").trim();
     if (docNo && !trip.ourDocNo) {
       trip.ourDocNo = docNo;
       trip.biomeChallanNo = docNo;
       trip.ourDocManual = true;
+      const series = seriesForNumber(docNo, trip.docType);
+      if (series && !trip.seriesId) trip.seriesId = series.id;
+      registerManualNumber(docNo, { tripId: trip.id, by: user.id, byName: user.name, seriesId: series?.id || trip.seriesId || undefined });
+      // Our number just arrived — fill the reference if nobody typed one.
+      if (!trip.referenceManual) {
+        const built = builtReferenceFor(trip, companyCodes()[0]);
+        if (built.reference && !trips.some((o) => o.id !== trip.id && sameReference(o.referenceNo, built.reference))) {
+          trip.referenceNo = built.reference;
+        }
+      }
     }
     if (!trip.ourDocDate && trip.billing.invoiceDate) trip.ourDocDate = trip.billing.invoiceDate;
     trip.updatedAt = now;

@@ -20,6 +20,7 @@ import path from "path";
 import { paths, readJson, writeJsonAtomic, ensureDir } from "@/lib/dataRoot";
 import type { BusinessType, DocType } from "@/lib/numberSeries";
 import { toKg } from "@/lib/units";
+import { buildReference, vendorDocNoOf, sameReference, type BuiltReference } from "@/lib/coordReference";
 
 export type TripStatus =
   | "planned"      // vehicle assigned, not yet loaded
@@ -97,6 +98,12 @@ export interface Trip {
    * reference are linked to the trip, whenever they arrive.
    */
   referenceNo?: string;
+  /**
+   * True when the coordinator typed the reference over the built one (the
+   * lock on the form). False / absent = the reference follows the trip's
+   * own numbers and is rebuilt on every save.
+   */
+  referenceManual?: boolean;
 
   /** Who it went to, and from where. */
   client: string;
@@ -235,6 +242,7 @@ function normalise(t: any): Trip {
     biomeChallanNo: legacyDoc || String(t.ourDocNo || ""),
     poDate: String(t.poDate || ""),
     referenceNo: String(t.referenceNo || ""),
+    referenceManual: t.referenceManual === true,
     plant: String(t.plant || "").toUpperCase(),
     vendorDocType: t.vendorDocType === "tax_invoice" || t.vendorDocType === "delivery_challan" ? t.vendorDocType : "",
     debitNoteNo: String(t.debitNoteNo || ""),
@@ -705,6 +713,7 @@ export function readTripInput(body: any, reg: BusinessType): Partial<Trip> {
     vendorChallanWeight: inKg(body.vendorChallanWeight),
     vendorChallanAmount: inNum(body.vendorChallanAmount),
     referenceNo: inStr(body.referenceNo, 40).toUpperCase().replace(/\s+/g, ""),
+    referenceManual: body.referenceManual === true,
     receivingDate: inStr(body.receivingDate, 10),
     receivingQty: inKg(body.receivingQty),
     ccWeight: inKg(body.ccWeight),
@@ -735,4 +744,64 @@ export function readTripInput(body: any, reg: BusinessType): Partial<Trip> {
 
   if (status) out.status = status;
   return out;
+}
+
+/* ------------------------------------------------------------------ */
+/* The coordination reference                                          */
+/* ------------------------------------------------------------------ */
+
+/** The reference this trip's own numbers make — see lib/coordReference.ts. */
+export function builtReferenceFor(
+  t: Pick<Trip, "business" | "ourDocNo" | "supplierCode" | "plant" | "vendorDocType" | "vendorInvoiceNo" | "vendorChallanNo">,
+  company?: string
+): BuiltReference {
+  return buildReference({
+    business: t.business,
+    ourDocNo: t.ourDocNo,
+    vendorCode: t.supplierCode,
+    vendorDocNo: vendorDocNoOf(t),
+    plant: t.plant,
+    company,
+  });
+}
+
+/**
+ * Settle the reference on a trip about to be saved.
+ *
+ *   - Locked (typed over by the coordinator): kept exactly as typed.
+ *   - A typed reference from an older client that never sends the lock
+ *     flag, and which differs from the built one: treated as locked, so
+ *     nothing a person typed is silently replaced.
+ *   - Otherwise: rebuilt from the trip — empty while incomplete (e.g. the
+ *     vendor has no code yet), so a half reference never goes on paper.
+ *
+ * Then the one hard rule: no two trips on the sheet share a reference.
+ */
+export function settleReference(
+  trip: Trip,
+  others: Trip[],
+  body: { referenceNo?: unknown; referenceManual?: unknown },
+  company?: string
+): { built: BuiltReference; error?: string } {
+  const built = builtReferenceFor(trip, company);
+  const typed = String(body.referenceNo ?? "").toUpperCase().replace(/\s+/g, "");
+  const lockedByFlag = body.referenceManual === true && typed !== "";
+  const lockedLegacy = body.referenceManual === undefined && typed !== "" && typed !== built.reference;
+  if (lockedByFlag || lockedLegacy) {
+    trip.referenceNo = typed;
+    trip.referenceManual = true;
+  } else {
+    trip.referenceNo = built.reference;
+    trip.referenceManual = false;
+  }
+  if (trip.referenceNo) {
+    const clash = others.find((o) => o.id !== trip.id && sameReference(o.referenceNo, trip.referenceNo));
+    if (clash) {
+      return {
+        built,
+        error: `Reference ${trip.referenceNo} is already on ${clash.business} trip #${clash.serial}${clash.vehicleNumber ? ` (${clash.vehicleNumber})` : ""}. Each supply needs its own reference.`,
+      };
+    }
+  }
+  return { built };
 }

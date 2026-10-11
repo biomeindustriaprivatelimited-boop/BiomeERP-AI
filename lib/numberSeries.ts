@@ -105,6 +105,31 @@ export interface NumberSeries {
   note: string;
   active: boolean;
   lastIssued?: { number: string; at: string; by: string; tripId: string };
+  /**
+   * The Tally voucher type this book numbers — "Sales", "Delivery Note"…
+   * Free text so a new voucher type in Tally needs no code change.
+   */
+  voucherType?: string;
+  /** Printed where the pattern says {PREFIX} / {SUFFIX}. */
+  prefix?: string;
+  suffix?: string;
+  /** Plant codes (REW, GKD…) the book is for. Empty = any plant. */
+  plants?: string[];
+  /** State codes (HR, MH…) the book is for. Empty = any state. */
+  states?: string[];
+  /** Picked first when nothing more specific (client, plant) decides. */
+  isDefault?: boolean;
+  /** Seeded from the workbook / shipped with the app. Can be retired, not removed. */
+  builtIn?: boolean;
+  createdAt?: string;
+  createdBy?: string;
+  updatedAt?: string;
+  updatedBy?: string;
+}
+
+/** Tally voucher type a document type maps to when nobody has said otherwise. */
+export function defaultVoucherType(docType: DocType): string {
+  return docType === "tax_invoice" ? "Sales" : "Delivery Note";
 }
 
 export interface SeriesFile {
@@ -113,6 +138,8 @@ export interface SeriesFile {
   issued: IssuedNumber[];
   seededAt?: string;
   updatedAt?: string;
+  /** One-off changes already applied to this file — each runs once, ever. */
+  migrations?: string[];
 }
 
 export interface IssuedNumber {
@@ -133,42 +160,18 @@ function file(): string {
 }
 
 /* ------------------------------------------------------------------ */
-/* Formatting — pure                                                   */
+/* Formatting — pure (lib/numberSeriesFormat.ts, shared with the page) */
 /* ------------------------------------------------------------------ */
 
-/** Financial year label for a date: 1 April starts a new one in India. */
-export function financialYearFor(date: Date | string): string {
-  const d = typeof date === "string" ? new Date(date + (date.length === 10 ? "T00:00:00" : "")) : date;
-  const valid = isNaN(d.getTime()) ? new Date() : d;
-  const y = valid.getFullYear();
-  const start = valid.getMonth() >= 3 ? y : y - 1;
-  return `${start}-${String((start + 1) % 100).padStart(2, "0")}`;
-}
-
-/**
- * Build the printed number.
- *
- * Their padding is genuinely irregular and it is copied rather than
- * corrected: the invoice book reads HR0554 and HR01000, which is a literal
- * "0" in the prefix followed by a count padded to three. Tidying that up
- * would produce numbers that do not match the invoices already issued.
- */
-export function formatSeriesNumber(
-  series: Pick<NumberSeries, "pattern" | "minDigits">,
-  seq: number,
-  date?: string
-): string {
-  const d = date || new Date().toISOString().slice(0, 10);
-  const fy = financialYearFor(d);
-  const seqText = String(Math.max(0, Math.trunc(seq))).padStart(Math.max(1, series.minDigits), "0");
-  return series.pattern
-    .replace(/\{SEQ\}/g, seqText)
-    .replace(/\{FY\}/g, fy)
-    .replace(/\{FYSHORT\}/g, fy.slice(2))
-    .replace(/\{YYYY\}/g, d.slice(0, 4))
-    .replace(/\{YY\}/g, d.slice(2, 4))
-    .replace(/\{MM\}/g, d.slice(5, 7));
-}
+import {
+  financialYearFor, formatSeriesNumber, hasSeqToken, rankSeries, seriesApplies,
+  resolvedPattern, numberMatchesSeries, type SeriesContext,
+} from "@/lib/numberSeriesFormat";
+export {
+  financialYearFor, formatSeriesNumber, hasSeqToken, rankSeries, seriesApplies,
+  resolvedPattern, numberMatchesSeries,
+};
+export type { SeriesContext };
 
 /** What the next document from this series would be called. */
 export function previewNext(series: NumberSeries, date?: string): string {
@@ -207,6 +210,7 @@ function seed(): SeriesFile {
       clientHints: ["JPL", "Jhajjar Power Limited", "NTPC DADRI", "NTPC TANDA"],
       note: "Seeded from BIOME -INVOICES. Last number actually against a vehicle: BI-26-27-HR0786. The column below it is filled down to 02600 — those were never issued.",
       active: true,
+      builtIn: true,
     },
     {
       id: "dc-tally",
@@ -224,6 +228,7 @@ function seed(): SeriesFile {
       ],
       note: "Seeded from BIOME- Tally DC. Ran as plain numbers from 463 and changed to BIPL/2026-27/ mid-book; the count carried straight on, so the count here continues too. Last used: BIPL/2026-27/886.",
       active: true,
+      builtIn: true,
     },
     {
       id: "dc-ntpc-solapur",
@@ -238,6 +243,7 @@ function seed(): SeriesFile {
       clientHints: ["NTPC SOLAPUR", "NTPC LTD ( SOLAPUR )"],
       note: "Seeded from SOLAPUR -DC. Last used: BI/NTPC/SOL/039. The column is filled down to 0253 — not issued.",
       active: true,
+      builtIn: true,
     },
     {
       id: "dc-ntpc-mouda",
@@ -252,24 +258,92 @@ function seed(): SeriesFile {
       clientHints: ["NTPC MOUDA"],
       note: "Seeded from MOUDA - DC. Last used: BI/NTPC/MOU/088. The column is filled down to 0154 — not issued.",
       active: true,
+      builtIn: true,
     },
   ];
   return { series, issued: [], seededAt: now, updatedAt: now };
+}
+
+/**
+ * Maharashtra sales book — asked for by the owner in October 2026 ("the
+ * Maharashtra sale number series doesn't appear in the coordination
+ * sheet"). Added by a one-time migration so an existing install keeps its
+ * four books, their counts and every issued number exactly as they are.
+ *
+ * The format is a sensible default, not one read off a real invoice:
+ * accounts should check prefix, pattern and starting number on the Number
+ * series screen before the first Maharashtra invoice is raised.
+ */
+export const MH_SALE_ID = "ti-mh-sale";
+
+function maharashtraSale(now: string): NumberSeries {
+  return {
+    id: MH_SALE_ID,
+    name: "Maharashtra Sale",
+    docType: "tax_invoice",
+    voucherType: "Sales",
+    business: "both",
+    prefix: "BI",
+    suffix: "",
+    pattern: "{PREFIX}/{FYSHORT}/MH/{SEQ}",
+    minDigits: 4,
+    nextSeq: 1,
+    resetOn: "financial_year",
+    fy: financialYearFor(now.slice(0, 10)),
+    clientHints: ["NTPC LTD ( SOLAPUR )", "NTPC LIMITED ( Mouda )"],
+    plants: ["GKD"],
+    states: ["MH"],
+    isDefault: false,
+    method: "auto_manual_override",
+    note: "Added Oct 2026 for Maharashtra (Gangakhed / GKD) sales with a default format. Check the prefix, pattern and starting number against the Maharashtra invoice book before the first number is issued.",
+    active: true,
+    builtIn: true,
+    createdAt: now,
+    createdBy: "system",
+  };
+}
+
+const MIGRATIONS: { id: string; run: (f: SeriesFile, now: string) => void }[] = [
+  {
+    id: "2026-10-maharashtra-sale",
+    run: (f, now) => {
+      if (!f.series.some((s) => s.id === MH_SALE_ID)) f.series.push(maharashtraSale(now));
+    },
+  },
+];
+
+function migrate(f: SeriesFile): boolean {
+  const done = new Set(f.migrations || []);
+  const now = new Date().toISOString();
+  let changed = false;
+  for (const m of MIGRATIONS) {
+    if (done.has(m.id)) continue;
+    m.run(f, now);
+    done.add(m.id);
+    changed = true;
+  }
+  f.migrations = [...done];
+  return changed;
 }
 
 export function loadSeriesFile(): SeriesFile {
   const stored = readJson<Partial<SeriesFile>>(file(), {});
   if (!Array.isArray(stored.series) || stored.series.length === 0) {
     const seeded = seed();
+    migrate(seeded);
+    seeded.series = seeded.series.map(normaliseSeries);
     saveSeriesFile(seeded);
     return seeded;
   }
-  return {
+  const f: SeriesFile = {
     series: stored.series.map(normaliseSeries),
     issued: Array.isArray(stored.issued) ? stored.issued : [],
     seededAt: stored.seededAt,
     updatedAt: stored.updatedAt,
+    migrations: Array.isArray(stored.migrations) ? stored.migrations.map(String) : [],
   };
+  if (migrate(f)) saveSeriesFile(f);
+  return f;
 }
 
 export function saveSeriesFile(f: SeriesFile): void {
@@ -292,6 +366,15 @@ function normaliseSeries(s: any): NumberSeries {
     note: String(s.note || ""),
     active: s.active !== false,
     lastIssued: s.lastIssued,
+    method: s.method,
+    voucherType: String(s.voucherType || "").trim() || defaultVoucherType(s.docType === "tax_invoice" ? "tax_invoice" : "delivery_challan"),
+    prefix: String(s.prefix ?? ""),
+    suffix: String(s.suffix ?? ""),
+    plants: Array.isArray(s.plants) ? s.plants.map((x: any) => String(x).toUpperCase().trim()).filter(Boolean) : [],
+    states: Array.isArray(s.states) ? s.states.map((x: any) => String(x).toUpperCase().trim()).filter(Boolean) : [],
+    isDefault: s.isDefault === true,
+    builtIn: s.builtIn === true || ["ti-hr", "dc-tally", "dc-ntpc-solapur", "dc-ntpc-mouda", MH_SALE_ID].includes(String(s.id)),
+    createdAt: s.createdAt, createdBy: s.createdBy, updatedAt: s.updatedAt, updatedBy: s.updatedBy,
   };
 }
 
@@ -306,20 +389,25 @@ export function seriesById(id: string): NumberSeries | undefined {
  * the Mouda challan book as its first option, because at 40 trips a day
  * the first option is the one that gets picked.
  */
-export function seriesFor(docType: DocType, business: BusinessType, client?: string): NumberSeries[] {
-  const all = loadSeriesFile().series.filter(
-    (s) => s.active && s.docType === docType && (s.business === "both" || s.business === business)
+export function seriesFor(
+  docType: DocType,
+  business: BusinessType,
+  client?: string,
+  where: { plant?: string; state?: string } = {}
+): NumberSeries[] {
+  return rankSeries(loadSeriesFile().series, { docType, business, client, ...where });
+}
+
+/**
+ * Which book a document number belongs to — for numbers that arrive
+ * typed or imported (Tally, the Excel import) rather than issued here.
+ * Undefined when no single active-or-retired series fits.
+ */
+export function seriesForNumber(number: string, docType?: DocType): NumberSeries | undefined {
+  const hits = loadSeriesFile().series.filter(
+    (s) => (!docType || s.docType === docType) && numberMatchesSeries(s, number)
   );
-  const name = (client || "").trim().toLowerCase();
-  if (!name) return all;
-  const score = (s: NumberSeries) =>
-    s.clientHints.some((h) => {
-      const hint = h.trim().toLowerCase();
-      return hint && (hint === name || name.includes(hint) || hint.includes(name));
-    })
-      ? 0
-      : 1;
-  return [...all].sort((a, b) => score(a) - score(b));
+  return hits.length === 1 ? hits[0] : undefined;
 }
 
 /* ------------------------------------------------------------------ */

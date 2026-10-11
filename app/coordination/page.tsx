@@ -16,6 +16,8 @@ import MismatchFlag from "@/components/plant/MismatchFlag";
 import { toKg, conversionNote } from "@/lib/units";
 import { usePlants } from "@/lib/usePlants";
 import { useResponsibleLookup, HandledBy } from "@/components/partners/HandledBy";
+import { buildReference, vendorDocNoOf, NO_VENDOR_CODE_WARNING } from "@/lib/coordReference";
+import { rankSeries, formatSeriesNumber, hasSeqToken } from "@/lib/numberSeriesFormat";
 
 /**
  * Supply coordination.
@@ -59,7 +61,7 @@ interface Trip {
   vehicleNumber: string; vehicleEntryDate: string;
   plant?: string;
   vendorChallanNo: string; vendorChallanDate: string; vendorInvoiceNo: string;
-  referenceNo?: string;
+  referenceNo?: string; referenceManual?: boolean;
   vendorChallanWeight: number; vendorChallanAmount: number;
   receivingDate: string; receivingQty: number; ccWeight: number;
   debitNoteNo: string; creditNoteNo: string; billing: Billing;
@@ -77,8 +79,9 @@ interface ClientOption {
   name: string; shortName: string; needsSetup: boolean; poNumbers: PoNumber[];
 }
 interface SeriesOption {
-  id: string; name: string; docType: DocType; business: string;
+  id: string; name: string; docType: DocType; business: string; voucherType?: string;
   pattern: string; clientHints: string[]; next: string; method?: "automatic" | "auto_manual_override" | "manual";
+  plants?: string[]; states?: string[]; isDefault?: boolean;
 }
 
 const VERDICT: Record<string, [string, string]> = {
@@ -93,7 +96,7 @@ const blank = {
   client: "", location: "", poNumber: "", poDate: "", vendorPoId: "", clientPoId: "",
   supplier: "", supplierCode: "", vendorDocType: "" as DocType | "",
   vehicleNumber: "", vehicleEntryDate: new Date().toISOString().slice(0, 10),
-  vendorChallanNo: "", vendorChallanDate: "", vendorInvoiceNo: "", referenceNo: "", plant: "",
+  vendorChallanNo: "", vendorChallanDate: "", vendorInvoiceNo: "", referenceNo: "", referenceManual: false, plant: "",
   vendorChallanWeight: "", vendorChallanAmount: "",
   receivingDate: "", receivingQty: "", ccWeight: "",
   debitNoteNo: "", creditNoteNo: "",
@@ -169,22 +172,17 @@ export default function CoordinationPage() {
     [clients, form.client]
   );
 
-  /** Series that fit the document type, with the client's own book first. */
+  /**
+   * Active series that fit the document — same rules as the server
+   * (lib/numberSeriesFormat.ts): client's own book first, then the one for
+   * this plant / state, then the default. On a manufacturing row a book
+   * meant for another plant is not offered at all.
+   */
   const seriesChoices = useMemo(() => {
-    const fit = series.filter(
-      (s) => s.docType === form.docType && (s.business === "both" || s.business === business)
-    );
-    const name = (form.client || "").trim().toLowerCase();
-    if (!name) return fit;
-    return [...fit].sort((a, b) => {
-      const hit = (s: SeriesOption) =>
-        s.clientHints.some((h) => {
-          const hint = h.trim().toLowerCase();
-          return hint && (hint === name || name.includes(hint) || hint.includes(name));
-        }) ? 0 : 1;
-      return hit(a) - hit(b);
-    });
-  }, [series, form.docType, form.client, business]);
+    const plant = business === "manufacturing" ? String(form.plant || "").toUpperCase() : "";
+    const state = plant ? (data?.plantStates || {})[plant] || "" : "";
+    return rankSeries(series, { docType: form.docType, business, client: form.client, plant, state });
+  }, [series, form.docType, form.client, form.plant, business, data?.plantStates]);
 
   // Pre-select the book the client normally uses, but never overwrite a
   // choice already made — a picker that keeps resetting is worse than one
@@ -210,8 +208,14 @@ export default function CoordinationPage() {
     if (t.lock.locked && !data?.canApprove) { setRequestFor(t); return; }
     setEditing(t);
     setIssueOnSave(false);
+    // Older rows carry no lock flag: a stored reference that is not what
+    // the trip's own numbers build was typed by someone — keep it locked.
+    const code = t.supplierCode || (data?.options?.vendors || []).find((v: any) => v.name === t.supplier)?.code || "";
+    const auto = buildReference({ business: t.business, ourDocNo: t.ourDocNo, vendorCode: code, vendorDocNo: vendorDocNoOf(t), plant: t.plant, company: data?.referenceCompany }).reference;
     setForm({
       ...blank, ...t,
+      supplierCode: code,
+      referenceManual: Boolean(t.referenceManual || (t.referenceNo && t.referenceNo !== auto)),
       vendorChallanWeight: String(t.vendorChallanWeight || ""),
       vendorPoId: (t as any).vendorPoId || "", clientPoId: (t as any).clientPoId || "",
       vendorChallanAmount: String(t.vendorChallanAmount || ""),
@@ -232,6 +236,8 @@ export default function CoordinationPage() {
         body: JSON.stringify({
           ...form,
           business,
+          referenceNo: form.referenceManual ? form.referenceNo : reference.reference,
+          referenceManual: Boolean(form.referenceManual && form.referenceNo),
           issueNumber: issueOnSave && !form.ourDocNo, reissue,
           ...(editing ? { id: editing.id } : {}),
         }),
@@ -239,7 +245,7 @@ export default function CoordinationPage() {
       const json = await res.json().catch(() => ({}));
       if (!res.ok) {
         if (json.poWarning && res.status === 409 && window.confirm(`${json.error}\n\nOverride with manager approval and save anyway?`)) {
-          const again = await fetch(editing ? "/api/coordination" : "/api/coordination", { method: editing ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...form, business, issueNumber: issueOnSave && !form.ourDocNo, reissue, ...(editing ? { id: editing.id } : {}), poOverride: true }) });
+          const again = await fetch(editing ? "/api/coordination" : "/api/coordination", { method: editing ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...form, business, referenceNo: form.referenceManual ? form.referenceNo : reference.reference, referenceManual: Boolean(form.referenceManual && form.referenceNo), issueNumber: issueOnSave && !form.ourDocNo, reissue, ...(editing ? { id: editing.id } : {}), poOverride: true }) });
           const j2 = await again.json().catch(() => ({}));
           if (!again.ok) throw new Error(j2.error || `Failed (${again.status}).`);
         } else throw new Error(json.error || `Failed (${res.status}).`);
@@ -273,6 +279,27 @@ export default function CoordinationPage() {
     setIssueOnSave(chosenMethod !== "manual");
   }, [form.seriesId, chosenMethod]); // eslint-disable-line react-hooks/exhaustive-deps
   const seriesChanged = Boolean(editing?.ourDocNo && (form.seriesId !== editing.seriesId || form.docType !== editing.docType));
+
+  // The coordination reference, built live from what is on the form. When
+  // the number is still to be taken on save, the series' next number
+  // stands in for it so the coordinator sees the reference it will get.
+  const ourNoForRef = form.ourDocNo || (issueOnSave && chosenSeries && !editing?.ourDocNo ? chosenSeries.next : "");
+  const reference = buildReference({
+    business,
+    ourDocNo: ourNoForRef,
+    vendorCode: form.supplierCode,
+    vendorDocNo: vendorDocNoOf(form),
+    plant: form.plant,
+    company: data?.referenceCompany,
+  });
+  const shownReference: string = form.referenceManual ? (form.referenceNo || "") : reference.reference;
+  const referenceTakenBy: string | undefined = (() => {
+    const key = String(shownReference || "").toUpperCase().replace(/\s+/g, "");
+    if (!key) return undefined;
+    const hit = (data?.references || {})[key] as { id: string; label: string } | undefined;
+    if (!hit || (editing && editing.id === hit.id)) return undefined;
+    return hit.label;
+  })();
 
   return (
     <div className="space-y-5">
@@ -339,14 +366,12 @@ export default function CoordinationPage() {
             </h2>
             <div className="flex items-center gap-3">
               <p className="text-[10px] text-biome-muted">
-                Taken from the coordination workbook. A number, once issued, is never reused.
+                From the number-series master. A number, once issued, is never reused.
               </p>
-              {data?.canManageSeries && (
-                <button onClick={() => setShowSeries(true)}
-                  className="bmx-chip rounded-lg border border-biome-line px-2.5 py-1 text-[10px] font-semibold text-biome-muted">
-                  Manage
-                </button>
-              )}
+              <button data-testid="series-manage" onClick={() => setShowSeries(true)}
+                className="bmx-chip rounded-lg border border-biome-line px-2.5 py-1 text-[10px] font-semibold text-biome-muted">
+                {data?.canManageSeries ? "Number series — manage" : "Number series"}
+              </button>
             </div>
           </div>
           <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
@@ -355,6 +380,9 @@ export default function CoordinationPage() {
                 <p className="flex items-center gap-1.5 text-[9.5px] font-bold uppercase tracking-[.12em] text-biome-muted">
                   {x.docType === "tax_invoice" ? <Receipt size={11} /> : <FileText size={11} />} {x.name}
                 </p>
+                {(x.plants?.length || x.states?.length) ? (
+                  <p className="text-[9px] text-biome-muted">{[...(x.plants || []), ...(x.states || [])].join(" · ")}</p>
+                ) : null}
                 <p className="bmx-next mt-1 font-mono text-[13px] font-semibold text-biome-text">{x.next}</p>
               </div>
             ))}
@@ -480,6 +508,12 @@ export default function CoordinationPage() {
                       {!manufacturing && <HandledBy lookup={responsible} name={[t.supplierCode, t.supplier]} kind="vendor" label="Vendor" />}
                       <HandledBy lookup={responsible} name={t.client} kind="client" label="Client" />
                       <DocBadge type={t.docType} number={t.ourDocNo} />
+                      {t.referenceNo && (
+                        <span title={t.referenceManual ? "Coordination reference (typed)" : "Coordination reference (automatic)"}
+                          className="flex items-center gap-1 rounded-full border border-biome-line bg-biome-bg px-2 py-0.5 font-mono text-[9.5px] font-semibold text-biome-text">
+                          <Link2 size={9} className="text-biome-leaf" /> {t.referenceNo}
+                        </span>
+                      )}
                       {docSummary[t.id] && (
                         <span title={`${docSummary[t.id].docs} WhatsApp document(s) linked · ${docSummary[t.id].missing} paper(s) missing · ${docSummary[t.id].warnings} difference(s)`}
                           className={`rounded-full border px-2 py-0.5 text-[9px] font-bold ${docSummary[t.id].warnings ? "border-amber-500/40 bg-amber-500/10 text-amber-600" : docSummary[t.id].docs ? "border-emerald-500/35 bg-emerald-500/10 text-emerald-600" : "border-biome-line text-biome-muted"}`}>
@@ -766,13 +800,13 @@ export default function CoordinationPage() {
             columns={3}
           >
             <F label="Supplier">
-              <select value={form.supplier} onChange={(e) => {
+              <select value={form.supplier} data-testid="coord-supplier" onChange={(e) => {
                 const v = (data?.options?.vendors || []).find((x: any) => x.name === e.target.value);
                 setForm({ ...form, supplier: e.target.value, supplierCode: v?.code || "" });
               }} className={inputCls}>
                 <option value="">Select a vendor…</option>
                 {(data?.options?.vendors || []).map((v: any) => (
-                  <option key={v.code} value={v.name}>{v.name} ({v.code})</option>
+                  <option key={v.name} value={v.name}>{v.name} ({v.code || "no code"})</option>
                 ))}
                 {(data?.options?.unlistedSuppliers || []).length > 0 && (
                   <optgroup label="In old rows, not in the vendor master">
@@ -788,25 +822,60 @@ export default function CoordinationPage() {
                 <option value="tax_invoice">Tax invoice</option>
               </select>
             </F>
-            <F label="Vendor code"><input value={form.supplierCode} readOnly className={`${inputCls} opacity-70`} /></F>
+            <F label="Vendor code">
+              <input value={form.supplierCode} readOnly placeholder={form.supplier ? "No code" : ""} className={`${inputCls} opacity-70`} />
+              {form.supplier && !form.supplierCode && (
+                <span data-testid="coord-no-vendor-code" className="mt-1 block text-[10px] font-semibold text-amber-600">{NO_VENDOR_CODE_WARNING}</span>
+              )}
+            </F>
             <F label="Vendor challan no">
-              <input value={form.vendorChallanNo} onChange={(e) => setForm({ ...form, vendorChallanNo: e.target.value })} className={inputCls} />
+              <input data-testid="coord-vendor-challan" value={form.vendorChallanNo} onChange={(e) => setForm({ ...form, vendorChallanNo: e.target.value })} className={inputCls} />
             </F>
             <F label="Challan date">
               <input type="date" value={form.vendorChallanDate} onChange={(e) => setForm({ ...form, vendorChallanDate: e.target.value })} className={inputCls} />
             </F>
             <F label="Vendor invoice no">
-              <input value={form.vendorInvoiceNo} onChange={(e) => setForm({ ...form, vendorInvoiceNo: e.target.value })} className={inputCls} />
+              <input data-testid="coord-vendor-invoice" value={form.vendorInvoiceNo} onChange={(e) => setForm({ ...form, vendorInvoiceNo: e.target.value })} className={inputCls} />
             </F>
           </FormSection>
         )}
         <FormSection title="Coordination reference" sectionIcon={<Link2 size={14} />} columns={2}
-          hint="COMPANY / OUR DOC NO / VENDOR (or PLANT) CODE / VENDOR DOC NO — e.g. BDC/45/JSR/15. Leave empty to build it from this trip. Every WhatsApp document quoting it links here automatically, whenever it arrives.">
-          <F label="Reference no">
-            <input value={form.referenceNo || ""} onChange={(e) => setForm({ ...form, referenceNo: e.target.value.toUpperCase() })}
-              placeholder={`${(form.ourDocNo || "").match(/(\d+)\s*$/)?.[1]?.replace(/^0+/, "") ? `BDC/${(form.ourDocNo || "").match(/(\d+)\s*$/)![1].replace(/^0+/, "")}/${manufacturing ? "REW" : (form.supplierCode || "VEN")}/${(form.vendorInvoiceNo || form.vendorChallanNo || "").match(/(\d+)\s*$/)?.[1]?.replace(/^0+/, "") || "?"}` : "BDC/45/JSR/15"}`}
-              className={`${inputCls} font-mono`} />
+          hint={manufacturing
+            ? "Filled automatically: BDC / our invoice no / plant code / our invoice no — e.g. BDC/810/REW/810. Every WhatsApp document quoting it links here automatically."
+            : "Filled automatically: BDC / our document no / vendor code / vendor document no — e.g. BDC/15/SRN/39. Every WhatsApp document quoting it links here automatically."}>
+          <F label={form.referenceManual ? "Reference no (typed — locked)" : "Reference no (automatic)"}>
+            <div className="flex items-center gap-2">
+              <input data-testid="coord-reference" value={shownReference}
+                onChange={(e) => setForm({ ...form, referenceNo: e.target.value.toUpperCase().replace(/\s+/g, ""), referenceManual: true })}
+                placeholder={reference.partial}
+                className={`${inputCls} font-mono`} />
+              {form.referenceManual ? (
+                <button type="button" data-testid="coord-reference-auto" title="Go back to the automatic reference"
+                  onClick={() => setForm({ ...form, referenceNo: "", referenceManual: false })}
+                  className="bmx-chip flex shrink-0 items-center gap-1 rounded-xl border border-amber-500/40 bg-amber-500/10 px-2.5 py-2.5 text-[10.5px] font-semibold text-amber-700">
+                  <Lock size={12} /> Auto
+                </button>
+              ) : (
+                <span title="Built from the trip's numbers — type over it to lock your own" className="flex shrink-0 items-center gap-1 rounded-xl border border-biome-line px-2.5 py-2.5 text-[10.5px] font-semibold text-biome-muted">
+                  <Unlock size={12} /> Auto
+                </span>
+              )}
+            </div>
           </F>
+          <div className="self-end space-y-1 text-[10.5px] leading-relaxed">
+            {!form.referenceManual && reference.warning && (
+              <p data-testid="coord-reference-warning" className="font-semibold text-amber-600">{reference.warning}</p>
+            )}
+            {!form.referenceManual && !reference.complete && (
+              <p className="text-biome-muted">Incomplete — still needs {reference.missing.join(", ")}. So far: <span className="font-mono">{reference.partial}</span></p>
+            )}
+            {form.referenceManual && reference.reference && form.referenceNo !== reference.reference && (
+              <p className="text-biome-muted">The trip&rsquo;s numbers would make <span className="font-mono">{reference.reference}</span>. Press Auto to use it.</p>
+            )}
+            {referenceTakenBy !== undefined && (
+              <p data-testid="coord-reference-taken" className="font-semibold text-rose-500">Already used on {referenceTakenBy} — each supply needs its own reference.</p>
+            )}
+          </div>
         </FormSection>
 
 
@@ -1254,14 +1323,129 @@ function ApprovalsPanel({ onClose, onDone }: { onClose: () => void; onDone: () =
 }
 
 /* ------------------------------------------------------------------ */
-/* The number books — admin only                                       */
+/* The number-series master — accounts / admin / developer              */
 /* ------------------------------------------------------------------ */
+
+const NEW_SERIES = {
+  name: "", voucherType: "Sales", docType: "tax_invoice", business: "both", prefix: "BI", suffix: "",
+  pattern: "{PREFIX}/{FYSHORT}/{SEQ}", minDigits: "3", nextSeq: "1", resetOn: "financial_year",
+  method: "auto_manual_override", clientHints: "", plants: [] as string[], states: [] as string[], isDefault: false, active: true,
+};
+
+function draftOf(s: any) {
+  return {
+    name: s.name, voucherType: s.voucherType || "", docType: s.docType, business: s.business,
+    prefix: s.prefix || "", suffix: s.suffix || "", pattern: s.pattern, minDigits: String(s.minDigits),
+    nextSeq: String(s.nextSeq), resetOn: s.resetOn, method: s.method, clientHints: (s.clientHints || []).join(", "),
+    plants: s.plants || [], states: s.states || [], isDefault: s.isDefault === true, active: s.active !== false,
+  };
+}
+
+function payloadOf(d: any) {
+  return {
+    ...d,
+    minDigits: Number(d.minDigits), nextSeq: Number(d.nextSeq),
+    clientHints: String(d.clientHints || "").split(",").map((x: string) => x.trim()).filter(Boolean),
+  };
+}
+
+/** What the next number would look like, worked out in the browser as they type. */
+function seriesPreview(d: any): string {
+  if (!d) return "";
+  if (!hasSeqToken(d.pattern)) return "Format needs {n}";
+  return formatSeriesNumber(
+    { pattern: d.pattern, minDigits: Math.max(1, Number(d.minDigits) || 1), prefix: d.prefix, suffix: d.suffix },
+    Math.max(0, Math.trunc(Number(d.nextSeq) || 0))
+  );
+}
+
+function SeriesFields({ d, set, methods, plants, states, testId }: {
+  d: any; set: (patch: any) => void; methods: any[];
+  plants: { code: string; label: string; state?: string }[]; states: { code: string; label: string }[]; testId: string;
+}) {
+  const toggle = (key: "plants" | "states", code: string) =>
+    set({ [key]: d[key].includes(code) ? d[key].filter((x: string) => x !== code) : [...d[key], code] });
+  return (
+    <>
+      <F label="Name"><input data-testid={`${testId}-name`} value={d.name} onChange={(e) => set({ name: e.target.value })} placeholder="Maharashtra Sale" className={inputCls} /></F>
+      <F label="Tally voucher type"><input data-testid={`${testId}-voucher`} value={d.voucherType} onChange={(e) => set({ voucherType: e.target.value })} placeholder="Sales / Delivery Note" className={inputCls} /></F>
+      <F label="Document type">
+        <select value={d.docType} onChange={(e) => set({ docType: e.target.value })} className={inputCls}>
+          <option value="tax_invoice">Tax invoice</option><option value="delivery_challan">Delivery challan</option>
+        </select>
+      </F>
+      <F label="Numbering method">
+        <select value={d.method} onChange={(e) => set({ method: e.target.value })} className={inputCls}>
+          {methods.map((m) => <option key={m.id} value={m.id} title={m.help}>{m.label}</option>)}
+        </select>
+      </F>
+      <F label="Prefix"><input data-testid={`${testId}-prefix`} value={d.prefix} onChange={(e) => set({ prefix: e.target.value })} className={`${inputCls} font-mono`} /></F>
+      <F label="Suffix"><input value={d.suffix} onChange={(e) => set({ suffix: e.target.value })} className={`${inputCls} font-mono`} /></F>
+      <F label="Format"><input data-testid={`${testId}-pattern`} value={d.pattern} onChange={(e) => set({ pattern: e.target.value })} className={`${inputCls} font-mono`} /></F>
+      <F label="Pad number to (digits)"><input type="number" min={1} max={10} value={d.minDigits} onChange={(e) => set({ minDigits: e.target.value })} className={inputCls} /></F>
+      <F label="Next number"><input data-testid={`${testId}-next`} type="number" min={1} value={d.nextSeq} onChange={(e) => set({ nextSeq: e.target.value })} className={inputCls} /></F>
+      <F label="Restart numbering">
+        <select value={d.resetOn} onChange={(e) => set({ resetOn: e.target.value })} className={inputCls}>
+          <option value="never">Never</option><option value="financial_year">Every financial year (1 April)</option>
+        </select>
+      </F>
+      <F label="Used in">
+        <select value={d.business} onChange={(e) => set({ business: e.target.value })} className={inputCls}>
+          <option value="both">Trading + manufacturing</option><option value="trading">Trading only</option><option value="manufacturing">Manufacturing only</option>
+        </select>
+      </F>
+      <div className="self-end">
+        <p className="mb-1.5 text-[10px] font-bold uppercase tracking-[.13em] text-biome-muted">Next number out</p>
+        <span data-testid={`${testId}-preview`} className="block truncate rounded-xl border border-biome-line bg-biome-bg px-3 py-2.5 font-mono text-[12px] font-semibold text-biome-text">{seriesPreview(d)}</span>
+      </div>
+      <div className="md:col-span-2">
+        <p className="mb-1.5 text-[10px] font-bold uppercase tracking-[.13em] text-biome-muted">Plants (none ticked = any plant)</p>
+        <div className="flex flex-wrap gap-1.5">
+          {plants.map((p) => (
+            <button key={p.code} type="button" onClick={() => toggle("plants", p.code)}
+              className={`bmx-chip rounded-lg border px-2.5 py-1.5 text-[10.5px] font-semibold ${d.plants.includes(p.code) ? "border-biome-leaf/50 bg-biome-leaf/10 text-biome-leaf" : "border-biome-line text-biome-muted"}`}>
+              {p.label} ({p.code})
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="md:col-span-2">
+        <p className="mb-1.5 text-[10px] font-bold uppercase tracking-[.13em] text-biome-muted">States (none ticked = any state)</p>
+        <select value="" onChange={(e) => e.target.value && toggle("states", e.target.value)} className={inputCls}>
+          <option value="">Add a state…</option>
+          {states.filter((x) => !d.states.includes(x.code)).map((x) => <option key={x.code} value={x.code}>{x.label}</option>)}
+        </select>
+        <div className="mt-1.5 flex flex-wrap gap-1.5">
+          {d.states.map((code: string) => (
+            <button key={code} type="button" onClick={() => toggle("states", code)} title="Remove"
+              className="bmx-chip flex items-center gap-1 rounded-lg border border-biome-leaf/50 bg-biome-leaf/10 px-2 py-1 text-[10.5px] font-semibold text-biome-leaf">
+              {states.find((x) => x.code === code)?.label || code} <X size={10} />
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="md:col-span-4">
+        <F label="Clients that use it (comma separated — offered first for them)">
+          <input value={d.clientHints} onChange={(e) => set({ clientHints: e.target.value })} className={inputCls} />
+        </F>
+      </div>
+      <label className="flex items-center gap-2 text-[11px] text-biome-text md:col-span-2">
+        <input type="checkbox" checked={d.isDefault} onChange={(e) => set({ isDefault: e.target.checked })} />
+        Default series for this document type (and these plants / states)
+      </label>
+      <label className="flex items-center gap-2 text-[11px] text-biome-text md:col-span-2">
+        <input data-testid={`${testId}-active`} type="checkbox" checked={d.active} onChange={(e) => set({ active: e.target.checked })} />
+        Active (untick to deactivate — its numbers stay on record)
+      </label>
+    </>
+  );
+}
 
 function SeriesPanel({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
   const [data, setData] = useState<any>(null);
   const [drafts, setDrafts] = useState<Record<string, any>>({});
   const [adding, setAdding] = useState(false);
-  const [nw, setNw] = useState<any>({ name: "", docType: "tax_invoice", business: "both", pattern: "BI/{FY}/{SEQ}", minDigits: "3", nextSeq: "1", resetOn: "financial_year", method: "auto_manual_override", clientHints: "" });
+  const [nw, setNw] = useState<any>({ ...NEW_SERIES });
   const [busyId, setBusyId] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [saved, setSaved] = useState("");
@@ -1271,9 +1455,7 @@ function SeriesPanel({ onClose, onDone }: { onClose: () => void; onDone: () => v
     const json = await res.json().catch(() => ({ series: [] }));
     setData(json);
     const d: Record<string, any> = {};
-    (json.series || []).forEach((s: any) => {
-      d[s.id] = { nextSeq: String(s.nextSeq), pattern: s.pattern, minDigits: String(s.minDigits), name: s.name, method: s.method, resetOn: s.resetOn, active: s.active, business: s.business };
-    });
+    (json.series || []).forEach((s: any) => { d[s.id] = draftOf(s); });
     setDrafts(d);
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -1281,10 +1463,9 @@ function SeriesPanel({ onClose, onDone }: { onClose: () => void; onDone: () => v
   async function save(id: string) {
     setBusyId(id); setErr(null); setSaved("");
     try {
-      const d = drafts[id];
       const res = await fetch("/api/coordination/series", {
         method: "PUT", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, nextSeq: Number(d.nextSeq), pattern: d.pattern, minDigits: Number(d.minDigits), name: d.name, method: d.method, resetOn: d.resetOn, active: d.active, business: d.business }),
+        body: JSON.stringify({ id, ...payloadOf(drafts[id]) }),
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json.error || "Could not save that.");
@@ -1299,42 +1480,31 @@ function SeriesPanel({ onClose, onDone }: { onClose: () => void; onDone: () => v
     try {
       const res = await fetch("/api/coordination/series", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...nw, minDigits: Number(nw.minDigits), nextSeq: Number(nw.nextSeq), clientHints: String(nw.clientHints || "").split(",").map((x: string) => x.trim()).filter(Boolean) }),
+        body: JSON.stringify(payloadOf(nw)),
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json.error || "Could not add that series.");
-      setAdding(false); await load(); onDone();
+      setAdding(false); setNw({ ...NEW_SERIES }); await load(); onDone();
     } catch (e) { setErr((e as Error).message); } finally { setBusyId(""); }
   }
 
-  /** What the number would look like, worked out in the browser as they type. */
-  function preview(id: string): string {
-    const d = drafts[id];
-    if (!d) return "";
-    const seq = String(Math.max(0, Math.trunc(Number(d.nextSeq) || 0)))
-      .padStart(Math.max(1, Number(d.minDigits) || 1), "0");
-    return fill(d.pattern, seq);
-  }
-  const fill = (pattern: string, seq: string) => {
-    const now = new Date(); const y = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
-    return String(pattern || "").replace(/\{SEQ\}/g, seq).replace(/\{FY\}/g, `${y}-${String((y + 1) % 100).padStart(2, "0")}`)
-      .replace(/\{YY\}/g, String(now.getFullYear() % 100).padStart(2, "0")).replace(/\{MM\}/g, String(now.getMonth() + 1).padStart(2, "0"));
-  };
   const methods = (data?.methods || []) as any[];
-
+  const plants = (data?.plants || []) as any[];
+  const states = (data?.states || []) as any[];
   const series = (data?.series || []) as any[];
+  const manage = Boolean(data?.canManage);
 
   return (
     <FormPanel
       open onClose={onClose}
       icon={<Hash size={20} />}
       eyebrow="Coordination"
-      title="Document number books"
-      subtitle="These were seeded from the coordination workbook. Change them only to correct a mistake — every number already issued is remembered, and one that has been used cannot be handed out again."
+      title="Number series"
+      subtitle="The invoice, challan and voucher number books. Coordinators pick from the active ones on each trip. Every number already issued is remembered and can never be handed out again."
       footer={<button onClick={onClose} className="bmx-chip rounded-xl border border-biome-line px-4 py-2.5 text-[11.5px] font-semibold text-biome-muted">Close</button>}
     >
       {err && (
-        <div className="mb-4 flex items-start gap-2 rounded-xl border border-rose-400/25 bg-rose-400/[.07] px-4 py-3">
+        <div data-testid="series-error" className="mb-4 flex items-start gap-2 rounded-xl border border-rose-400/25 bg-rose-400/[.07] px-4 py-3">
           <AlertCircle size={15} className="mt-px shrink-0 text-rose-500" />
           <p className="text-[11.5px] leading-relaxed text-biome-text">{err}</p>
         </div>
@@ -1342,107 +1512,52 @@ function SeriesPanel({ onClose, onDone }: { onClose: () => void; onDone: () => v
 
       <div className="mb-4 rounded-xl border border-biome-line bg-biome-bg p-3">
         <p className="text-[11px] leading-relaxed text-biome-muted">
-          Pattern tokens: <b className="font-mono">{"{SEQ}"}</b> running number · <b className="font-mono">{"{FY}"}</b> 2026-27 · <b className="font-mono">{"{YY}"}</b> 26 · <b className="font-mono">{"{MM}"}</b> 09.
-          Everything else is printed as typed (prefix / suffix). Choosing a document type and series on a trip shows its next number at once.
+          Format tokens: <b className="font-mono">{"{n}"}</b> running number · <b className="font-mono">{"{prefix}"}</b> / <b className="font-mono">{"{suffix}"}</b> the fields below ·{" "}
+          <b className="font-mono">{"{yy-yy}"}</b> 26-27 · <b className="font-mono">{"{FY}"}</b> 2026-27 · <b className="font-mono">{"{YY}"}</b> 26 · <b className="font-mono">{"{MM}"}</b> 09.
+          Everything else is printed as typed. Example: <span className="font-mono">{"{prefix}/{yy-yy}/{n}"}</span> with prefix BI → BI/26-27/001.
         </p>
-        {!adding ? (
-          <button onClick={() => setAdding(true)} className="bmx-btn mt-2 flex items-center gap-1.5 rounded-xl bg-biome-leaf px-3.5 py-2 text-[11px] font-bold text-white"><Plus size={13} /> Add a number series</button>
+        {manage && (!adding ? (
+          <button data-testid="series-add" onClick={() => setAdding(true)} className="bmx-btn mt-2 flex items-center gap-1.5 rounded-xl bg-biome-leaf px-3.5 py-2 text-[11px] font-bold text-white"><Plus size={13} /> Add a number series</button>
         ) : (
           <div className="mt-3 grid gap-2 md:grid-cols-4">
-            <F label="Name"><input value={nw.name} onChange={(e) => setNw({ ...nw, name: e.target.value })} placeholder="Maharashtra tax invoices" className={inputCls} /></F>
-            <F label="Document type">
-              <select value={nw.docType} onChange={(e) => setNw({ ...nw, docType: e.target.value })} className={inputCls}>
-                <option value="tax_invoice">Tax invoice</option><option value="delivery_challan">Delivery challan</option>
-              </select>
-            </F>
-            <F label="Numbering method">
-              <select value={nw.method} onChange={(e) => setNw({ ...nw, method: e.target.value })} className={inputCls}>
-                {methods.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
-              </select>
-            </F>
-            <F label="Used in">
-              <select value={nw.business} onChange={(e) => setNw({ ...nw, business: e.target.value })} className={inputCls}>
-                <option value="both">Trading + manufacturing</option><option value="trading">Trading only</option><option value="manufacturing">Manufacturing only</option>
-              </select>
-            </F>
-            <F label="Pattern"><input value={nw.pattern} onChange={(e) => setNw({ ...nw, pattern: e.target.value })} className={`${inputCls} font-mono`} /></F>
-            <F label="Pad count to"><input type="number" min={1} value={nw.minDigits} onChange={(e) => setNw({ ...nw, minDigits: e.target.value })} className={inputCls} /></F>
-            <F label="Start at"><input type="number" min={1} value={nw.nextSeq} onChange={(e) => setNw({ ...nw, nextSeq: e.target.value })} className={inputCls} /></F>
-            <F label="Restart">
-              <select value={nw.resetOn} onChange={(e) => setNw({ ...nw, resetOn: e.target.value })} className={inputCls}>
-                <option value="financial_year">Every financial year</option><option value="never">Never</option>
-              </select>
-            </F>
-            <div className="md:col-span-3"><F label="Clients that use it (comma separated, optional)"><input value={nw.clientHints} onChange={(e) => setNw({ ...nw, clientHints: e.target.value })} className={inputCls} /></F></div>
-            <div className="flex items-end gap-2">
-              <span className="flex-1 truncate rounded-xl border border-biome-line px-3 py-2.5 font-mono text-[12px]">{fill(nw.pattern, String(Number(nw.nextSeq) || 1).padStart(Number(nw.minDigits) || 1, "0"))}</span>
-              <button onClick={create} disabled={busyId === "new"} className="bmx-btn rounded-xl bg-biome-leaf px-3 py-2.5 text-[11px] font-bold text-white">{busyId === "new" ? <Loader2 size={13} className="bmx-spin" /> : "Add"}</button>
+            <SeriesFields d={nw} set={(patch) => setNw({ ...nw, ...patch })} methods={methods} plants={plants} states={states} testId="series-new" />
+            <div className="flex items-end justify-end gap-2 md:col-span-4">
+              <button onClick={() => setAdding(false)} className="bmx-chip rounded-xl border border-biome-line px-3 py-2.5 text-[11px] font-semibold text-biome-muted">Cancel</button>
+              <button data-testid="series-new-save" onClick={create} disabled={busyId === "new"} className="bmx-btn rounded-xl bg-biome-leaf px-4 py-2.5 text-[11px] font-bold text-white">{busyId === "new" ? <Loader2 size={13} className="bmx-spin" /> : "Add series"}</button>
             </div>
           </div>
+        ))}
+        {!manage && data && (
+          <p className="mt-2 text-[10.5px] font-semibold text-biome-muted">Only accounts, an admin or the developer can add or change a series.</p>
         )}
       </div>
 
       {series.map((s) => (
         <FormSection
           key={s.id}
-          title={s.name}
+          title={`${s.name}${s.active ? "" : " (inactive)"}${s.isDefault ? " · default" : ""}`}
           sectionIcon={s.docType === "tax_invoice" ? <Receipt size={14} /> : <FileText size={14} />}
-          hint={s.note}
+          hint={`${s.voucherType || ""}${s.builtIn ? " · built-in" : ""}${s.note ? ` — ${s.note}` : ""}`}
           columns={4}
         >
-          <F label="Name">
-            <input value={drafts[s.id]?.name ?? ""}
-              onChange={(e) => setDrafts({ ...drafts, [s.id]: { ...drafts[s.id], name: e.target.value } })} className={inputCls} />
-          </F>
-          <F label="Numbering method">
-            <select value={drafts[s.id]?.method ?? "auto_manual_override"}
-              onChange={(e) => setDrafts({ ...drafts, [s.id]: { ...drafts[s.id], method: e.target.value } })} className={inputCls}>
-              {methods.map((m) => <option key={m.id} value={m.id} title={m.help}>{m.label}</option>)}
-            </select>
-          </F>
-          <F label="Restart numbering">
-            <select value={drafts[s.id]?.resetOn ?? "never"}
-              onChange={(e) => setDrafts({ ...drafts, [s.id]: { ...drafts[s.id], resetOn: e.target.value } })} className={inputCls}>
-              <option value="never">Never</option><option value="financial_year">Every financial year (1 April)</option>
-            </select>
-          </F>
-          <F label="Used in">
-            <select value={drafts[s.id]?.business ?? "both"}
-              onChange={(e) => setDrafts({ ...drafts, [s.id]: { ...drafts[s.id], business: e.target.value } })} className={inputCls}>
-              <option value="both">Trading + manufacturing</option><option value="trading">Trading only</option><option value="manufacturing">Manufacturing only</option>
-            </select>
-          </F>
-          <F label="Pattern">
-            <input value={drafts[s.id]?.pattern ?? ""}
-              onChange={(e) => setDrafts({ ...drafts, [s.id]: { ...drafts[s.id], pattern: e.target.value } })}
-              className={`${inputCls} font-mono`} />
-          </F>
-          <F label="Pad the count to">
-            <input type="number" min={1} value={drafts[s.id]?.minDigits ?? ""}
-              onChange={(e) => setDrafts({ ...drafts, [s.id]: { ...drafts[s.id], minDigits: e.target.value } })}
-              className={inputCls} />
-          </F>
-          <F label="Next count">
-            <input type="number" min={1} value={drafts[s.id]?.nextSeq ?? ""}
-              onChange={(e) => setDrafts({ ...drafts, [s.id]: { ...drafts[s.id], nextSeq: e.target.value } })}
-              className={inputCls} />
-          </F>
-          <div className="self-end">
-            <p className="mb-1.5 text-[10px] font-bold uppercase tracking-[.13em] text-biome-muted">Next number out</p>
-            <div className="flex items-center gap-2">
-              <span className="flex-1 truncate rounded-xl border border-biome-line bg-biome-bg px-3 py-2.5 font-mono text-[12px] font-semibold text-biome-text">
-                {preview(s.id)}
-              </span>
-              <button onClick={() => save(s.id)} disabled={busyId === s.id}
-                className="bmx-btn shrink-0 rounded-xl bg-biome-leaf px-3 py-2.5 text-[11px] font-bold text-white disabled:opacity-60">
-                {busyId === s.id ? <Loader2 size={13} className="bmx-spin" /> : saved === s.id ? <Check size={13} /> : "Save"}
-              </button>
-            </div>
-          </div>
-          <label className="flex items-center gap-2 text-[11px] text-biome-muted md:col-span-2 lg:col-span-4">
-            <input type="checkbox" checked={drafts[s.id]?.active !== false}
-              onChange={(e) => setDrafts({ ...drafts, [s.id]: { ...drafts[s.id], active: e.target.checked } })} /> Series in use (untick to retire it — its numbers stay on record)
-          </label>
+          {drafts[s.id] && manage ? (
+            <>
+              <SeriesFields d={drafts[s.id]} set={(patch) => setDrafts({ ...drafts, [s.id]: { ...drafts[s.id], ...patch } })} methods={methods} plants={plants} states={states} testId={`series-${s.id}`} />
+              <div className="flex items-center justify-end md:col-span-4">
+                <button data-testid={`series-${s.id}-save`} onClick={() => save(s.id)} disabled={busyId === s.id}
+                  className="bmx-btn flex items-center gap-1.5 rounded-xl bg-biome-leaf px-4 py-2.5 text-[11px] font-bold text-white disabled:opacity-60">
+                  {busyId === s.id ? <Loader2 size={13} className="bmx-spin" /> : saved === s.id ? <><Check size={13} /> Saved</> : "Save"}
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <Read label="Format" value={s.pattern} />
+              <Read label="Next number out" value={s.next} />
+              <Read label="Plants / states" value={[...(s.plants || []), ...(s.states || [])].join(", ") || "Any"} />
+              <Read label="Status" value={s.active ? "Active" : "Inactive"} />
+            </>
+          )}
           {s.lastIssued && (
             <p className="text-[10px] text-biome-muted md:col-span-2 lg:col-span-4">
               Last issued {s.lastIssued.number} by {s.lastIssued.by} on {s.lastIssued.at.slice(0, 10)}.
@@ -1451,24 +1566,26 @@ function SeriesPanel({ onClose, onDone }: { onClose: () => void; onDone: () => v
         </FormSection>
       ))}
 
-      <FormSection title="Recently issued" sectionIcon={<Clock size={14} />} columns={1}
-        hint="Kept so a gap in the book can be explained rather than argued about. A cancelled trip keeps its number and shows here as void.">
-        {(data?.issued || []).length === 0 && (
-          <p className="text-[11.5px] text-biome-muted">Nothing issued from the app yet — the register is still carrying numbers typed in by hand.</p>
-        )}
-        {(data?.issued || []).slice(0, 25).map((i: any) => (
-          <div key={`${i.number}-${i.at}`} className="flex flex-wrap items-center gap-2 rounded-xl border border-biome-line px-3 py-2">
-            <span className="font-mono text-[11.5px] font-semibold text-biome-text">{i.number}</span>
-            {i.voidedAt && (
-              <span className="rounded-full border border-rose-500/35 bg-rose-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[.1em] text-rose-500">
-                void
-              </span>
-            )}
-            <span className="flex-1 truncate text-[10.5px] text-biome-muted">{i.voidReason || ""}</span>
-            <span className="text-[10px] text-biome-muted">{i.byName} · {(i.at || "").slice(0, 10)}</span>
-          </div>
-        ))}
-      </FormSection>
+      {manage && (
+        <FormSection title="Recently issued" sectionIcon={<Clock size={14} />} columns={1}
+          hint="Kept so a gap in the book can be explained rather than argued about. A cancelled trip keeps its number and shows here as void.">
+          {(data?.issued || []).length === 0 && (
+            <p className="text-[11.5px] text-biome-muted">Nothing issued from the app yet — the register is still carrying numbers typed in by hand.</p>
+          )}
+          {(data?.issued || []).slice(0, 25).map((i: any) => (
+            <div key={`${i.number}-${i.at}`} className="flex flex-wrap items-center gap-2 rounded-xl border border-biome-line px-3 py-2">
+              <span className="font-mono text-[11.5px] font-semibold text-biome-text">{i.number}</span>
+              {i.voidedAt && (
+                <span className="rounded-full border border-rose-500/35 bg-rose-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[.1em] text-rose-500">
+                  void
+                </span>
+              )}
+              <span className="flex-1 truncate text-[10.5px] text-biome-muted">{i.voidReason || ""}</span>
+              <span className="text-[10px] text-biome-muted">{i.byName} · {(i.at || "").slice(0, 10)}</span>
+            </div>
+          ))}
+        </FormSection>
+      )}
     </FormPanel>
   );
 }
