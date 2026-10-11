@@ -2,14 +2,14 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { NextRequest, NextResponse } from "next/server";
-import { requirePermission, findById } from "@/lib/authServer";
-import { effectivePermissions } from "@/lib/access";
 import { loadStock, saveStock, stockDir } from "@/lib/stock";
+import { stockCtx } from "@/lib/spares";
 import { recordAudit } from "@/lib/audit";
 
 /**
- * Purchase invoice / kanta parchi / challan attached to a stock document.
- * Anyone with `stock` for that plant can attach and open them.
+ * Purchase invoice / kanta parchi / challan / material photos attached to a
+ * stock document or a GRN (GRN-REW-0001). Anyone with `stock` for that
+ * plant can attach and open them.
  *   POST multipart {no, file}     attach (PDF or photo, 15 MB)
  *   GET ?no=…&id=…                open
  */
@@ -18,22 +18,19 @@ export const dynamic = "force-dynamic";
 
 const OK = new Set(["application/pdf", "image/jpeg", "image/png", "image/webp", "image/heic"]);
 
-async function plantsFor(req: NextRequest) {
-  const auth = await requirePermission(req, "stock");
-  if ("response" in auth) return auth;
-  const user = findById(auth.session.uid)!;
-  const manage = effectivePermissions(user.role, (user as any).access).includes("stock.manage");
-  return { auth, user, pinned: !manage && auth.session.plant ? auth.session.plant : null };
+/** The plant a document number belongs to, if this person may see it. */
+function docPlant(s: ReturnType<typeof loadStock>, no: string, plants: string[]): string | null {
+  const plant = s.movements.find((m) => m.no === no)?.plant || s.grns.find((g) => g.no === no)?.plant || null;
+  return plant && plants.includes(plant) ? plant : null;
 }
 
 export async function GET(req: NextRequest) {
-  const c = await plantsFor(req);
+  const c = await stockCtx(req, "stock");
   if ("response" in c) return c.response;
   const no = req.nextUrl.searchParams.get("no") || "";
   const id = req.nextUrl.searchParams.get("id") || "";
   const s = loadStock();
-  const mv = s.movements.find((m) => m.no === no);
-  if (!mv || (c.pinned && mv.plant !== c.pinned)) return NextResponse.json({ error: "Not found." }, { status: 404 });
+  if (!docPlant(s, no, c.plants)) return NextResponse.json({ error: "Not found." }, { status: 404 });
   const a = (s.attachments[no] || []).find((x) => x.id === id);
   if (!a) return NextResponse.json({ error: "Not found." }, { status: 404 });
   const full = path.join(stockDir(), a.file);
@@ -44,15 +41,15 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const c = await plantsFor(req);
+  const c = await stockCtx(req, "stock");
   if ("response" in c) return c.response;
   const form = await req.formData().catch(() => null);
   const no = String(form?.get("no") || "");
   const files = (form?.getAll("file") || []).filter((f): f is File => f instanceof File);
   if (!no || !files.length) return NextResponse.json({ error: "Choose the bill / parchi to attach." }, { status: 400 });
   const s = loadStock();
-  const mv = s.movements.find((m) => m.no === no);
-  if (!mv || (c.pinned && mv.plant !== c.pinned)) return NextResponse.json({ error: "Not found." }, { status: 404 });
+  const plant = docPlant(s, no, c.plants);
+  if (!plant) return NextResponse.json({ error: "Not found." }, { status: 404 });
   const list = s.attachments[no] || [];
   for (const f of files) {
     if (!OK.has(f.type)) return NextResponse.json({ error: `${f.name}: attach a PDF or a photo.` }, { status: 400 });
@@ -66,6 +63,6 @@ export async function POST(req: NextRequest) {
   }
   s.attachments[no] = list;
   saveStock(s);
-  recordAudit({ action: "STOCK_ATTACHMENT_ADDED", userId: c.user.id, userName: c.user.name, role: c.user.role, plant: mv.plant, targetType: "stock_movement", targetId: no, targetLabel: no, detail: files.map((f) => f.name).join(", ") });
+  recordAudit({ action: "STOCK_ATTACHMENT_ADDED", userId: c.user.id, userName: c.user.name, role: c.user.role, plant, targetType: "stock_movement", targetId: no, targetLabel: no, detail: files.map((f) => f.name).join(", ") });
   return NextResponse.json({ ok: true, attachments: list });
 }

@@ -27,7 +27,7 @@ import {
 import { loadEmployees } from "@/lib/payroll";
 import { loadTrips, shortageFor, derivedStatus, TRIP_STATUS } from "@/lib/coordination";
 import { loadPartners, gapsFor, PARTNER_KINDS, SUPPLY_CATEGORIES } from "@/lib/partners";
-import { loadStock, stockRows, computeBalances, balanceOf, MOVEMENT_LABEL } from "@/lib/stock";
+import { loadStock, stockRows, computeBalances, balanceOf, isLive, MOVEMENT_LABEL } from "@/lib/stock";
 import { loadPlants } from "@/lib/plants";
 import { slugForCode } from "@/lib/plantRegistry";
 import { loadLeave } from "@/lib/leave";
@@ -488,7 +488,7 @@ export const DATASETS: DatasetDef[] = [
       const items = new Map(s.items.map((i) => [i.id, i]));
       const machines = new Map(s.machines.map((m) => [m.id, m]));
       const bal = computeBalances(s.movements);
-      return s.movements.filter((m) => !m.cancelled && plants.includes(m.plant)).map((m) => {
+      return s.movements.filter((m) => isLive(m) && plants.includes(m.plant)).map((m) => {
         const it = items.get(m.itemId);
         const out = ["issue", "adjust_out", "transfer_out"].includes(m.type);
         const rate = m.rate || balanceOf(bal, m.itemId, m.plant).avgRate;
