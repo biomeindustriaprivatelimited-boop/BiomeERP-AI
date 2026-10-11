@@ -103,15 +103,18 @@ function PersonPicker({ label, people, userId, name, onChange, exclude, testid }
   label: string; people: Person[]; userId: string; name: string; exclude?: string; testid: string;
   onChange: (v: { userId: string; name: string }) => void;
 }) {
-  const mode = userId ? userId : name ? NO_LOGIN : "";
+  // "Someone without a login" stays chosen while the name is still empty.
+  const [typing, setTyping] = useState(!userId && Boolean(name));
+  const mode = userId ? userId : typing || name ? NO_LOGIN : "";
   return (
     <label className="block">
       <span className="mb-1 block text-[10px] font-bold uppercase tracking-[.12em] text-biome-muted">{label}</span>
       <select value={mode} data-testid={`${testid}-select`} className={inputCls}
         onChange={(e) => {
           const v = e.target.value;
+          setTyping(v === NO_LOGIN);
           if (!v) onChange({ userId: "", name: "" });
-          else if (v === NO_LOGIN) onChange({ userId: "", name: name || "" });
+          else if (v === NO_LOGIN) onChange({ userId: "", name: userId ? "" : name || "" });
           else onChange({ userId: v, name: people.find((p) => p.id === v)?.name || "" });
         }}>
         <option value="">— Nobody —</option>
