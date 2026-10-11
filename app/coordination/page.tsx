@@ -15,6 +15,7 @@ import { EmptyState } from "@/components/SetupGuide";
 import MismatchFlag from "@/components/plant/MismatchFlag";
 import { toKg, conversionNote } from "@/lib/units";
 import { usePlants } from "@/lib/usePlants";
+import { useResponsibleLookup, HandledBy } from "@/components/partners/HandledBy";
 
 /**
  * Supply coordination.
@@ -100,6 +101,8 @@ const blank = {
 };
 
 export default function CoordinationPage() {
+  // "Handled by" chips (responsible person from Vendor / Client registration).
+  const responsible = useResponsibleLookup();
   const plantList = usePlants();
   const [business, setBusiness] = useState<Business>("trading");
   const [data, setData] = useState<any>(null);
@@ -474,6 +477,8 @@ export default function CoordinationPage() {
                       <p className="text-[12.5px] font-semibold text-biome-text">
                         {manufacturing ? "BIOME" : (t.supplier || "—")} <span className="text-biome-muted">→</span> {t.client || "—"}
                       </p>
+                      {!manufacturing && <HandledBy lookup={responsible} name={[t.supplierCode, t.supplier]} kind="vendor" label="Vendor" />}
+                      <HandledBy lookup={responsible} name={t.client} kind="client" label="Client" />
                       <DocBadge type={t.docType} number={t.ourDocNo} />
                       {docSummary[t.id] && (
                         <span title={`${docSummary[t.id].docs} WhatsApp document(s) linked · ${docSummary[t.id].missing} paper(s) missing · ${docSummary[t.id].warnings} difference(s)`}

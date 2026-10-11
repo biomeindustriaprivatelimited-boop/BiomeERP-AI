@@ -6,11 +6,15 @@ import { useLiveRefresh } from "@/lib/useLiveRefresh";
 import {
   Handshake, Truck, Plus, Loader2, AlertCircle, Check, Search, FileText, Upload, ShieldAlert, Clock,
   Building2, Landmark, X, Trash2, Mail, Lock, Unlock, Users, Phone, FileCheck2, ShieldCheck, Eye,
-  ClipboardList, BadgeCheck, CircleDot, Package, ArrowRight,
+  ClipboardList, BadgeCheck, CircleDot, Package, ArrowRight, UserCog, Download, AlertTriangle,
 } from "lucide-react";
 import { FormSection } from "@/components/FormPanel";
 import DevEditedChip from "@/components/DevEditedChip";
 import RequirementsModal, { requirementsOf, type RequirementsValue } from "@/components/partners/RequirementsModal";
+import {
+  ResponsibleChip, AssignModal, ResponsibilitySection, DuplicateCodesBanner, ImportModal,
+  type ResponsibleFields,
+} from "@/components/partners/ResponsibilityParts";
 
 /**
  * Vendor registration and Client registration — two pages, one engine.
@@ -45,7 +49,7 @@ interface Gaps {
   readyToActivate: boolean;
 }
 interface PO { id: string; number: string; date: string; validTill: string; quantityMt: number; location: string; notes: string; active: boolean }
-interface Partner {
+interface Partner extends ResponsibleFields {
   id: string; kind: string; code: string; name: string; legalName: string;
   gstin: string; pan: string; plants: string[]; material: string;
   contactPerson: string; phone: string; email: string;
@@ -140,7 +144,11 @@ export default function RegistrationRegister({ mode }: { mode: RegisterMode }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState<any>(isClientsPage ? { ...blankClient } : { ...blankVendor });
-  const [filters, setFilters] = useState({ kind: "all", status: "all", category: "all", lock: "all", attention: "all", search: "" });
+  const [filters, setFilters] = useState({ kind: "all", status: "all", category: "all", lock: "all", attention: "all", owner: "all", search: "" });
+  // Bulk selection (responsible-person assignment) and the dialogs.
+  const [picked, setPicked] = useState<string[]>([]);
+  const [assign, setAssign] = useState<null | { ids: string[]; label: string; initial?: ResponsibleFields }>(null);
+  const [importOpen, setImportOpen] = useState(false);
   // Papers chosen on the NEW registration form — uploaded right after the
   // record is created, so KYC goes in on the same screen.
   const [queued, setQueued] = useState<{ type: string; file: File; reference: string; validTill: string }[]>([]);
@@ -192,6 +200,12 @@ export default function RegistrationRegister({ mode }: { mode: RegisterMode }) {
   // Procurement registers manufacturing-side vendors too (spare parts, stores).
   const isPlantManager = myRole === "plant_manager" || myRole === "procurement";
   const canEditReq = Boolean(data?.canEditRequirements);
+  const canManage = Boolean(data?.canManage);
+  const me: string = data?.me || "";
+  const teams: { id: string; label: string }[] = data?.teams || [];
+  const people: { id: string; name: string; role: string; team: string }[] = data?.people || [];
+  const dupCodes: { code: string; category: string; holders: { id: string; name: string }[] }[] = data?.duplicateCodes || [];
+  const dupIds = new Set(dupCodes.flatMap((d) => d.holders.map((h) => h.id)));
   const allDocTypes: any[] = data?.documentTypes || [];
   const docTypes = allDocTypes.filter((t: any) => t.kinds.length === 0 || t.kinds.includes(form.kind));
   const editingLocked = Boolean(editing?.locked);
@@ -343,6 +357,24 @@ export default function RegistrationRegister({ mode }: { mode: RegisterMode }) {
     } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
   }
 
+  /** Save the responsible person / team for one record or the bulk selection. */
+  async function saveAssignment(ids: string[], body: Record<string, string>) {
+    const res = await fetch("/api/partners/responsible", {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids, ...body }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json.error || "Could not save who is responsible.");
+    setAssign(null);
+    setPicked([]);
+    setNotice(
+      json.changed
+        ? `Responsible person saved for ${json.changed} record${json.changed === 1 ? "" : "s"}.${json.notified?.length ? ` Notice sent to ${json.notified.join(", ")}.` : ""}`
+        : json.note || "Nothing changed."
+    );
+    await load();
+  }
+
   /**
    * Instant duplicate check over the records this person can see — the
    * server repeats it (per plant / trading register) on save, so this is
@@ -384,10 +416,18 @@ export default function RegistrationRegister({ mode }: { mode: RegisterMode }) {
       if (filters.attention === "gaps" && !(p.gaps.missing.length || p.gaps.missingFields.length)) return false;
       if (filters.attention === "expiry" && !(p.gaps.expired.length || p.gaps.expiringSoon.length)) return false;
       if (filters.attention === "noreq" && (p.requires || []).length > 0) return false;
-      if (q && ![p.name, p.legalName, p.code, p.gstin, p.pan, p.city, p.contactPerson, p.phone, p.shortName || "", ...(p.aliases || [])].join(" ").toLowerCase().includes(q)) return false;
+      if (filters.attention === "nocode" && p.code) return false;
+      if (filters.attention === "dupcode" && !dupIds.has(p.id)) return false;
+      if (filters.owner === "mine" && !(me && (p.responsibleUserId === me || p.backupUserId === me))) return false;
+      if (filters.owner === "none" && p.responsibleName) return false;
+      if (filters.owner.startsWith("team:") && p.team !== filters.owner.slice(5)) return false;
+      if (filters.owner.startsWith("user:") && p.responsibleUserId !== filters.owner.slice(5) && p.backupUserId !== filters.owner.slice(5)) return false;
+      if (filters.owner.startsWith("name:") && (p.responsibleUserId || p.responsibleName !== filters.owner.slice(5))) return false;
+      if (q && ![p.name, p.legalName, p.code, p.gstin, p.pan, p.city, p.contactPerson, p.phone, p.shortName || "", ...(p.aliases || []), p.responsibleName || "", p.backupName || ""].join(" ").toLowerCase().includes(q)) return false;
       return true;
     });
-  }, [all, filters]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [all, filters, me, data]);
   const countBy = (pred: (p: Partner) => boolean) => all.filter(pred).length;
 
   const comp = completeness(form, allDocTypes, creating ? queued.map((q) => q.type) : undefined);
@@ -397,6 +437,7 @@ export default function RegistrationRegister({ mode }: { mode: RegisterMode }) {
   const scopeLabel = isCoordinator ? "Trading" : isPlantManager ? "Manufacturing · my plant" : "All registers";
 
   const sections = [
+    ...(editing ? [{ id: "responsible", label: "Responsible" }] : []),
     { id: "basic", label: "Basic" },
     { id: "tax", label: "Tax & Bank" },
     { id: "contacts", label: "Contacts" },
@@ -440,11 +481,22 @@ export default function RegistrationRegister({ mode }: { mode: RegisterMode }) {
                   : "Vendors, transporters and other partners — trading (coordinator) and manufacturing (plant manager). Frozen records can be corrected or unlocked here."}
           </p>
         </div>
-        <button onClick={startAdd} data-testid="register-new"
-          className="bmx-btn flex items-center gap-2 rounded-xl bg-biome-leaf px-4 py-2.5 text-[11.5px] font-bold text-white">
-          <Plus size={14} /> {isClientsPage ? "Register a client" : "Register a vendor"}
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {canManage && (
+            <button onClick={() => setImportOpen(true)} data-testid="import-open"
+              title={isClientsPage ? "Bring the owner's client list into the trading clients (preview first)" : "Bring the owner's vendor code list into the trading vendors (preview first)"}
+              className="flex items-center gap-2 rounded-xl border border-biome-line bg-biome-bgSoft px-3.5 py-2.5 text-[11.5px] font-semibold text-biome-text hover:bg-biome-hover">
+              <Download size={14} /> {isClientsPage ? "Import client list" : "Import vendor code list"}
+            </button>
+          )}
+          <button onClick={startAdd} data-testid="register-new"
+            className="bmx-btn flex items-center gap-2 rounded-xl bg-biome-leaf px-4 py-2.5 text-[11.5px] font-bold text-white">
+            <Plus size={14} /> {isClientsPage ? "Register a client" : "Register a vendor"}
+          </button>
+        </div>
       </header>
+
+      <DuplicateCodesBanner dups={dupCodes} onOpen={(id) => { const p = all.find((x) => x.id === id); if (p) select(p); }} />
 
       {error && !open && (
         <div className="flex items-start gap-2 rounded-2xl border border-rose-400/25 bg-rose-400/[.07] px-4 py-3">
@@ -521,6 +573,24 @@ export default function RegistrationRegister({ mode }: { mode: RegisterMode }) {
                 <option value="gaps">Missing fields / papers</option>
                 <option value="expiry">Expired / expiring papers</option>
                 {isClientsPage && <option value="noreq">Requirements not set</option>}
+                <option value="nocode">No code yet</option>
+                {dupCodes.length > 0 && <option value="dupcode">Duplicate code</option>}
+              </select>
+            </div>
+            <div className="flex flex-wrap items-center gap-1">
+              <button onClick={() => setFilters({ ...filters, owner: filters.owner === "mine" ? "all" : "mine" })} data-testid="filter-mine"
+                className={`flex items-center gap-1 rounded-full border px-2.5 py-1 text-[10.5px] font-semibold ${filters.owner === "mine" ? "border-biome-leaf/60 bg-biome-leaf/15 text-biome-text" : "border-biome-line text-biome-muted hover:text-biome-text"}`}>
+                <UserCog size={10} /> {isClientsPage ? "My clients" : "My vendors"} <span className="font-mono opacity-70">{countBy((p) => Boolean(me) && (p.responsibleUserId === me || p.backupUserId === me))}</span>
+              </button>
+              <select value={filters.owner} onChange={(e) => setFilters({ ...filters, owner: e.target.value })} className={selectCls} aria-label="Responsible" data-testid="filter-owner">
+                <option value="all">Anyone responsible</option>
+                <option value="mine">Mine (responsible or backup)</option>
+                <option value="none">Unassigned</option>
+                {teams.length > 0 && <optgroup label="Team">{teams.map((t) => <option key={t.id} value={`team:${t.id}`}>{t.label}</option>)}</optgroup>}
+                <optgroup label="Person">
+                  {people.filter((u) => all.some((p) => p.responsibleUserId === u.id || p.backupUserId === u.id)).map((u) => <option key={u.id} value={`user:${u.id}`}>{u.name}</option>)}
+                  {Array.from(new Set(all.filter((p) => !p.responsibleUserId && p.responsibleName).map((p) => p.responsibleName!))).map((n) => <option key={n} value={`name:${n}`}>{n} (no login)</option>)}
+                </optgroup>
               </select>
             </div>
             {(!isClientsPage || (!isCoordinator && !isPlantManager)) && (
@@ -541,6 +611,25 @@ export default function RegistrationRegister({ mode }: { mode: RegisterMode }) {
             )}
           </div>
 
+          {canManage && filtered.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 border-b border-biome-line bg-biome-bg/60 px-3 py-2" data-testid="bulk-bar">
+              <label className="flex items-center gap-1.5 text-[10.5px] font-semibold text-biome-muted">
+                <input type="checkbox" data-testid="bulk-all"
+                  checked={filtered.length > 0 && filtered.every((p) => picked.includes(p.id))}
+                  onChange={(e) => setPicked(e.target.checked ? Array.from(new Set([...picked, ...filtered.map((p) => p.id)])) : picked.filter((id) => !filtered.some((p) => p.id === id)))} />
+                {picked.length ? `${picked.length} selected` : "Select"}
+              </label>
+              {picked.length > 0 && (
+                <>
+                  <button onClick={() => setAssign({ ids: picked, label: `${picked.length} selected` })} data-testid="bulk-assign"
+                    className="ml-auto flex items-center gap-1 rounded-lg bg-biome-leaf px-2.5 py-1 text-[10.5px] font-bold text-white">
+                    <UserCog size={11} /> Assign responsible
+                  </button>
+                  <button onClick={() => setPicked([])} className="rounded-lg border border-biome-line px-2 py-1 text-[10.5px] text-biome-muted">Clear</button>
+                </>
+              )}
+            </div>
+          )}
           <div className="max-h-[calc(100vh-260px)] min-h-[200px] overflow-y-auto p-2" data-testid="register-list">
             {!data ? (
               <p className="flex items-center justify-center gap-2 py-10 text-[11.5px] text-biome-muted"><Loader2 size={14} className="animate-spin" /> Loading…</p>
@@ -563,9 +652,14 @@ export default function RegistrationRegister({ mode }: { mode: RegisterMode }) {
                   const sel = editing?.id === p.id;
                   const issues = p.gaps.expired.length + p.gaps.missing.length + p.gaps.missingFields.length;
                   return (
-                    <li key={p.id}>
+                    <li key={p.id} className="flex items-start gap-1.5">
+                      {canManage && (
+                        <input type="checkbox" aria-label={`Select ${p.name}`} data-testid="bulk-pick" className="mt-3.5 shrink-0"
+                          checked={picked.includes(p.id)}
+                          onChange={(e) => setPicked(e.target.checked ? [...picked, p.id] : picked.filter((x) => x !== p.id))} />
+                      )}
                       <button onClick={() => select(p)} data-testid="register-row" data-name={p.name}
-                        className={`w-full rounded-xl border px-3 py-2.5 text-left transition-colors ${
+                        className={`min-w-0 flex-1 rounded-xl border px-3 py-2.5 text-left transition-colors ${
                           sel ? "border-biome-leaf/60 bg-biome-leaf/[.10]" : (p as any).devEdited ? "border-amber-500/40 hover:bg-biome-hover" : "border-transparent hover:border-biome-line hover:bg-biome-hover"
                         }`}>
                         <div className="flex items-center gap-2">
@@ -576,7 +670,9 @@ export default function RegistrationRegister({ mode }: { mode: RegisterMode }) {
                           <div className="min-w-0 flex-1">
                             <p className="truncate text-[12px] font-semibold text-biome-text">{p.name}</p>
                             <p className="truncate text-[10px] text-biome-muted">
-                              {p.code ? <span className="font-mono font-semibold text-biome-text/80">{p.code}</span> : <span className="text-amber-600">no code</span>}
+                              {p.code
+                                ? <span className={`font-mono font-semibold ${dupIds.has(p.id) ? "rounded bg-rose-500/15 px-1 text-rose-600" : "text-biome-text/80"}`} title={dupIds.has(p.id) ? "Another vendor has the same code — fix it" : undefined}>{p.code}{dupIds.has(p.id) ? " ⚠ duplicate" : ""}</span>
+                                : <span className="text-amber-600">no code</span>}
                               {` · ${p.gstin || "no GSTIN"}`}{p.city ? ` · ${p.city}` : ""}
                             </p>
                           </div>
@@ -596,6 +692,10 @@ export default function RegistrationRegister({ mode }: { mode: RegisterMode }) {
                           {issues > 0 && <span className="rounded-full bg-rose-500/12 px-1.5 text-[9px] font-bold text-rose-500" title="Missing or expired">{issues}!</span>}
                           {p.gaps.expiringSoon.length > 0 && <span className="rounded-full bg-amber-500/12 px-1.5 text-[9px] font-bold text-amber-600" title="Expiring soon">{p.gaps.expiringSoon.length}⏳</span>}
                           {p.kind === "client" && !(p.requires || []).length && <span className="rounded-full bg-amber-500/12 px-1.5 text-[9px] font-bold text-amber-600" title="Document requirements not set">req?</span>}
+                        </div>
+                        <div className="mt-1.5 flex items-center gap-1">
+                          <ResponsibleChip p={p} teams={teams} me={me} />
+                          {p.backupName && <span className="truncate text-[9px] text-biome-muted">backup {p.backupName}</span>}
                         </div>
                       </button>
                     </li>
@@ -645,6 +745,12 @@ export default function RegistrationRegister({ mode }: { mode: RegisterMode }) {
                         {(editing?.category || form.category) === "trading" || isCoordinator ? "Trading" : "Manufacturing"}
                       </span>
                       <DevEditedChip mark={(editing as any)?.devEdited} />
+                      {editing && <ResponsibleChip p={editing} teams={teams} me={me} />}
+                      {editing && dupIds.has(editing.id) && (
+                        <span className="flex items-center gap-1 rounded-full border border-rose-500/50 bg-rose-500/15 px-2 py-0.5 text-[9.5px] font-bold text-rose-600" data-testid="detail-dup-code">
+                          <AlertTriangle size={10} /> Code {editing.code} is also used by {dupCodes.find((d) => d.holders.some((h) => h.id === editing.id))?.holders.filter((h) => h.id !== editing.id).map((h) => h.name).join(", ")}
+                        </span>
+                      )}
                     </div>
                   </div>
                   <button onClick={closeDetail} aria-label="Close" className="rounded-lg border border-biome-line p-1.5 text-biome-muted hover:bg-biome-hover hover:text-biome-text">
@@ -693,6 +799,14 @@ export default function RegistrationRegister({ mode }: { mode: RegisterMode }) {
                         ? "You can view it but not change it. Accounts, the admin or the developer can unlock it for correction."
                         : "You can still correct it (every change is audited), or unlock it so the owner can correct and resubmit."}
                     </p>
+                  </div>
+                )}
+
+                {/* ---- Responsible person ---- */}
+                {editing && (
+                  <div id="reg-sec-responsible" className="mb-4 scroll-mt-4">
+                    <ResponsibilitySection p={editing} teams={teams} me={me} canManage={canManage}
+                      onChange={() => setAssign({ ids: [editing.id], label: editing.name, initial: editing })} />
                   </div>
                 )}
 
@@ -989,6 +1103,14 @@ export default function RegistrationRegister({ mode }: { mode: RegisterMode }) {
           )}
         </div>
       </div>
+
+      {assign && (
+        <AssignModal count={assign.ids.length} label={assign.label} initial={assign.initial} people={people} teams={teams}
+          onClose={() => setAssign(null)} onDone={(body) => saveAssignment(assign.ids, body)} />
+      )}
+      {importOpen && (
+        <ImportModal what={isClientsPage ? "clients" : "vendors"} onClose={() => setImportOpen(false)} onImported={() => load()} />
+      )}
 
       {reqModal && (
         <RequirementsModal

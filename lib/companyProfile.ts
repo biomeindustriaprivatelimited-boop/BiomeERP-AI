@@ -219,8 +219,23 @@ The supply is billed against the PO with the full document set. Deductions (qual
 
 The coordinator tracks every trip in Supply → Coordination; supply documents arrive on WhatsApp and are filed automatically into Month → Client → Date → Reference folders.
 `, 1),
-  S("supply", "supply-reference", "The supply reference", `
-Every supply set is identified by a reference of the form BDC/<our no>/<vendor or plant>/<their no>. The WhatsApp agent reads it from the documents and files all papers of one truck together. Vendor papers are held until OUR invoice / challan arrives and claims the set; client receivings are matched by vehicle and client.
+  S("supply", "supply-reference", "The supply reference number", `
+Every supply set is identified by a reference printed on our tax invoice / delivery challan. The WhatsApp agent reads it from the documents and files all papers of one truck together.
+
+### Trading supply
+BDC/<our document no>/<vendor code>/<vendor document no>
+- Example: BDC/841/AA/37 — our document 841, vendor Asian Associates (code AA), the vendor's document 37.
+- Example: BDC/15/SRN/39 — our document 15, vendor Sanron (code SRN), the vendor's document 39.
+
+### Manufacturing supply (from our own plant)
+BDC/<our tax invoice no>/<plant code>/<our tax invoice no>
+- Example: BDC/810/REW/810 — the plant code takes the vendor's place.
+- Plant codes: REW = Rewari (Mayan), GKD = Gangakhed.
+
+### Vendor codes
+Each trading vendor has a short code (AA, SRN, ADR, BRI…), kept in Supply → Vendor registration. A code must belong to ONE vendor only — the register flags any code given to two vendors in red, because the reference could not tell them apart.
+
+Vendor papers are held until OUR invoice / challan arrives and claims the set; client receivings are matched by vehicle and client.
 `, 2),
 
   // ---------------- Documents ----------------
@@ -292,7 +307,10 @@ No vendor is paid and no client is supplied on an unverified registration: GST c
   // ---------------- Glossary ----------------
   S("glossary", "glossary-terms", "Terms you will hear", `
 - PO — purchase order: the client's (or our) order with quantity, rate, quality and validity.
-- BDC — prefix of our supply reference number (BDC/<our no>/<vendor or plant>/<their no>).
+- BDC — prefix of our supply reference number: trading BDC/<our doc no>/<vendor code>/<vendor doc no> (e.g. BDC/841/AA/37); manufacturing BDC/<our invoice no>/<REW or GKD>/<our invoice no> (e.g. BDC/810/REW/810).
+- Vendor code — the short code of a trading vendor used in the reference (e.g. AA, SRN).
+- REW / GKD — plant codes for Rewari (Mayan) and Gangakhed.
+- Responsible person — the team member who handles a vendor or client; shown on the registration and in Coordination.
 - GCV — gross calorific value, kcal/kg.
 - MT — metric tonne (1,000 kg), the unit of quantity.
 - Gross / Tare / Net — truck weight loaded / empty / material only.
@@ -319,11 +337,29 @@ No vendor is paid and no client is supplied on an unverified registration: GST c
 Who: Coordinator (trading clients) · Plant manager (own plant's clients) · Accounts / Admin (all)
 Where in the app: Supply → Client registration
 
+- Accounts / Admin: "Import client list" brings the owner's client list in once (preview first, nobody is registered twice).
 - Press "Register a client". Fill Basic (name, code, short name, aliases), Tax & Bank (GSTIN, PAN) and Contacts.
 - Attach KYC papers (GST certificate, PAN, PO / agreement) and press Register.
 - Accounts / Admin / Developer: open "Edit requirement documents" and tick every document the client wants with a supply (and DSC where needed). Coordinators can view this list but not change it.
 - Check everything, then Submit & freeze. Accounts / Admin mark it Active.
 `, 99),
+  S("howto", "howto-responsible", "Who handles a vendor or client (responsible person)", `
+Who: Accounts / Admin / Developer assign · everyone sees it
+Where in the app: Supply → Vendor registration / Client registration
+
+- Every vendor and client shows who handles it — a coordinator, the plant manager, a procurement person or the director (a person without a login can be typed by name) — with an optional backup and a team (Coordination, Management, Plant, Procurement, Accounts).
+- To change it: open the record → Responsible person → Change. For many at once: tick them in the list → Assign responsible.
+- The person assigned gets a notice in the app. Use the "My vendors" / "My clients" filter to see your own.
+- Whoever registers a record is set as responsible until accounts / admin change it. Every change is kept in the record's history and the audit log.
+`, 98),
+  S("howto", "howto-vendor-codes", "Vendor codes and the code list import", `
+Who: Accounts / Admin / Developer
+Where in the app: Supply → Vendor registration → Import vendor code list
+
+- The import compares the owner's vendor code list with the trading vendors and shows a preview: new vendors to create, vendors that only need their code, and conflicts (a different code already on file, or a code already used by someone else). Nothing is saved until you press Import; conflicts are applied only if you tick that box.
+- A code given to more than one vendor (the list gives SGE to three) is imported as given and shown in red until each vendor gets its own code.
+- To add a code later: open the vendor → Basic → Vendor code. "Suggest" fills the next free one; a code already in use is warned about and refused on save.
+`, 98),
   ...howTo,
 ];
 
