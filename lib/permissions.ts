@@ -23,8 +23,8 @@ export const ROLES: { id: Role; label: string; description: string }[] = [
   { id: "admin", label: "Admin", description: "Day-to-day everything — access control sits with the developer" },
   { id: "accounts", label: "Accounts", description: "Finance, Tally, approvals — no app settings" },
   { id: "coordinator", label: "Coordinator", description: "All coordination, own imprest, WhatsApp documents — no plant sheets" },
-  { id: "plant_manager", label: "Plant Manager", description: "Own plant: biomass, transport, plant imprest, spare-parts stock — no coordination" },
-  { id: "procurement", label: "Procurement", description: "Plant stock & spare parts for every plant, spare-part vendors, stock reports" },
+  { id: "plant_manager", label: "Plant Manager", description: "Own plant: biomass, transport, plant imprest, spare-part requests — no coordination" },
+  { id: "procurement", label: "Procurement", description: "Spare parts & machinery for every plant: requests, POs, goods receipt, stock, maintenance" },
 ];
 
 /**
@@ -85,6 +85,15 @@ export type Permission =
   // machine masters and works across every plant.
   | "stock"
   | "stock.manage"
+  // Spare parts & machinery belong to procurement (owner's rule). Around
+  // that module sit three narrow keys:
+  //   stock.indent   raise a spare-part requirement for MY plant and follow
+  //                  its status — plant managers. No stock, no PO values.
+  //   stock.view     read-only POs, GRNs, values and spend — accounts.
+  //   stock.approve  approve stock adjustments, reopen a FINAL GRN — admin.
+  | "stock.indent"
+  | "stock.view"
+  | "stock.approve"
   | "support"         // raise a ticket; approvers also answer them
   | "work"            // the Work Engine: planner, autopilot, decisions
   | "command"         // the Command Center — management's whole-business view
@@ -136,6 +145,9 @@ const ALL: Permission[] = [
   "reports",
   "stock",
   "stock.manage",
+  "stock.indent",
+  "stock.view",
+  "stock.approve",
   "work",
   "command",
   "support",
@@ -198,8 +210,9 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "attendance.entry",
     "attendance.approve",
     "reports",
-    // No plant stock: spare parts are the plant manager's and procurement's.
-    // The developer can still grant it to one accounts person if needed.
+    // Spare parts are procurement's. Accounts read PO values, GRNs and
+    // spend (read-only) — never receive, issue or change stock.
+    "stock.view",
     "support",
     "work",
     "command",
@@ -253,8 +266,10 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "employee.view",
     "employee.add",
     "employee.docs",
-    // Receive spare parts, issue them to a machine, see own plant's stock.
-    "stock",
+    // Spare parts & machinery are procurement's (owner's rule). A plant
+    // manager raises a requirement for their own plant and follows its
+    // status — no stock, no PO values, no GRN.
+    "stock.indent",
     // Own plant's operational reports (plant sheets, stock, imprest).
     "reports",
     "support",
@@ -266,9 +281,10 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "release.read",
   ],
 
-  // Spare parts and stores for every plant. Registers the vendors it buys
-  // from (manufacturing side), runs the stock, reads stock reports. No
-  // money, no Tally, no coordination.
+  // Spare parts and machinery for every plant: requirements in, POs out,
+  // goods receipt matched against the PO, stock, machines, maintenance.
+  // Registers the vendors it buys from (manufacturing side). No Tally, no
+  // coordination.
   procurement: [
     "stock",
     "stock.manage",
@@ -345,6 +361,8 @@ export const ROUTE_PERMISSIONS: { prefix: string; permission: Permission }[] = [
   { prefix: "/api/backup", permission: "settings" },
   { prefix: "/api/plants-master", permission: "plant" },
   { prefix: "/api/stock", permission: "stock" },
+  { prefix: "/api/stock/indent", permission: "stock.indent" },
+  { prefix: "/api/stock/view", permission: "stock.view" },
   // Each side is checked inside the route (plant / coordination / full).
   { prefix: "/api/plant-match", permission: "support" },
   { prefix: "/api/plant-verify", permission: "plant" },
@@ -413,6 +431,8 @@ export const ROUTE_PERMISSIONS: { prefix: string; permission: Permission }[] = [
   { prefix: "/inbox", permission: "settings" },
   { prefix: "/po", permission: "operations" },
   { prefix: "/stock", permission: "stock" },
+  { prefix: "/stock/indent", permission: "stock.indent" },
+  { prefix: "/stock/view", permission: "stock.view" },
   { prefix: "/command", permission: "command" },
   { prefix: "/decisions", permission: "developer" },
   { prefix: "/entity", permission: "work" },
@@ -585,8 +605,11 @@ export const PERMISSION_INFO: Record<string, { label: string; what: string; why:
   "attendance.entry": { label: "Attendance & Leave", what: "Mark attendance and apply/decide leave. (Holiday announcements are admin/developer only.)", why: "Plant managers and accounts.", risk: "medium" },
   payroll: { label: "Payroll", what: "Salary runs, payslips, PF/ESIC, organisation lists.", why: "Accounts only.", risk: "high" },
   reports: { label: "Reports & Report Builder", what: "Module reports (imprest, coordination, transport, biomass, stock, vendors…) as PDF and Excel — only over data the person can already see.", why: "Management, accounts, and each team for its own data.", risk: "medium" },
-  stock: { label: "Plant stock", what: "See spare-part stock, receive parts (GRN), issue parts to machines. Plant managers: own plant.", why: "Plant managers, stores, procurement.", risk: "medium" },
-  "stock.manage": { label: "Plant stock — manage", what: "Item & machine masters, adjustments, cancellations, transfers, all plants.", why: "Procurement / stores in-charge.", risk: "medium" },
+  stock: { label: "Spare parts & machinery", what: "Requirements, spare-part POs, goods receipt (GRN) matched to the PO, stock, issue to machines, machines and maintenance.", why: "Procurement.", risk: "medium" },
+  "stock.manage": { label: "Spare parts — manage", what: "Item & machine masters, adjustments, cancellations, transfers, all plants.", why: "Procurement / stores in-charge.", risk: "medium" },
+  "stock.indent": { label: "Spare parts — raise requirement", what: "Raise a spare-part requirement for own plant and follow its status (no stock, no values).", why: "Plant managers.", risk: "low" },
+  "stock.view": { label: "Spare parts — view purchases", what: "Read-only spare-part POs, goods receipts, values and vendor / machine spend.", why: "Accounts.", risk: "low" },
+  "stock.approve": { label: "Spare parts — approve", what: "Approve stock adjustments and reopen a final GRN (with reason, audited).", why: "Admin / developer.", risk: "medium" },
   company: { label: "Company", what: "Company profile and company documents.", why: "Admin/accounts.", risk: "medium" },
   settings: { label: "Settings", what: "Appearance, mail, backup, Drive, PO policy, SLA, memory.", why: "Admin. Changes affect everyone.", risk: "high" },
   users: { label: "Users & Audit", what: "Create users, set roles, read the audit log.", why: "Admin only.", risk: "high" },
