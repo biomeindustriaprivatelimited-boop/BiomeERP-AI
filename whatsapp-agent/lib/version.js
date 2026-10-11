@@ -1,7 +1,14 @@
 /** Build stamp — shown in the UI so the running version is never a guess. */
 module.exports = {
-  BUILD: "20261005-wa-ocr-real-photos",
+  BUILD: "20261011-wa-supply-sets-final",
   FEATURES: [
+    "real-layout-readers-ours-vendor-eway-billt-slip-tag",
+    "supply-set-matcher-reference-eway-lr-weight-gkd-tolerance",
+    "merged-pdf-split-page-wise",
+    "chat-purposes-sales-imprest-ignore-with-skip-reasons",
+    "month-client-date-layout-with-safe-migration",
+    "verify-and-finalise-frozen-sets-reopen-with-reason",
+    "dsc-from-pdf-signature-fields",
     "photo-ocr-native-resolution-bilinear-upscale",
     "table-lines-removed-tiled-reading",
     "ocr-slip-repair-gstin-reference-invoice-vehicle",
