@@ -42,7 +42,7 @@ const TILES: Tile[] = [
   { href: "/plants", label: "Biomass entry", sub: "Today's purchase sheet — weights, deductions, slip check", icon: Factory, tone: "from-emerald-500/25 to-lime-400/10" },
   { href: "/transport", label: "Transport entry", sub: "Vehicles out — dispatch weight, freight, driver", icon: Truck, tone: "from-orange-500/25 to-amber-400/10" },
   { href: "/imprest", label: "Plant imprest", sub: "File a new expense, see the plant's floats", icon: Wallet, perm: "imprest.entry", tone: "from-teal-500/25 to-cyan-400/10" },
-  { href: "/stock", label: "Stock · receive & issue", sub: "Spare-part GRN, issue to a machine, balances", icon: PackagePlus, tone: "from-lime-500/25 to-emerald-400/10" },
+  { href: "/stock/indent", label: "Spare-part requirements", sub: "Ask procurement for parts, follow PO & delivery", icon: PackagePlus, tone: "from-lime-500/25 to-emerald-400/10" },
   { href: "/partners", label: "Registration", sub: "Register vendors & transporters with KYC", icon: Handshake, tone: "from-green-600/25 to-lime-400/10" },
   { href: "/followups", label: "Follow-ups", sub: "Pending papers from vendors — ask in one click", icon: Inbox, tone: "from-sky-500/25 to-blue-400/10" },
   { href: "/attendance", label: "Attendance", sub: "Mark today for your site", icon: CalendarCheck, perm: "attendance.entry", tone: "from-sky-500/25 to-indigo-400/10" },
@@ -107,11 +107,12 @@ export default function PlantHomePage() {
           return { label: "Open vehicle mismatches", value: open, sub: j.flagged ? `${j.flagged} red-flagged (over ${j.flagAfterDays ?? 3} days)` : `${j.summary.matched || 0} matched`, href: "/transport", icon: AlertTriangle, warn: open > 0 };
         }));
       }
-      if (visible("/stock")) {
-        jobs.push(getJson(`/api/stock${plant ? `?plant=${encodeURIComponent(plant)}` : ""}`).then((j) => {
-          if (!j?.summary) return null;
-          const low = (j.summary.low || 0) + (j.summary.out || 0);
-          return { label: "Low / out-of-stock parts", value: low, sub: `${j.summary.items || 0} items tracked`, href: "/stock", icon: Package, warn: low > 0 };
+      if (visible("/stock/indent")) {
+        jobs.push(getJson("/api/stock/indent").then((j) => {
+          if (!Array.isArray(j?.indents)) return null;
+          const open = j.indents.filter((i: any) => !["received", "rejected", "withdrawn"].includes(i.status?.code)).length;
+          const waiting = j.indents.filter((i: any) => i.status?.code === "open").length;
+          return { label: "Spare-part requirements open", value: open, sub: waiting ? `${waiting} waiting for procurement` : "follow PO & delivery", href: "/stock/indent", icon: Package, warn: waiting > 0 };
         }));
       }
       const got = (await Promise.all(jobs)).filter((k): k is Kpi => Boolean(k));

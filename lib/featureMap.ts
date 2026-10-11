@@ -71,7 +71,9 @@ export const FEATURE_MAP: FeatureCategory[] = [
     features: [
       { id: "plants", label: "Biomass entry", href: "/plants", icon: "Factory", perm: "plant", what: "Biomass purchase sheet per plant — weights, deductions, amount, weighbridge slip checked against the entry." },
       { id: "transport", label: "Transport entry", href: "/transport", icon: "Truck", perm: "plant", what: "Every vehicle out of the plant — dispatch/receiving weight, freight, driver; matched against coordination." },
-      { id: "stock", label: "Stock · spare parts & stores", href: "/stock", icon: "Package", perm: "stock", what: "Purchases with invoice/parchi upload, stock on hand, parts issued to each machine, re-order alerts — Tally-style stock." },
+      { id: "stock", label: "Spare parts & machinery", href: "/stock", icon: "Package", perm: "stock", what: "Procurement: plant requirements, spare-part POs, goods receipt matched to the PO, stock, issue to machines, machines & maintenance, spend reports." },
+      { id: "spare-requests", label: "Spare-part requirements", href: "/stock/indent", icon: "ClipboardList", perm: "stock.indent", what: "Ask procurement for spare parts for your plant and follow the PO and delivery." },
+      { id: "spares-view", label: "Spare-part purchases", href: "/stock/view", icon: "FileText", perm: "stock.view", what: "Read-only: spare-part POs, final goods receipts, values and vendor / machine spend." },
       { id: "plant-vendors", label: "Plant vendors & clients", href: "/partners", icon: "Handshake", perm: "stock", what: "Register manufacturing-side vendors (biomass, spare parts, services) and clients with KYC." },
     ],
   },
