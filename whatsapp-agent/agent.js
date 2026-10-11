@@ -2084,6 +2084,7 @@ async function handleMedia(msg, media) {
           saveFile({ dir: path.join(PATHS.inbox, "_Originals", receivedAt.toISOString().slice(0, 10)), baseName: stem, ext }, buffer);
         } catch { /* the parts below are what matters */ }
         const stem = path.basename(String(media.fileName || "document"), path.extname(String(media.fileName || ""))).slice(0, 80) || "document";
+        const signed = await pdfSplit.signedPages(buffer);
         let first = null;
         for (const seg of segs) {
           const range = seg.pages.length > 1 ? `${seg.pages[0] + 1}-${seg.pages[seg.pages.length - 1] + 1}` : `${seg.pages[0] + 1}`;
@@ -2097,6 +2098,7 @@ async function handleMedia(msg, media) {
             mimeType: "application/pdf",
             ocrPages: seg.pages.map((i) => read.pages[i]),
             readMethod: read.method,
+            dscSigned: seg.pages.some((i) => signed.has(i)),
             partOf: { bundleId: msg.key.id, pages: seg.pages.map((i) => i + 1), of: read.pages.length, fileName: media.fileName },
           });
           if (!first) first = rec;
@@ -2129,6 +2131,14 @@ async function handleMedia(msg, media) {
   });
 
   const extracted = ai.ok ? ai.data : null;
+  // Split pages are read from the text handed over ("provided"); remember how
+  // the whole PDF was read, so checks know a typed PDF from a photo.
+  if (extracted && media.readMethod && !extracted.sourceReadMethod) extracted.sourceReadMethod = media.readMethod;
+  // DSC from the PDF's own signature field (the stamp text is often not in the page text).
+  if (extracted && /pdf/i.test(String(media.mimeType || "")) && !extracted.hasDigitalSignature) {
+    const signedHere = media.dscSigned !== undefined ? media.dscSigned : (await pdfSplit.signedPages(buffer)).size > 0;
+    if (signedHere) extracted.hasDigitalSignature = true;
+  }
 
   // 2b. Has a person already TAUGHT us what this shape of document is?
   // Corrections outrank the classifier: a coordinator posts the same

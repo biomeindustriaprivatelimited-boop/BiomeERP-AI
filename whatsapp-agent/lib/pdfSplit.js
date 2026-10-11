@@ -68,4 +68,28 @@ async function extractPages(buffer, indexes) {
   return Buffer.from(out.saveToBuffer("compress").asUint8Array());
 }
 
-module.exports = { segmentPages, extractPages };
+/**
+ * Page indexes that carry a digital-signature (DSC) field. The signature
+ * appearance is not always in the page text, so the text-based "Digitally
+ * signed by" check missed signed challans; the PDF's own signature
+ * widgets are the reliable answer.
+ */
+async function signedPages(buffer) {
+  const out = new Set();
+  try {
+    const { loadMupdf } = require("./imageOcr");
+    const mupdf = await loadMupdf();
+    const doc = mupdf.Document.openDocument(buffer, "application/pdf").asPDF();
+    const n = doc.countPages();
+    for (let i = 0; i < n; i++) {
+      const page = doc.loadPage(i);
+      const widgets = page.getWidgets ? page.getWidgets() : [];
+      if (widgets.some((w) => (w.getFieldType ? w.getFieldType() : "") === "signature")) out.add(i);
+    }
+  } catch {
+    /* not a readable PDF — no DSC claimed */
+  }
+  return out;
+}
+
+module.exports = { segmentPages, extractPages, signedPages };

@@ -228,6 +228,38 @@ export interface WhatsappDocument {
   reviewReason?: string | null;
   /** Why the agent placed it in its supply set. */
   autoFiledReasons?: string[];
+  /** Placed without a printed match (or held for a final set) — a person should confirm. */
+  needsCheck?: boolean;
+  needsCheckReason?: string | null;
+  /** Held because it names a set that is already final. */
+  heldForFinal?: string;
+  /** Pages split out of one merged PDF. */
+  bundleFile?: string;
+  bundlePages?: number[];
+  /** Why it was not filed (screenshot, Ignore chat, …). */
+  skipReason?: string;
+}
+
+/** One line of a supply set's verification checklist. ok: null = could not be checked. */
+export interface SetCheck {
+  key: string;
+  label: string;
+  ok: boolean | null;
+  detail: string;
+}
+
+export type SetStatus = "collecting" | "ready" | "final";
+
+export interface SetFinalState {
+  status: "final" | "open";
+  finalisedAt?: string;
+  finalisedBy?: { id?: string; name?: string; role?: string } | null;
+  note?: string | null;
+  reopenedAt?: string;
+  reopenedBy?: { id?: string; name?: string; role?: string } | null;
+  reopenReason?: string;
+  documentIds?: string[];
+  history?: { action: string; at: string; by?: { name?: string; role?: string } | null; note?: string | null; reason?: string }[];
 }
 
 export interface SupplySet {
@@ -262,6 +294,14 @@ export interface SupplySet {
   requiredCount: number;
   satisfiedCount: number;
   complete: boolean;
+  /** Collecting → Ready to verify → Final. */
+  status?: SetStatus;
+  statusLabel?: string;
+  checks?: SetCheck[];
+  finalState?: SetFinalState | null;
+  ourDocumentId?: string | null;
+  needsCheckCount?: number;
+  supplyType?: "trading" | "manufacturing";
 }
 
 export interface AgentState {

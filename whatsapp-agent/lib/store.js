@@ -725,7 +725,7 @@ function consistencyChecks(set, ourDoc) {
   const plateOf = (v) => String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, "") || null;
   const core = (v) => { const m = String(v || "").match(/^(\d{1,6})\s*\/\s*20\d{2}-?\d{2}$/) || String(v || "").match(/(\d+)\s*$/); return m ? String(Number(m[1])) : null; };
   const kgOf = (e) => { const k = Number(String(e?.netWeight || e?.quantityKg || "").replace(/[^\d.]/g, "")) || null; return k && k >= 1000 && k <= 90000 ? k : null; };
-  const photo = (d) => !/pdf_text/.test(String(d.extracted?.readMethod || ""));
+  const photo = (d) => /^image\//.test(String(d.mimeType || "")) || /ocr/i.test(String(d.extracted?.sourceReadMethod || d.extracted?.readMethod || "")) || !/pdf_text/.test(String(d.extracted?.sourceReadMethod || d.extracted?.readMethod || ""));
   const close1 = (a, b) => { const x = String(Math.round(a)), y = String(Math.round(b)); if (x.length !== y.length) return false; let n = 0; for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) n++; return n <= 1; };
   const docs = set.documents.filter((d) => d !== ourDoc);
   const isMfg = /\/(REW|GKD)\//.test(set.reference);

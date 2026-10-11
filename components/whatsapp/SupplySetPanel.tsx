@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { DOC_TYPE_LABEL, DOC_TYPE_SIDE, type SupplySet, type WhatsappDocument } from "@/lib/whatsapp";
 import DocumentViewer from "./DocumentViewer";
+import { VerifySection, StatusChip, NeedsCheckChip, NeedsCheckActions } from "./SetVerify";
 
 const SIDE_STYLE: Record<string, string> = {
   biome: "border-biome-leaf/30 bg-biome-leaf/10 text-biome-leafBright",
@@ -67,7 +68,19 @@ function weightsOf(set: SupplySet) {
  * small picture of every paper), and what the client still needs.
  * Clicking a picture opens the full-page viewer.
  */
-export default function SupplySetPanel({ set, onClose }: { set: SupplySet; onClose?: () => void }) {
+export default function SupplySetPanel({
+  set,
+  onClose,
+  allSets = [],
+  onChanged,
+}: {
+  set: SupplySet;
+  onClose?: () => void;
+  /** Every set, for "move this paper to another set". */
+  allSets?: SupplySet[];
+  /** Called after a finalise / reopen / move so the page reloads. */
+  onChanged?: () => void;
+}) {
   const [viewing, setViewing] = useState<WhatsappDocument | null>(null);
   const w = weightsOf(set);
   const provisional = !set.vendorCode;
@@ -86,6 +99,8 @@ export default function SupplySetPanel({ set, onClose }: { set: SupplySet; onClo
             {set.reference}
           </p>
           <div className="mt-1 flex flex-wrap items-center gap-1.5">
+            <StatusChip status={set.status} />
+            <NeedsCheckChip count={set.status === "final" ? 0 : set.needsCheckCount || 0} />
             {set.complete ? (
               <span className="flex items-center gap-1 rounded-full border border-biome-leaf/30 bg-biome-leaf/10 px-2 py-0.5 text-[10px] font-medium text-biome-leafBright">
                 <CheckCircle2 size={10} /> Complete
@@ -121,6 +136,9 @@ export default function SupplySetPanel({ set, onClose }: { set: SupplySet; onClo
       </div>
 
       <div className="flex-1 space-y-4 overflow-y-auto px-4 py-3">
+        {/* Collecting → Ready to verify → Final: checklist and the coordinator's OK */}
+        <VerifySection set={set} onChanged={onChanged} />
+
         {/* Who, what, which truck */}
         <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-[11px]">
           <Fact icon={Building2} label="Client" value={set.clientCanonicalName || set.clientName} />
@@ -174,7 +192,17 @@ export default function SupplySetPanel({ set, onClose }: { set: SupplySet; onClo
           <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-biome-muted">Documents</p>
           <div className="grid grid-cols-2 gap-2.5" data-testid="set-docs">
             {set.documents.map((d) => (
-              <DocTile key={d.id} doc={d} onOpen={() => setViewing(d)} />
+              <DocTile
+                key={d.id}
+                doc={d}
+                onOpen={() => setViewing(d)}
+                locked={set.status === "final"}
+                actions={
+                  d.needsCheck && set.status !== "final" ? (
+                    <NeedsCheckActions doc={d} sets={allSets} currentRef={set.reference} onChanged={onChanged} />
+                  ) : null
+                }
+              />
             ))}
           </div>
         </div>
@@ -191,13 +219,27 @@ export default function SupplySetPanel({ set, onClose }: { set: SupplySet; onClo
   );
 }
 
-function DocTile({ doc, onOpen }: { doc: WhatsappDocument; onOpen: () => void }) {
+function DocTile({
+  doc,
+  onOpen,
+  locked,
+  actions,
+}: {
+  doc: WhatsappDocument;
+  onOpen: () => void;
+  locked?: boolean;
+  actions?: React.ReactNode;
+}) {
   const [broken, setBroken] = useState(false);
   const type = doc.extracted?.documentType;
   const side = type ? DOC_TYPE_SIDE[type] : "other";
   const isImage = doc.mimeType?.startsWith("image/");
   return (
-    <div className="group overflow-hidden rounded-xl border border-biome-line bg-biome-hover">
+    <div
+      className={`group overflow-hidden rounded-xl border bg-biome-hover ${doc.needsCheck && !locked ? "border-amber-500/60" : "border-biome-line"}`}
+      data-testid="set-doc"
+      data-needs-check={doc.needsCheck && !locked ? "1" : "0"}
+    >
       <button
         type="button"
         onClick={onOpen}
@@ -231,6 +273,12 @@ function DocTile({ doc, onOpen }: { doc: WhatsappDocument; onOpen: () => void })
         <p className="truncate text-[10.5px] text-biome-text" title={`Saved as: ${doc.relativePath || "—"}\nReceived as: ${doc.originalName}`}>
           {(doc.relativePath || "").split(/[\\/]/).pop() || doc.originalName}
         </p>
+        {doc.needsCheck && !locked && (
+          <p className="line-clamp-3 text-[9.5px] font-semibold leading-snug text-amber-700 dark:text-amber-300" title={doc.needsCheckReason || ""}>
+            Needs check{doc.needsCheckReason ? `: ${doc.needsCheckReason}` : ""}
+          </p>
+        )}
+        {actions}
         {doc.autoFiledReasons && doc.autoFiledReasons.length > 0 && (
           <p className="line-clamp-2 text-[9.5px] leading-snug text-biome-muted" title={doc.autoFiledReasons.join("; ")}>
             Matched: {doc.autoFiledReasons.slice(0, 2).join("; ")}
