@@ -141,7 +141,7 @@ export async function GET(req: NextRequest) {
   }
   if (search) {
     trips = trips.filter((t) =>
-      [t.client, t.supplier, t.vehicleNumber, t.vendorChallanNo, t.ourDocNo, t.poNumber, t.vendorInvoiceNo]
+      [t.client, t.supplier, t.vehicleNumber, t.vendorChallanNo, t.ourDocNo, t.poNumber, t.vendorInvoiceNo, t.referenceNo || ""]
         .join(" ").toLowerCase().includes(search)
     );
   }
@@ -168,8 +168,8 @@ export async function GET(req: NextRequest) {
   // References already on the sheet, so the form can warn before saving.
   // A plant manager only learns about rows they can already see.
   const refSource = user.role === "plant_manager" ? trips : all;
-  const references: Record<string, number> = {};
-  for (const t of refSource) if (t.referenceNo) references[t.referenceNo.toUpperCase()] = t.serial;
+  const references: Record<string, { id: string; label: string }> = {};
+  for (const t of refSource) if (t.referenceNo) references[t.referenceNo.toUpperCase()] = { id: t.id, label: `${t.business} trip #${t.serial}` };
 
   return NextResponse.json({
     business: reg,

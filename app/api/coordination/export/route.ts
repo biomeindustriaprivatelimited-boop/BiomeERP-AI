@@ -6,6 +6,7 @@ import {
   type XlColumn, type XlTone,
 } from "@/lib/excelStyle";
 import { logoPng } from "@/lib/excelLogo";
+import { loadSeriesFile } from "@/lib/numberSeries";
 
 /** "Tax Invoice" reads better in a workbook than "tax_invoice". */
 function docLabel(v: string): string {
@@ -85,6 +86,8 @@ export async function GET(req: NextRequest) {
     { key: "dispatchKg", header: "Dispatch Wt (kg)", type: "kg", total: true, width: 14 },
     { key: "docType", header: "Our Doc Type", width: 14 },
     { key: "ourDocNo", header: "Our Doc No", width: 18 },
+    { key: "series", header: "Number Series", width: 22 },
+    { key: "referenceNo", header: "Reference No", width: 20 },
     { key: "ourDocDate", header: "Our Doc Date", type: "date", width: 12 },
     { key: "challanAmount", header: "Challan Amount", type: "money", total: true, width: 15 },
     { key: "receivingDate", header: "Receiving Date", type: "date", width: 12 },
@@ -103,6 +106,7 @@ export async function GET(req: NextRequest) {
     { key: "remarks", header: "Reason / Remarks", width: 34 },
   ];
   const statusLabel = (id: string) => TRIP_STATUS.find((x) => x.id === id)?.label || id;
+  const seriesName = new Map(loadSeriesFile().series.map((x) => [x.id, x.name] as [string, string]));
   const rows = trips
     .slice()
     .sort((a, b) => (a.vehicleEntryDate || "").localeCompare(b.vehicleEntryDate || ""))
@@ -118,6 +122,7 @@ export async function GET(req: NextRequest) {
         vendorChallanDate: t.vendorChallanDate, vendorInvoiceNo: t.vendorInvoiceNo,
         dispatchKg: t.vendorChallanWeight || null,
         docType: docLabel(t.docType), ourDocNo: t.ourDocNo, ourDocDate: t.ourDocDate,
+        series: seriesName.get(t.seriesId) || "", referenceNo: t.referenceNo || "",
         challanAmount: t.vendorChallanAmount || null,
         receivingDate: t.receivingDate, receivingQty: t.receivingQty || null, ccWeight: t.ccWeight || null,
         differenceKg: pending ? null : sh.differenceKg,

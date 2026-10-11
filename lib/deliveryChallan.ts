@@ -48,6 +48,17 @@ export const CLIENT_LABELS: Record<ChallanClient, string> = {
   ntpc_solapur: "NTPC Ltd (Solapur)",
 };
 
+/**
+ * Which book in the number-series master each challan comes from (ids in
+ * lib/numberSeries.ts). The generator reads the master for the next number
+ * and the format, so a series renamed or re-padded there shows up here
+ * without a code change.
+ */
+export const CHALLAN_SERIES: Record<ChallanClient, string> = {
+  ntpc_mouda: "dc-ntpc-mouda",
+  ntpc_solapur: "dc-ntpc-solapur",
+};
+
 /** Per-client defaults, applied when the client selector changes — the
  *  user can still edit any of them, this just saves re-typing what's
  *  the same on every challan for that client. */

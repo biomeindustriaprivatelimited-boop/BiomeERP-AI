@@ -27,8 +27,9 @@ import type { Client, Vendor } from "@/lib/whatsapp";
 import { loadPartners } from "@/lib/partners";
 import { loadPlants } from "@/lib/plants";
 import { toKg } from "@/lib/units";
-import { parseRef } from "@/lib/tripDocs";
-import { loadSeriesFile, saveSeriesFile, type BusinessType } from "@/lib/numberSeries";
+import { parseRef, companyCodes } from "@/lib/tripDocs";
+import { loadSeriesFile, saveSeriesFile, numberMatchesSeries, type BusinessType } from "@/lib/numberSeries";
+import { buildReference, vendorDocNoOf } from "@/lib/coordReference";
 import {
   blankTrip, lockStateFor, readTripInput, TRIP_STATUS,
   type Trip, type TripLab, type TripStatus,
@@ -422,6 +423,8 @@ export interface ImportContext {
   clients: Client[];
   plants: { code: string; label: string; keys: string[] }[];
   today: string;
+  /** Company code that opens a coordination reference (BDC). */
+  companyCode?: string;
 }
 
 export function loadImportContext(trips: Trip[]): ImportContext {
@@ -436,6 +439,7 @@ export function loadImportContext(trips: Trip[]): ImportContext {
       keys: [p.code, p.label, p.name || "", ...(p.aliases || [])].map(norm).filter(Boolean),
     })),
     today: new Date().toISOString().slice(0, 10),
+    companyCode: companyCodes()[0] || "BDC",
   };
 }
 
@@ -629,8 +633,27 @@ export function checkRows(rows: RawRow[], ctx: ImportContext): RowCheck[] {
     if (dates.receivingDate && entryDate && dates.receivingDate < entryDate) warnings.push("Receiving Date is before the Dispatch Date.");
 
     // ---- duplicates: against the register, then within the file
-    const refNo = text(c.referenceNo, 40).toUpperCase().replace(/\s+/g, "");
-    if (refNo && !parseRef(refNo)) warnings.push(`Reference No "${refNo}" is not in the COMPANY/OUR NO/CODE/VENDOR NO shape — WhatsApp papers may not link to it.`);
+    let refNo = text(c.referenceNo, 40).toUpperCase().replace(/\s+/g, "");
+    // Blank Reference No: built from the row exactly as the form builds it
+    // (lib/coordReference.ts). Never forced over a clash or a missing code —
+    // those are said out loud and the cell stays blank.
+    let refAuto = false;
+    if (!refNo) {
+      const built = buildReference({
+        business: reg, ourDocNo, vendorCode: supplierCode,
+        vendorDocNo: vendorDocNoOf({ vendorDocType, vendorInvoiceNo, vendorChallanNo }),
+        plant, company: ctx.companyCode,
+      });
+      if (built.reference) {
+        const t = existingRef.get(built.reference);
+        const r = seenRef.get(built.reference);
+        if (t || r) warnings.push(`Reference No ${built.reference} would repeat ${t ? `trip #${t.serial}` : `row ${r} of this file`} — left blank.`);
+        else { refNo = built.reference; refAuto = true; }
+      } else if (built.warning && supplier) {
+        warnings.push(`${built.warning} ("${supplier}") — Reference No left blank.`);
+      }
+    }
+    if (refNo && !refAuto && !parseRef(refNo)) warnings.push(`Reference No "${refNo}" is not in the COMPANY/OUR NO/CODE/VENDOR NO shape — WhatsApp papers may not link to it.`);
     const party = isTrading ? norm(supplier) : plant;
     const tripKey = vehicle && entryDate && party ? `${reg}|${vehicle}|${entryDate}|${party}` : "";
     const challanKey = isTrading && vendorChallanNo && supplier ? `${norm(supplier)}|${vendorChallanNo.toLowerCase()}` : "";
@@ -642,7 +665,7 @@ export function checkRows(rows: RawRow[], ctx: ImportContext): RowCheck[] {
       else if (ctx.issuedNumbers.has(docKey)) errors.push(`Our Doc No ${ourDocNo} is already on the books (number register).`);
       else if (seenDoc.has(docKey)) errors.push(`Our Doc No ${ourDocNo} repeats row ${seenDoc.get(docKey)} of this file.`);
     }
-    if (refNo) {
+    if (refNo && !refAuto) {
       const t = existingRef.get(refNo);
       if (t) errors.push(`Reference No ${refNo} is already on trip #${t.serial}.`);
       else if (seenRef.has(refNo)) errors.push(`Reference No ${refNo} repeats row ${seenRef.get(refNo)} of this file.`);
@@ -689,6 +712,7 @@ export function checkRows(rows: RawRow[], ctx: ImportContext): RowCheck[] {
       ourDocNo,
       ourDocDate: dates.ourDocDate || "",
       referenceNo: refNo,
+      referenceManual: Boolean(refNo) && !refAuto,
       client,
       location: text(c.location, 60),
       poNumber: text(c.poNumber, 60), poDate: dates.poDate || "",
@@ -777,6 +801,8 @@ export function buildTrips(
       trip.ourDocNo = b.ourDocNo;
       trip.biomeChallanNo = b.ourDocNo;
       trip.ourDocManual = true;
+      // File the number under the book it belongs to (number-series master).
+      if (!trip.seriesId) trip.seriesId = seriesIdForNumber(b.ourDocNo, trip.docType);
     }
     trip.billing = {
       ...trip.billing,
@@ -794,13 +820,19 @@ export function buildTrips(
   return out;
 }
 
+/** The one series a document number fits, "" when none or several do. */
+function seriesIdForNumber(number: string, docType: string): string {
+  const hits = loadSeriesFile().series.filter((s) => s.docType === docType && numberMatchesSeries(s, number));
+  return hits.length === 1 ? hits[0].id : "";
+}
+
 export function registerImportedNumbers(trips: Trip[], user: { id: string; name: string }): void {
   const withNo = trips.filter((t) => t.ourDocNo);
   if (!withNo.length) return;
   const f = loadSeriesFile();
   const now = new Date().toISOString();
   const fresh = withNo.map((t) => ({
-    number: t.ourDocNo.trim(), seriesId: "manual", seq: 0,
+    number: t.ourDocNo.trim(), seriesId: t.seriesId || seriesIdForNumber(t.ourDocNo, t.docType) || "manual", seq: 0,
     tripId: t.id, at: now, by: user.id, byName: user.name,
   }));
   f.issued = [...fresh, ...f.issued].slice(0, Math.max(5000, fresh.length + 1000));

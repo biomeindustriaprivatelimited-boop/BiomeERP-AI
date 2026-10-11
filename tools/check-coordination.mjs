@@ -775,6 +775,90 @@ group("A plant manager sees their own site's partners", () => {
   check("accounts sees everything", visible(all, "accounts", null).length, 3);
 });
 
+/* ---------- coordination reference (mirror of lib/coordReference.ts) ---------- */
+
+function numericPart(v) {
+  const runs = String(v ?? "").match(/\d+/g);
+  if (!runs || !runs.length) return "";
+  return runs[runs.length - 1].replace(/^0+/, "") || "0";
+}
+const cleanCode = (v) => String(v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+function buildReference(i) {
+  const company = cleanCode(i.company) || "BDC";
+  const our = numericPart(i.ourDocNo);
+  const mfg = i.business === "manufacturing";
+  const code = mfg ? cleanCode(i.plant) : cleanCode(i.vendorCode);
+  const theirs = mfg ? our : numericPart(i.vendorDocNo);
+  const missing = [];
+  if (!our) missing.push("our invoice / challan no");
+  if (!code) missing.push(mfg ? "plant" : "vendor code");
+  if (!mfg && !theirs) missing.push("vendor invoice / challan no");
+  const partial = `${company}/${our || "?"}/${code || "?"}/${theirs || "?"}`;
+  return { reference: missing.length ? "" : partial, partial, complete: !missing.length, missing,
+    warning: !mfg && !code ? "Vendor has no code — add it in Vendor registration" : "" };
+}
+
+group("Coordination reference is built from the trip's numbers", () => {
+  check("numeric part of BI/26-27/HR/0015", numericPart("BI/26-27/HR/0015"), "15");
+  check("numeric part of INV-39", numericPart("INV-39"), "39");
+  check("numeric part of BI-26-27-HR0786 (not the year)", numericPart("BI-26-27-HR0786"), "786");
+  check("numeric part of BIPL/2026-27/886", numericPart("BIPL/2026-27/886"), "886");
+  check("numeric part of BI/NTPC/SOL/039", numericPart("BI/NTPC/SOL/039"), "39");
+  check("numeric part with a letter after it", numericPart("INV-39/A"), "39");
+  check("all zeros stay a number", numericPart("0000"), "0");
+  check("no digits = nothing", numericPart("ABC"), "");
+  check("owner's trading example", buildReference({ business: "trading", ourDocNo: "BI/26-27/HR/0015", vendorCode: "SRN", vendorDocNo: "INV-39" }).reference, "BDC/15/SRN/39");
+  check("owner's second example", buildReference({ business: "trading", ourDocNo: "841", vendorCode: "aa", vendorDocNo: "37" }).reference, "BDC/841/AA/37");
+  check("manufacturing uses plant and our number twice", buildReference({ business: "manufacturing", ourDocNo: "BI-26-27-HR0810", plant: "REW" }).reference, "BDC/810/REW/810");
+  check("manufacturing at Gangakhed", buildReference({ business: "manufacturing", ourDocNo: "BI/26-27/MH/0039", plant: "gkd" }).reference, "BDC/39/GKD/39");
+  const noCode = buildReference({ business: "trading", ourDocNo: "15", vendorCode: "", vendorDocNo: "39" });
+  check("vendor without a code: no reference", noCode.reference, "");
+  check("vendor without a code: warning", noCode.warning, "Vendor has no code — add it in Vendor registration");
+  check("vendor without a code: partial shown", noCode.partial, "BDC/15/?/39");
+  check("missing our number: incomplete", buildReference({ business: "trading", ourDocNo: "", vendorCode: "SRN", vendorDocNo: "39" }).complete, false);
+  check("manufacturing never warns about a vendor code", buildReference({ business: "manufacturing", ourDocNo: "", plant: "" }).warning, "");
+  check("company code is configurable", buildReference({ business: "trading", ourDocNo: "1", vendorCode: "X", vendorDocNo: "2", company: "bipl" }).reference, "BIPL/1/X/2");
+});
+
+/* ---------- number-series tokens and matching (mirror of lib/numberSeriesFormat.ts) ---------- */
+
+function formatTokens(series, seq, date) {
+  const d = date;
+  const fy = financialYearFor(d);
+  const seqText = String(Math.max(0, Math.trunc(seq))).padStart(Math.max(1, series.minDigits), "0");
+  const values = { seq: seqText, n: seqText, prefix: series.prefix || "", suffix: series.suffix || "", fy, "yyyy-yy": fy,
+    fyshort: fy.slice(2), "yy-yy": fy.slice(2), yyyy: d.slice(0, 4), yy: d.slice(2, 4), mm: d.slice(5, 7) };
+  return series.pattern.replace(/\{\s*([A-Za-z-]+)\s*\}/g, (w, k) => (values[k.toLowerCase()] ?? w));
+}
+const up = (v) => String(v ?? "").trim().toUpperCase();
+function seriesApplies(s, ctx) {
+  if (s.active === false || s.docType !== ctx.docType) return false;
+  if (!(s.business === "both" || s.business === ctx.business)) return false;
+  const plant = up(ctx.plant);
+  if (plant) {
+    const plants = (s.plants || []).map(up), states = (s.states || []).map(up);
+    if (plants.length && !plants.includes(plant)) return false;
+    if (!plants.length && states.length && ctx.state && !states.includes(up(ctx.state))) return false;
+  }
+  return true;
+}
+
+group("Number series: format tokens and who may use a book", () => {
+  const MH = { pattern: "{PREFIX}/{FYSHORT}/MH/{SEQ}", minDigits: 4, prefix: "BI" };
+  check("Maharashtra Sale default format", formatTokens(MH, 1, "2026-10-11"), "BI/26-27/MH/0001");
+  check("owner-style tokens {prefix}/{yy-yy}/{n}", formatTokens({ pattern: "{prefix}/{yy-yy}/{n}", minDigits: 3, prefix: "BI" }, 15, "2026-10-11"), "BI/26-27/015");
+  check("suffix and {FY}", formatTokens({ pattern: "{SEQ}{suffix}-{FY}", minDigits: 1, suffix: "/MH" }, 7, "2027-02-01"), "7/MH-2026-27");
+  check("existing books are untouched by the new tokens", formatTokens(TI_HR, 786, "2026-10-11"), "BI-26-27-HR0786");
+  check("unknown tokens stay as typed", formatTokens({ pattern: "X{ABC}{SEQ}", minDigits: 1 }, 5, "2026-10-11"), "X{ABC}5");
+  const mh = { docType: "tax_invoice", business: "both", plants: ["GKD"], states: ["MH"], active: true };
+  check("MH book offered for a Gangakhed dispatch", seriesApplies(mh, { docType: "tax_invoice", business: "manufacturing", plant: "GKD", state: "MH" }), true);
+  check("MH book refused for a Rewari dispatch", seriesApplies(mh, { docType: "tax_invoice", business: "manufacturing", plant: "REW", state: "HR" }), false);
+  check("MH book still offered on a trading row (no plant)", seriesApplies(mh, { docType: "tax_invoice", business: "trading" }), true);
+  check("an inactive book is never offered", seriesApplies({ ...mh, active: false }, { docType: "tax_invoice", business: "trading" }), false);
+  check("a challan book is not offered for an invoice", seriesApplies({ ...mh, docType: "delivery_challan" }, { docType: "tax_invoice", business: "trading" }), false);
+  check("state-only book refused outside its state", seriesApplies({ docType: "tax_invoice", business: "both", states: ["MH"] }, { docType: "tax_invoice", business: "manufacturing", plant: "REW", state: "HR" }), false);
+});
+
 /* ---------- the checks above are a mirror; make sure it still reflects ---------- */
 
 /**
@@ -867,6 +951,38 @@ group("The checks still match lib/numberSeries.ts", () => {
   );
   const managerBlock = perms.slice(perms.indexOf("plant_manager: ["));
   check("plant manager does", managerBlock.includes('"partners"'), true);
+});
+
+group("Number series master and reference rules are still in the source", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const read = (...p) => { try { return readFileSync(join(here, "..", ...p), "utf8"); } catch { return ""; } };
+  const ns = read("lib", "numberSeries.ts");
+  const fmt = read("lib", "numberSeriesFormat.ts");
+  const ref = read("lib", "coordReference.ts");
+  const route = read("app", "api", "coordination", "series", "route.ts");
+  const coordRoute = read("app", "api", "coordination", "route.ts");
+  const coordLib = read("lib", "coordination.ts");
+  const imp = read("lib", "coordinationImport.ts");
+  const perms = read("lib", "permissions.ts");
+
+  check("Maharashtra Sale book is shipped", ns.includes('name: "Maharashtra Sale"'), true);
+  check("Maharashtra Sale is for Gangakhed / MH", ns.includes('plants: ["GKD"]') && ns.includes('states: ["MH"]'), true);
+  check("it is added by a one-time migration", ns.includes('"2026-10-maharashtra-sale"') && ns.includes("if (migrate(f)) saveSeriesFile(f);"), true);
+  check("never hand out a number already issued", ns.includes("f.issued.some((i) => i.number === number)"), true);
+  check("formatter keeps the {SEQ} padding rule", fmt.includes('padStart(Math.max(1, series.minDigits), "0")'), true);
+  check("reference number = LAST digit run, zeros stripped", ref.includes("runs[runs.length - 1]") && ref.includes('replace(/^0+/, "")'), true);
+  check("reference opens with BDC by default", ref.includes('DEFAULT_COMPANY_CODE = "BDC"'), true);
+  check("series changes need series.manage, checked in the API", route.includes('includes("series.manage")') && (route.match(/if \(!canManage\(user\)\) return NextResponse\.json\(\{ error: DENIED \}, \{ status: 403 \}\)/g) || []).length === 2, true);
+  check("series changes are audited", route.includes('"SERIES_CREATED"') && route.includes('"SERIES_UPDATED"') && route.includes('"SERIES_DEACTIVATED"'), true);
+  check("two books may not print the same format", route.includes("resolvedPattern(o) === mine"), true);
+  check("a coordinator's series is checked on save", coordRoute.includes("checkSeriesFits(") && coordRoute.includes("has been deactivated"), true);
+  check("reference settled on every save, unique across the sheet", coordRoute.includes("settleReference(") && coordLib.includes("Each supply needs its own reference."), true);
+  check("data import fills a blank reference", imp.includes("buildReference(") && imp.includes("refAuto = true"), true);
+  const accountsBlock = perms.slice(perms.indexOf("accounts: ["), perms.indexOf("coordinator: ["));
+  const coordinatorBlock = perms.slice(perms.indexOf("coordinator: ["), perms.indexOf("plant_manager: ["));
+  check("accounts holds series.manage", accountsBlock.includes('"series.manage"'), true);
+  check("coordinator does not", coordinatorBlock.includes('"series.manage"'), false);
+  check("series.manage is a real permission key", perms.includes('| "series.manage"') && perms.includes('  "series.manage",\n'), true);
 });
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

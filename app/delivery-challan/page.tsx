@@ -1,18 +1,20 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { FileStack, Download, FileSpreadsheet, RotateCcw } from "lucide-react";
 import {
   BLANK_CHALLAN,
   CHALLAN_DEFAULTS,
   CLIENT_LABELS,
+  CHALLAN_SERIES,
   calcNetWeightKg,
   kgToMt,
   type ChallanClient,
   type ChallanFormData,
 } from "@/lib/deliveryChallan";
 import { generateChallanPdf, generateChallanExcel } from "@/lib/deliveryChallanExport";
+import { numberMatchesSeries } from "@/lib/numberSeriesFormat";
 
 /** One text input, styled to match the rest of the platform's forms. */
 function Field({
@@ -58,6 +60,17 @@ export default function DeliveryChallanPage() {
   const [busy, setBusy] = useState<"pdf" | "excel" | null>(null);
 
   const net = useMemo(() => calcNetWeightKg(data.grossWeightKg, data.tareWeightKg), [data]);
+
+  // The challan book for this client, from the number-series master.
+  const [books, setBooks] = useState<any[]>([]);
+  useEffect(() => {
+    fetch("/api/coordination/series", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => setBooks(j?.series || []))
+      .catch(() => setBooks([]));
+  }, []);
+  const book = books.find((b) => b.id === CHALLAN_SERIES[data.client]);
+  const offFormat = Boolean(book && data.challanNo.trim() && !numberMatchesSeries(book, data.challanNo));
 
   const set = <K extends keyof ChallanFormData>(key: K) => (value: ChallanFormData[K]) =>
     setData((d) => ({ ...d, [key]: value }));
@@ -156,7 +169,16 @@ export default function DeliveryChallanPage() {
       </div>
 
       <Section title="Header & Dispatch Data">
-        <Field label="Challan No." value={data.challanNo} onChange={set("challanNo")} placeholder="BI/NTPC/MOU/089" />
+        <div>
+          <Field label="Challan No." value={data.challanNo} onChange={set("challanNo")} placeholder={book?.next || "BI/NTPC/MOU/089"} />
+          {book && (
+            <p className="mt-1 text-[10.5px] text-biome-muted">
+              Next in &ldquo;{book.name}&rdquo;: <span className="font-mono font-semibold text-biome-text">{book.next}</span>
+              {book.active === false && " (series inactive)"} — the number is taken when the trip is saved in Coordination.
+              {offFormat && <span className="block font-semibold text-amber-600">This number does not follow the {book.name} format ({book.pattern}).</span>}
+            </p>
+          )}
+        </div>
         <Field label="Challan Date" value={data.challanDate} onChange={set("challanDate")} placeholder="30-07-2026" />
         <Field label="P.O. No. / LOA No." value={data.poNo} onChange={set("poNo")} placeholder="4000348583-M11-1043" />
         <Field label="LOA Date" value={data.loaDate} onChange={set("loaDate")} placeholder="07-10-2024" />
