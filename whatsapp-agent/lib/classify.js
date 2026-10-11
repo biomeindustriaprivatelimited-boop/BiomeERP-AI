@@ -271,7 +271,7 @@ async function callAnthropic(apiKey, buffer, mimeType, systemPrompt, userText) {
   return safeParse(textBlock?.text ?? "");
 }
 
-function coerce(result, ctx) {
+function coerce(result, ctx) { // result may be replaced by the layout reading below
   const out = {
     documentType: DOC_TYPES.includes(result?.documentType) ? result.documentType : "other",
     confidence: Number.isFinite(Number(result?.confidence)) ? Number(result.confidence) : 0,
@@ -304,7 +304,45 @@ function coerce(result, ctx) {
     /* rules are an aid, never a reason to fail the read */
   }
 
+  // ---- The company's real layouts outrank everything above ----
+  // layouts.js knows the exact forms Biome and its vendors print (Tally
+  // e-invoice, delivery note, NTPC challan, e-way bills, vendor invoices,
+  // Bill T, weighbridge slips, consignment tag). When it recognises the
+  // page, its type, side and identifiers are the answer.
+  try {
+    const lay = require("./layouts").readLayout(result?.transcription || "", { clients: ctx?.clients || [] });
+    if (lay && lay.confidence >= 85) {
+      if (lay.documentType !== out.documentType) {
+        out.documentTypeFromReader = out.documentType;
+        out.documentType = lay.documentType;
+      }
+      out.confidence = Math.max(out.confidence, lay.confidence);
+      out.layout = lay.layout;
+      out.ruleReason = `Recognised the ${lay.layout.replace(/_/g, " ")} layout`;
+      const merged = { ...(result || {}) };
+      for (const [k, v] of Object.entries(lay)) {
+        if (v === null || v === undefined || v === "" || ["layout", "documentType", "confidence"].includes(k)) continue;
+        merged[k] = v;
+      }
+      // Our own papers never carry a vendor number of their own.
+      if (lay.issuerSide === "us") merged.vendorOwnDocNo = null;
+      result = merged;
+    }
+  } catch {
+    /* layouts are an aid, never a reason to fail the read */
+  }
+
   const strFields = [
+    "transporterName",
+    "transporterGstin",
+    "ewayDocNo",
+    "ourDocCore",
+    "vendorDocCore",
+    "consigneeName",
+    "buyerName",
+    "plantCode",
+    "batchNo",
+    "slipNo",
     "issuedBy",
     "referenceNo",
     "biomeDocNo",
@@ -354,6 +392,8 @@ function coerce(result, ctx) {
   if (Array.isArray(result?.learnedReasons)) out.learnedReasons = result.learnedReasons;
   if (result?.engine) out.engine = String(result.engine);
   if (result?.captionHints) out.captionHints = result.captionHints;
+  if (out.layout === undefined && result?.layout) out.layout = String(result.layout);
+  if (result?.plantSlip) out.plantSlip = true;
   out.transcription = typeof result?.transcription === "string" ? result.transcription : "";
   return out;
 }
