@@ -97,11 +97,13 @@ export function startMockTally(opts) {
     if (!faults.length) return null;
     const isLedger = /<COLLECTION[^>]*>[\s\S]*?<TYPE>\s*Ledger\s*<\/TYPE>/i.test(xml);
     const isVoucher = /BiomeVouchers|Biome Voucher Export/.test(xml);
+    const isVoucherColl = /<COLLECTION[^>]*>[\s\S]*?<TYPE>\s*Voucher\s*<\/TYPE>/i.test(xml);
     const from = parseTDate(tag(xml, "SVFROMDATE"));
     const to = parseTDate(tag(xml, "SVTODATE"));
     for (const f of faults) {
       if (f.kind === "ledgers" && !isLedger) continue;
       if (f.kind === "vouchers" && !isVoucher) continue;
+      if (f.kind === "voucher-collection" && !isVoucherColl) continue;
       if (f.from && f.from !== from) continue;
       if (f.to && f.to !== to) continue;
       if (f.hits >= f.times) continue;
@@ -129,7 +131,18 @@ export function startMockTally(opts) {
       if (ctype === "company") return envelope(companies());
       if (ctype === "group") return envelope(groups(company));
       if (ctype === "ledger") return envelope(ledgers(company, from, to));
+      if (ctype === "voucher") return envelope(voucherCollection(company, xml, from, to));
       return envelope("");
+    }
+    if (reqType === "object") {
+      const sub = (tag(xml, "SUBTYPE") || "").toLowerCase();
+      const name = tag(xml, "ID");
+      if (sub === "ledger") {
+        const l = (company.ledgers || []).find((x) => x.name.toLowerCase() === String(name || "").toLowerCase());
+        if (!l) return lineError(`Could not find Ledger '${name}'!`);
+        return envelope(ledgerObject(l));
+      }
+      return lineError(`Unknown object type '${sub}'`);
     }
     if (id === "BiomeVersionInfo" && opts.bridge) {
       return envelope(
@@ -144,10 +157,21 @@ export function startMockTally(opts) {
     return loaded
       .map((n) => {
         const c = all[n];
+        const p = c.profile;
+        const prof = p
+          ? `
+    <ADDRESS.LIST TYPE="String">
+${p.address.map((a) => `     <ADDRESS>${esc(a)}</ADDRESS>`).join("\r\n")}
+    </ADDRESS.LIST>
+    <STATENAME TYPE="String">${esc(p.state)}</STATENAME>
+    <PINCODE TYPE="String">${esc(p.pincode)}</PINCODE>
+    <GSTREGISTRATIONNUMBER TYPE="String">${esc(p.gstin)}</GSTREGISTRATIONNUMBER>
+    <INCOMETAXNUMBER TYPE="String">${esc(p.pan)}</INCOMETAXNUMBER>`
+          : "";
         return `   <COMPANY NAME="${esc(n)}" RESERVEDNAME="">
     <STARTINGFROM TYPE="Date">${c.booksFrom.replace(/-/g, "")}</STARTINGFROM>
     <BOOKSFROM TYPE="Date">${c.booksFrom.replace(/-/g, "")}</BOOKSFROM>
-    <NAME TYPE="String">${esc(n)}</NAME>
+    <NAME TYPE="String">${esc(n)}</NAME>${prof}
    </COMPANY>`;
       })
       .join("\r\n");
@@ -195,6 +219,86 @@ export function startMockTally(opts) {
    </LEDGER>`;
       })
       .join("\r\n");
+  }
+
+  /**
+   * Inline-TDL Collection of type Voucher (lib/tallyLedgerActivity.ts),
+   * answered the way Tally does: <VOUCHER VCHTYPE=".."><DATE/>…
+   * <ALLLEDGERENTRIES.LIST><LEDGERNAME/><ISDEEMEDPOSITIVE/><AMOUNT/> with
+   * Dr NEGATIVE. Honours the period (SVFROMDATE/SVTODATE), and a
+   * `$LedgerName = "X"` filter formula when the request carries one.
+   * Company A's ledger movements aren't written as vouchers in the fixture,
+   * so each movement is answered as a one-line journal (enough for dates).
+   */
+  function voucherCollection(c, xml, from, to) {
+    const led = /\$LedgerName\s*=\s*"([^"]*)"/.exec(unesc(xml));
+    const want = led ? led[1].toLowerCase() : null;
+    const list =
+      c.vouchers && c.ledgersFromVouchers
+        ? c.vouchers
+        : (c.ledgers || []).flatMap((l, li) =>
+            l.txns.map((t, ti) => ({ date: t.date, type: "Journal", no: `J-${li}-${ti}`, party: l.name, entries: [{ ledger: l.name, dr: t.dr }] }))
+          );
+    return list
+      .filter((v) => (!from || v.date >= from) && (!to || v.date <= to))
+      .filter((v) => !want || v.entries.some((e) => e.ledger.toLowerCase() === want))
+      .map(
+        (v, i) => `   <VOUCHER REMOTEID="mock-${i}" VCHKEY="mock-${i}" VCHTYPE="${esc(v.type)}" ACTION="Create" OBJVIEW="Accounting Voucher View">
+    <DATE TYPE="Date">${v.date.replace(/-/g, "")}</DATE>
+    <GUID TYPE="String">mock-guid-${esc(v.no)}</GUID>
+    <NARRATION TYPE="String">${esc(v.narration || `${v.type} ${v.no}`)}</NARRATION>
+    <PARTYLEDGERNAME TYPE="String">${esc(v.party || "")}</PARTYLEDGERNAME>
+    <VOUCHERTYPENAME TYPE="String">${esc(v.type)}</VOUCHERTYPENAME>
+    <VOUCHERNUMBER TYPE="String">${esc(v.no)}</VOUCHERNUMBER>
+${v.entries
+  .map(
+    (e) => `    <ALLLEDGERENTRIES.LIST>
+     <LEDGERNAME TYPE="String">${esc(e.ledger)}</LEDGERNAME>
+     <ISDEEMEDPOSITIVE TYPE="Logical">${e.dr > 0 ? "Yes" : "No"}</ISDEEMEDPOSITIVE>
+     <AMOUNT TYPE="Amount">${(-e.dr).toFixed(2)}</AMOUNT>
+    </ALLLEDGERENTRIES.LIST>`
+  )
+  .join("\r\n")}
+   </VOUCHER>`
+      )
+      .join("\r\n");
+  }
+
+  /** Export of one Ledger object. `details.prime3` = TallyPrime 3 layout
+   *  (address / GSTIN in dated sub-lists), otherwise the older flat one. */
+  function ledgerObject(l) {
+    const d = l.details || {};
+    const addr = (d.address || []).map((a) => `      <ADDRESS>${esc(a)}</ADDRESS>`).join("\r\n");
+    const body = d.prime3
+      ? `    <LEDMAILINGDETAILS.LIST>
+     <ADDRESS.LIST TYPE="String">
+${addr}
+     </ADDRESS.LIST>
+     <APPLICABLEFROM TYPE="Date">20200401</APPLICABLEFROM>
+     <MAILINGNAME TYPE="String">${esc(d.mailingName || l.name)}</MAILINGNAME>
+     <STATE TYPE="String">${esc(d.state || "")}</STATE>
+     <PINCODE TYPE="String">${esc(d.pincode || "")}</PINCODE>
+     <COUNTRY TYPE="String">India</COUNTRY>
+    </LEDMAILINGDETAILS.LIST>
+    <LEDGSTREGDETAILS.LIST>
+     <APPLICABLEFROM TYPE="Date">20200401</APPLICABLEFROM>
+     <GSTREGISTRATIONTYPE TYPE="String">Regular</GSTREGISTRATIONTYPE>
+     <GSTIN TYPE="String">${esc(d.gstin || "")}</GSTIN>
+    </LEDGSTREGDETAILS.LIST>`
+      : `    <ADDRESS.LIST TYPE="String">
+${addr}
+    </ADDRESS.LIST>
+    <LEDGERSTATENAME TYPE="String">${esc(d.state || "")}</LEDGERSTATENAME>
+    <PINCODE TYPE="String">${esc(d.pincode || "")}</PINCODE>
+    <PARTYGSTIN TYPE="String">${esc(d.gstin || "")}</PARTYGSTIN>`;
+    return `   <LEDGER NAME="${esc(l.name)}" RESERVEDNAME="">
+    <PARENT TYPE="String">${l.parent ? esc(l.parent) : "&#4; Primary"}</PARENT>
+${body}
+    <INCOMETAXNUMBER TYPE="String">${esc(d.pan || "")}</INCOMETAXNUMBER>
+    <LEDGERCONTACT TYPE="String">${esc(d.contact || "")}</LEDGERCONTACT>
+    <LEDGERMOBILE TYPE="String">${esc(d.phone || "")}</LEDGERMOBILE>
+    <EMAIL TYPE="String">${esc(d.email || "")}</EMAIL>
+   </LEDGER>`;
   }
 
   function vouchers(c, from, to) {

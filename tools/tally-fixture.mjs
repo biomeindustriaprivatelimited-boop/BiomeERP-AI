@@ -233,6 +233,38 @@ export function buildCompanyA(today) {
   return { booksFrom: `${fy - 1}-04-01`, groups, ledgers, vouchers, dates: { F, PREV, FUTURE, T, cur } };
 }
 
+/**
+ * LAST ENTRY per KPI for company A, FY till today (hand-read from the
+ * ledger movements above; cur(n) = n days after 1 April, never after
+ * today; post-dated FUTURE and last year's PREV entries don't count):
+ *   cash        Cash cur(20), Rewari Plant Imprest cur(25)         -> cur(25)
+ *   bank        HDFC cur(30), ICICI cur(35) (SBI CC is OD, not bank) -> cur(35)
+ *   bank OD     SBI Cash Credit cur(40)                            -> cur(40)
+ *   receivables Mouda cur(10), Solapur/JPL cur(40), APCPL cur(45)  -> cur(45)
+ *   payables    Mukesh cur(10), Sonpal/Anish cur(15), Shree Ram cur(20)
+ *               (Electricity Payable cur(30) is NOT a creditor)    -> cur(20)
+ *   sales       Local cur(10), Interstate cur(40), Return cur(50)  -> cur(50)
+ *   purchases   cur(10), Interstate cur(12)                        -> cur(12)
+ *   taxes       CGST/SGST/Input cur(10), TDS cur(20), IGST cur(40) -> cur(40)
+ *   expenses    Freight cur(10), Salary/Bank Charges cur(30)       -> cur(30)
+ *   other inc.  Interest Received cur(30)                          -> cur(30)
+ */
+export function expectedLastA(today) {
+  const { cur } = buildCompanyA(today).dates;
+  return {
+    cashInHand: cur(25),
+    bankBalance: cur(35),
+    bankOverdraft: cur(40),
+    receivables: cur(45),
+    payables: cur(20),
+    sales: cur(50),
+    purchases: cur(12),
+    taxLiability: cur(40),
+    expenses: cur(30),
+    otherIncome: cur(30),
+  };
+}
+
 /** Hand-computed expectations (see the table at the top of this file). */
 export const EXPECTED_A = {
   cashInHand: 435000,
@@ -289,6 +321,8 @@ export function expectedMonthly(today) {
  *   day 8   Purchase   Purchase C Dr P / Vendor C Cr P, P = 60% of S
  *   day 20  Receipt    Bank C Dr S/2 / Customer C Cr S/2
  *   day 25  Payment    Office Exp C Dr 1,000 / Cash C Cr 1,000
+ *   day 28  Journal    (Jun/Sep/Dec/Mar only) Customer C Cr 3,000 /
+ *                      Office Exp C Dr 2,000 + Cash C Dr 1,000
  * (k = months since the books beginning; only dates up to today exist.)
  * Opening: Cash C 1,00,000 Dr, Capital C 1,00,000 Cr.
  * ===================================================================== */
@@ -327,6 +361,15 @@ export function buildCompanyC(today) {
       { ledger: "Cash C", dr: -1000 },
       { ledger: "Office Exp C", dr: 1000 },
     ]);
+    // Quarter ends: a 3-line journal (rate difference settled partly in
+    // cash) — one Cr line on the customer, two Dr contra lines.
+    if (m % 3 === 0) {
+      add(28, "Journal", "JV", "Customer C", [
+        { ledger: "Customer C", dr: -3000 },
+        { ledger: "Office Exp C", dr: 2000 },
+        { ledger: "Cash C", dr: 1000 },
+      ]);
+    }
     m += 1;
     if (m === 13) {
       m = 1;
@@ -350,7 +393,84 @@ export function buildCompanyC(today) {
     pl: isPl,
     txns: vouchers.flatMap((v) => v.entries.filter((e) => e.ledger === name).map((e) => ({ date: v.date, dr: e.dr }))),
   }));
-  return { booksFrom, groups: buildCompanyA(today).groups, ledgers, vouchers };
+  // Party details as Tally's Ledger object export gives them: Customer C
+  // in the TallyPrime 3 layout (dated mailing / GST sub-lists), Vendor C
+  // in the older flat one.
+  const details = {
+    "Customer C": {
+      prime3: true,
+      address: ["NTPC Mouda Super Thermal Power Station", "Mouda, Nagpur"],
+      state: "Maharashtra",
+      pincode: "441104",
+      gstin: "27AAACN0255D1ZX",
+      pan: "AAACN0255D",
+      contact: "Fuel Manager",
+      phone: "+91 7100 000000",
+      email: "fuel@example.com",
+    },
+    "Vendor C": {
+      address: ["VPO Ramchandpura", "Rewari"],
+      state: "Haryana",
+      pincode: "123401",
+      gstin: "06ABCDE1234F1Z5",
+      pan: "ABCDE1234F",
+      contact: "Sonpal",
+      phone: "9800000000",
+    },
+  };
+  for (const l of ledgers) if (details[l.name]) l.details = details[l.name];
+  return {
+    booksFrom,
+    groups: buildCompanyA(today).groups,
+    ledgers,
+    vouchers,
+    ledgersFromVouchers: true,
+    profile: {
+      address: ["Rewari Road Khaleta, Mayan Village", "Rewari District, Haryana"],
+      state: "Haryana",
+      pincode: "123103",
+      gstin: "06AAJCB1927H1ZS",
+      pan: "AAJCB1927H",
+    },
+  };
+}
+
+/**
+ * Ledger statement of company C, worked out from the voucher list the way
+ * Tally's Ledger Vouchers screen shows it. Amounts in TALLY SIGN (Dr
+ * negative): opening as at the start of `from`, a row per voucher, closing
+ * as on `to`. For a Sales/Purchase/Expense ledger the opening is the
+ * movement from 1 April of that FY up to the day before `from`.
+ */
+export function expectedStatementC(today, ledger, from, to) {
+  const c = buildCompanyC(today);
+  const l = c.ledgers.find((x) => x.name === ledger);
+  const fyFrom = `${Number(from.slice(5, 7)) >= 4 ? from.slice(0, 4) : Number(from.slice(0, 4)) - 1}-04-01`;
+  const movedBefore = l.txns.filter((t) => (l.pl ? t.date >= fyFrom : true) && t.date < from).reduce((a, t) => a + t.dr, 0);
+  const openingNatural = (l.pl ? 0 : l.opening) + movedBefore; // Dr positive
+  const rows = c.vouchers
+    .filter((v) => v.date >= from && v.date <= to && v.entries.some((e) => e.ledger === ledger))
+    .map((v) => {
+      const net = v.entries.filter((e) => e.ledger === ledger).reduce((a, e) => a + e.dr, 0);
+      const opposite = v.entries.filter((e) => e.ledger !== ledger && (net > 0 ? e.dr < 0 : e.dr > 0));
+      opposite.sort((a, b) => Math.abs(b.dr) - Math.abs(a.dr));
+      return { date: v.date, type: v.type, no: v.no, debit: net > 0 ? net : 0, credit: net < 0 ? -net : 0, particulars: opposite[0]?.ledger, more: opposite.length - 1 };
+    });
+  const debit = rows.reduce((a, r) => a + r.debit, 0);
+  const credit = rows.reduce((a, r) => a + r.credit, 0);
+  const closingNatural = openingNatural + debit - credit;
+  const zero = (n) => (Math.abs(n) < 0.005 ? 0 : n);
+  return { opening: zero(-openingNatural), closing: zero(-closingNatural), debit, credit, rows };
+}
+
+/** Last voucher date per ledger of company C within [from, to]. */
+export function expectedLastC(today, from, to) {
+  const out = {};
+  for (const v of buildCompanyC(today).vouchers) {
+    if (v.date < from || v.date > to) continue;
+    for (const e of v.entries) if (!out[e.ledger] || v.date > out[e.ledger]) out[e.ledger] = v.date;
+  }
+  return out;
 }
 
 /** Expected figures of company C for [from, to] (natural signs: assets
