@@ -242,6 +242,9 @@ function call(method, route, body) {
   const okChecks = (hc.checks || []).filter((c) => ["ocr", "disk"].includes(c.key) && c.ok).length;
   report(okChecks === 2, "health check: offline OCR engine and document folder OK", (hc.checks || []).filter((c) => ["ocr", "disk"].includes(c.key)).map((c) => `${c.key}: ${c.detail}`).join(" | ").slice(0, 300));
 
+  // ---- D. supply sets on synthetic look-alikes (not real documents) ----
+  await supplySetChecks();
+
   // ---- C. the app server: OCR scanner API on a phone photo ----
   await scannerCheck();
 
@@ -260,6 +263,113 @@ function call(method, route, body) {
   await call("POST", "/disconnect", { forget: true });
   finish();
 })();
+
+/**
+ * Supply sets built from synthetic look-alike papers (tools/smoke/syn_*,
+ * made by make_set_fixtures.py — no real document is in the repository):
+ * trading set via BDC/<our>/<vendor code>/<vendor no>, a merged vendor PDF
+ * split page-wise, Bill T joined through the LR number on OUR invoice, a
+ * Rewari manufacturing set with its weight slip, the Gangakhed 400–500 kg
+ * tolerance, a screenshot in a sales chat and a chat set to Ignore both
+ * skipped with a reason, and Verify & finalise freezing a set.
+ */
+async function supplySetChecks() {
+  const SALES2 = "120363000000000002@g.us";
+  const IGN = "120363000000000003@g.us";
+  const r0 = await call("POST", "/chats", { chatPurposes: { [SALES2]: "sales", [IGN]: "ignore" } });
+  const purposes = (r0.json && r0.json.chatPurposes) || {};
+  report(purposes[SALES2] === "sales" && purposes[IGN] === "ignore" && purposes["120363000000000001@g.us"] === "sales",
+    "chat purposes saved (Sales / Ignore); a chat chosen the old way counts as Sales", JSON.stringify(purposes).slice(0, 200));
+
+  const b64 = (f) => fs.readFileSync(path.join(__dirname, f)).toString("base64");
+  const before = (await call("GET", "/status")).json?.diag || {};
+  const sendTo = (chat, id, f, fromMe, extra = {}) => {
+    const pdf = /\.pdf$/i.test(f);
+    return call("POST", "/test/web-message", { id, chat, fromMe, author: fromMe ? undefined : "919800000009@c.us", type: pdf ? "document" : "image", mimetype: pdf ? "application/pdf" : "image/jpeg", filename: pdf ? f : undefined, base64: b64(f), sender: fromMe ? "Biome Accounts" : "Coordinator", ...extra });
+  };
+  const idle = async (minMore) => {
+    let quiet = 0;
+    for (let i = 0; i < 150; i++) {
+      await sleep(2000);
+      const st = (await call("GET", "/status")).json || {};
+      const d = st.diag || {};
+      const done = (d.processed || 0) + (d.failed || 0) >= (before.processed || 0) + (before.failed || 0) + minMore;
+      quiet = !st.processing && !st.queueDepth ? quiet + 1 : 0;
+      if (done && quiet >= 2) return;
+    }
+  };
+  // Vendor papers and plant slips first, then our invoices — the order they really arrive in.
+  await sendTo(SALES2, "SYNV1", "syn_vendor_merged_mhi61.pdf", false);
+  await sendTo(SALES2, "SYNR1", "syn_rew_slip_960.pdf", false);
+  await sendTo(SALES2, "SYNG1", "syn_gkd_slip_71.pdf", false);
+  await sendTo(SALES2, "SYNS1", "syn_chat_screenshot.jpg", false);
+  await sendTo(IGN, "SYNI1", "syn_our_invoice_rew960.pdf", false);
+  await sendTo(SALES2, "SYNO1", "syn_our_invoice_951.pdf", true);
+  await sendTo(SALES2, "SYNO2", "syn_our_invoice_rew960.pdf", true);
+  await sendTo(SALES2, "SYNO3", "syn_our_challan_gkd71.pdf", true);
+  await idle(7);
+  await call("POST", "/staged/sweep");
+
+  const docs = ((await call("GET", "/documents?limit=1000")).json || {}).documents || [];
+  const sets = ((await call("GET", "/sets")).json || {}).sets || [];
+  const setOf = (ref) => sets.find((s) => s.reference === ref);
+  const types = (s) => (s ? s.documents.map((d) => d.extracted?.documentType).sort() : []);
+  const trading = setOf("BDC/951/MHI/61");
+  const tt = types(trading);
+  report(Boolean(trading) && ["vendor_tax_invoice", "vendor_eway_bill", "biome_tax_invoice", "biome_eway_bill"].every((t) => tt.includes(t)),
+    "trading set via BDC/951/MHI/61: vendor invoice + vendor e-way + our invoice + our e-way", trading ? tt.join(", ") : sets.map((s) => s.reference).join(", "));
+  const parts = docs.filter((d) => /^doc-SYNV1_p/.test(d.id));
+  report(parts.length === 3 && parts.every((d) => d.reference?.canonical === "BDC/951/MHI/61"),
+    "merged vendor PDF split page-wise; every page joins its set", parts.map((d) => `${d.id.replace("doc-SYNV1_", "")}:${d.extracted?.documentType}→${d.reference?.canonical || d.bucket}`).join(", ") || "not split");
+  const billT = parts.find((d) => d.extracted?.documentType === "bilty_lr");
+  report(Boolean(billT) && billT.reference?.canonical === "BDC/951/MHI/61",
+    "Bill T (blank, LR 77) joins through the LR number on OUR invoice", billT ? `${billT.reference?.canonical || billT.bucket} · ${(billT.autoFiledReasons || [billT.needsCheckReason || ""]).join("; ").slice(0, 160)}` : "no Bill T page");
+  const rew = setOf("BDC/960/REW/960");
+  const rewSlip = docs.find((d) => d.id === "doc-SYNR1") || {};
+  report(Boolean(rew) && rewSlip.reference?.canonical === "BDC/960/REW/960" && !rewSlip.needsCheck,
+    "REW manufacturing set: plant weight slip matched by vehicle + weight", `${rew ? types(rew).join(", ") : "no set"} · slip → ${rewSlip.reference?.canonical || rewSlip.bucket || "?"}`);
+  const gkd = setOf("BDC/71/GKD/71");
+  const gkdSlip = docs.find((d) => d.id === "doc-SYNG1") || {};
+  const gkdWeight = gkd && (gkd.checks || []).find((c) => c.key === "weight");
+  report(Boolean(gkd) && gkdSlip.reference?.canonical === "BDC/71/GKD/71" && gkdWeight && gkdWeight.ok === true,
+    "GKD set: slip 450 kg under our challan accepted (400–500 kg rule)", `${gkdSlip.reference?.canonical || gkdSlip.bucket || "?"} · ${gkdWeight ? `${gkdWeight.ok} ${gkdWeight.detail}` : "no weight check"}`.slice(0, 240));
+  const ourInv = docs.find((d) => /^doc-SYNO1/.test(d.id) && d.extracted?.documentType === "biome_tax_invoice") || {};
+  report(/^August-2026[\\/]Jhajjar Power Limited[\\/]03-08-2026[\\/]BDC_951_MHI_61 - /.test(ourInv.relativePath || ""),
+    "folder layout Month / Client / our document date, names prefixed with the reference", ourInv.relativePath || "not filed");
+  const shot = docs.find((d) => d.id === "doc-SYNS1") || {};
+  const skipped = ((await call("GET", "/skipped")).json || {}).items || [];
+  report(shot.bucket !== "filed" && Boolean(shot.skipReason) && skipped.some((s) => s.id === "doc-SYNS1"),
+    "screenshot in a sales chat skipped with a reason", `${shot.bucket || "?"}: ${shot.skipReason || "no reason"}`);
+  report(!docs.some((d) => /^doc-SYNI1/.test(d.id)) && skipped.some((s) => s.chatJid === IGN && /Ignore/.test(s.reason)),
+    "document in a chat whose purpose is Ignore is not saved, and listed as skipped", skipped.filter((s) => s.chatJid === IGN).map((s) => s.reason).join(" | ") || "not listed");
+
+  // Verify & finalise → frozen.
+  const by = { id: "smoke", name: "Smoke Coordinator", role: "coordinator" };
+  const noNote = trading && trading.status !== "ready" ? await call("POST", "/sets/finalise", { reference: "BDC/951/MHI/61", by }) : { status: 400 };
+  const fin = await call("POST", "/sets/finalise", { reference: "BDC/951/MHI/61", by, note: "Smoke test: papers checked by hand" });
+  const vInv = parts.find((d) => d.extracted?.documentType === "vendor_tax_invoice");
+  const moveOut = vInv ? await call("POST", "/classify", { id: vInv.id, referenceNo: "BDC/960/REW/960" }) : { status: 0 };
+  const del = vInv ? await call("DELETE", "/documents", { ids: [vInv.id] }) : { status: 0 };
+  const countBefore = (setOf("BDC/951/MHI/61") || { documents: [] }).documents.length;
+  const b2 = (await call("GET", "/status")).json?.diag || {};
+  await sendTo(SALES2, "SYNL1", "syn_late_eway_mhi61.pdf", false);
+  for (let i = 0; i < 60; i++) {
+    await sleep(2000);
+    const st = (await call("GET", "/status")).json || {};
+    if ((st.diag?.processed || 0) + (st.diag?.failed || 0) > (b2.processed || 0) + (b2.failed || 0) && !st.processing && !st.queueDepth) break;
+  }
+  await call("POST", "/staged/sweep");
+  const after = ((await call("GET", "/sets")).json || {}).sets || [];
+  const frozen = after.find((s) => s.reference === "BDC/951/MHI/61");
+  const late = (((await call("GET", "/documents?limit=1000")).json || {}).documents || []).find((d) => d.id === "doc-SYNL1") || {};
+  report(noNote.status === 400 && fin.status === 200 && frozen && frozen.status === "final" && moveOut.status === 409 && del.status === 409 &&
+    frozen.documents.length === countBefore && late.bucket !== "filed" && late.reference?.canonical !== "BDC/951/MHI/61",
+    "Verify & finalise freezes the set (no auto additions, papers cannot be moved or removed)",
+    `final=${frozen && frozen.status} note-required=${noNote.status} move=${moveOut.status} delete=${del.status} docs ${countBefore}→${frozen ? frozen.documents.length : "?"} late paper → ${late.bucket || "?"}${late.needsCheck ? " (Needs check)" : ""}`);
+  const re1 = await call("POST", "/sets/reopen", { reference: "BDC/951/MHI/61", by });
+  const re2 = await call("POST", "/sets/reopen", { reference: "BDC/951/MHI/61", by, reason: "Smoke: reopen check" });
+  report(re1.status === 400 && re2.status === 200, "reopening a final set needs a reason", `${re1.status}/${re2.status}`);
+}
 
 /**
  * Start the packaged app's Next server (Electron's Node, as the installed

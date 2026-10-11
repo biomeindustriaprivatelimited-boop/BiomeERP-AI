@@ -1691,7 +1691,7 @@ function sweepStaged({ logFn = log } = {}) {
       if (best.set.final) {
         if (pass === 0) {
           waitingOnFinal += 1;
-          store.update(entry.id, { matchNote: `Belongs to ${best.key}, which is FINAL — reopen that set to add it.` });
+          store.update(entry.id, { matchNote: `Belongs to ${best.key}, which is FINAL — reopen that set to add it.`, needsCheck: true, heldForFinal: best.key, needsCheckReason: `Matches ${best.key}, which was already verified and made final — not added automatically. Reopen that set to add it, or move it elsewhere.` });
         }
         continue;
       }
