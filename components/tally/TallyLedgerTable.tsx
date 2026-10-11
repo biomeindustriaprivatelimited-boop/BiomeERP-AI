@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { Search, Loader2, AlertCircle, FileSpreadsheet, RefreshCw, LucideIcon } from "lucide-react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { Search, Loader2, AlertCircle, FileSpreadsheet, RefreshCw, LucideIcon, ScrollText } from "lucide-react";
 import GlassCard from "@/components/GlassCard";
 import PremiumButton from "@/components/ui/PremiumButton";
 import { getTallySettings } from "@/lib/preferences";
@@ -11,6 +13,7 @@ import { downloadExcelWorkbook, formatINR } from "@/lib/reconciliation";
 import { postTallyStream } from "@/lib/tallyClient";
 import { useTallyPeriod, type ResolvedPeriod, type TallyProgressInfo } from "@/lib/tallyPeriod";
 import TallyPeriodBar from "@/components/tally/TallyPeriodBar";
+import { useTallyLastEntries, prettyIso } from "@/lib/useTallyLastEntries";
 
 interface Props {
   title: string;
@@ -82,6 +85,16 @@ export default function TallyLedgerTable({ title, description, icon: Icon, group
     return () => abortRef.current?.abort();
   }, [fetchLedgers]);
 
+  // Last voucher date per ledger — read after the balances are shown.
+  const router = useRouter();
+  const lastEntries = useTallyLastEntries({ fromDate, toDate, scope: "ledgers", enabled: Boolean(ledgers) });
+  const lastOf = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const [k, v] of Object.entries(lastEntries.data?.ledgers || {})) m.set(k.trim().toLowerCase(), v);
+    return m;
+  }, [lastEntries.data]);
+  const statementHref = (name: string) => `/ledgers/statement?ledger=${encodeURIComponent(name)}`;
+
   const openingHead = period?.openingOn ? `Opening (${period.openingOn})` : "Opening Balance";
   const closingHead = period?.asOn ? `Closing (as on ${period.asOn})` : "Closing Balance";
 
@@ -122,6 +135,7 @@ export default function TallyLedgerTable({ title, description, icon: Icon, group
           [l.movement ? "Movement in period" : closingHead]: Math.abs(l.closingBalance),
           "Closing Dr/Cr": drCr(l.closingBalance),
           "Closing is": l.movement ? "movement in the period" : `balance as on ${period?.asOn ?? ""}`,
+          "Last entry": prettyIso(lastOf.get(l.name.trim().toLowerCase())),
         })),
       },
       `${title.toLowerCase().replace(/\s+/g, "-")}.xlsx`
@@ -164,7 +178,7 @@ export default function TallyLedgerTable({ title, description, icon: Icon, group
               className="flex-1 bg-transparent text-xs text-biome-text outline-none placeholder:text-biome-muted/60"
             />
           </div>
-          <PremiumButton variant="ghost" onClick={() => fetchLedgers(true)} disabled={loading}>
+          <PremiumButton variant="ghost" onClick={() => { lastEntries.markFresh(); fetchLedgers(true); }} disabled={loading}>
             {loading ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
             Refresh from Tally
           </PremiumButton>
@@ -181,7 +195,10 @@ export default function TallyLedgerTable({ title, description, icon: Icon, group
         {period && ledgers && (
           <p className="mb-3 text-[11px] text-biome-muted">
             Balance-sheet ledgers (cash, bank, parties, taxes): closing balance as on {period.asOn}. Sales, purchase,
-            expense and income ledgers: movement within {period.label}.
+            expense and income ledgers: movement within {period.label}. &quot;Last entry&quot; is the date of the last
+            voucher on the ledger in this period{lastEntries.loading ? " (reading…)" : ""}. Click a ledger to open its statement.
+            {lastEntries.error ? ` Last-entry dates: ${lastEntries.error}` : ""}
+            {lastEntries.data?.error ? ` ${lastEntries.data.error}` : ""}
           </p>
         )}
 
@@ -210,6 +227,9 @@ export default function TallyLedgerTable({ title, description, icon: Icon, group
                     <th className="px-3 py-2 font-medium">Group</th>
                     <th className="px-3 py-2 text-right font-medium">{openingHead}</th>
                     <th className="px-3 py-2 text-right font-medium">{closingHead}</th>
+                    <th className="px-3 py-2 text-right font-medium" title="Date of the last voucher on this ledger within the period">
+                      Last entry
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -219,9 +239,20 @@ export default function TallyLedgerTable({ title, description, icon: Icon, group
                       initial={{ opacity: 0 }}
                       animate={{ opacity: 1 }}
                       transition={{ delay: Math.min(i * 0.01, 0.3) }}
-                      className="border-t border-biome-line/60"
+                      className="cursor-pointer border-t border-biome-line/60 hover:bg-biome-hover/60"
+                      onClick={() => router.push(statementHref(l.name))}
+                      title="Open this ledger's statement"
                     >
-                      <td className="px-3 py-2 text-biome-text">{l.name}</td>
+                      <td className="px-3 py-2 text-biome-text">
+                        <Link
+                          href={statementHref(l.name)}
+                          onClick={(e) => e.stopPropagation()}
+                          className="inline-flex items-center gap-1.5 hover:text-biome-leafBright hover:underline"
+                        >
+                          <ScrollText size={11} className="shrink-0 text-biome-muted" />
+                          {l.name}
+                        </Link>
+                      </td>
                       <td className="px-3 py-2 text-biome-muted">
                         {l.group ?? "—"}
                         {l.reservedGroup && l.reservedGroup !== l.group && (
@@ -236,6 +267,15 @@ export default function TallyLedgerTable({ title, description, icon: Icon, group
                         {l.movement && (
                           <span className="block text-[9.5px] font-normal text-biome-muted">movement in period</span>
                         )}
+                      </td>
+                      <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums text-biome-muted" data-testid="ledger-last-entry">
+                        {lastOf.get(l.name.trim().toLowerCase())
+                          ? prettyIso(lastOf.get(l.name.trim().toLowerCase()))
+                          : lastEntries.loading
+                            ? "…"
+                            : lastEntries.data
+                              ? "—"
+                              : ""}
                       </td>
                     </motion.tr>
                   ))}

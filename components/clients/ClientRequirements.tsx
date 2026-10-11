@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import GlassCard from "@/components/GlassCard";
 import PremiumButton from "@/components/ui/PremiumButton";
+import TallyLedgerLink from "@/components/tally/TallyLedgerLink";
 import { useNotifications } from "@/lib/notifications";
 import { type Client, REQUIREMENTS, REQUIREMENT_KEYS } from "@/lib/whatsapp";
 
@@ -165,6 +166,7 @@ export default function ClientRequirements() {
                       <PremiumButton variant="ghost" onClick={() => remove(c.name)}>
                         <Trash2 size={13} /> Remove
                       </PremiumButton>
+                      <TallyLedgerLink name={c.name} className="self-center px-1" />
                     </div>
                   </div>
                 </motion.div>

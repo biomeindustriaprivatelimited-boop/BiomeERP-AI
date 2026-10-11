@@ -8,6 +8,7 @@ import {
 import FormPanel, { FormSection } from "@/components/FormPanel";
 import DevEditedChip from "@/components/DevEditedChip";
 import { EmptyState } from "@/components/SetupGuide";
+import TallyLedgerLink from "@/components/tally/TallyLedgerLink";
 
 /**
  * Biomass vendor and transporter registration.
@@ -383,6 +384,8 @@ export default function PartnersPage() {
                     {p.material && ` · ${p.material}`}
                     {p.supplies && p.supplies.length > 0 && ` · handles: ${p.supplies.map((x) => (data?.supplyCategories || []).find((c: any) => c.id === x)?.label || x).join(", ")}`}
                     {` · ${p.documents.length} document${p.documents.length === 1 ? "" : "s"}`}
+                    {" · "}
+                    <TallyLedgerLink name={p.name} />
                   </p>
                   {(p.gaps.missing.length > 0 || p.gaps.missingFields.length > 0) && (
                     <div className="bmx-attn mt-2 flex flex-wrap items-center gap-1.5 rounded-xl border border-rose-500/30 bg-rose-500/[.07] px-2.5 py-1.5">
