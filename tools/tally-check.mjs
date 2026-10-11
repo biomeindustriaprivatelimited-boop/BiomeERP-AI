@@ -238,6 +238,16 @@ async function main() {
   ];
   if (app) faults.push({ kind: "ledgers", to: `${fyY - 1}-03-31`, times: 1, how: "slow", delayMs: 4500 }); // slower than the time limit once
   const mock3 = await startMockTally({ port: M3, companies: [F.COMPANY_C], bridge: true, today, faults });
+  // Last-entry dates and ledger statements: NO bridge TDL loaded (they use
+  // inline-TDL collections), one month of company C never answers.
+  const M4 = 9915;
+  const mock4 = await startMockTally({
+    port: M4,
+    companies: [F.COMPANY_A, F.COMPANY_C],
+    bridge: false,
+    today,
+    faults: [{ kind: "voucher-collection", from: `${fyY - 2}-07-01`, times: Infinity, how: "http" }],
+  });
 
   try {
     // ---- log in ----
@@ -476,7 +486,140 @@ async function main() {
     check("progress lines before the result", lines.filter((l) => l.type === "progress").length >= 5, true);
     check("progress names the FY being read", lines.some((l) => l.type === "progress" && /balances 01-Apr-/.test(l.label || "")), true);
     check("result line", [last.type, last.status, last.body?.summary?.sales], ["result", 200, Ebk.sales]);
+
+    /* ---------------- Last entry dates ---------------- */
+    const A4 = { host: "127.0.0.1", port: M4, company: F.COMPANY_A };
+    const C4 = { host: "127.0.0.1", port: M4, company: F.COMPANY_C };
+    const vcoll = (from = 0) => mock4.log.slice(from).filter((x) => /<TYPE>Voucher<\/TYPE>/i.test(x));
+    const curA = F.buildCompanyA(today).dates.cur;
+
+    group("Last entry dates — company A, FY till today (no bridge TDL needed)");
+    let m4 = mock4.log.length;
+    const le = await post("/api/tally/last-entries", A4);
+    check("HTTP status", le.status, 200);
+    for (const [k, v] of Object.entries(F.expectedLastA(today))) check(`last entry: ${k}`, le.json.kpis?.[k], v);
+    check("post-dated APCPL invoice is not the last entry", le.json.ledgers?.["APCPL"], curA(45));
+    check("Electricity Payable dated, but not counted in payables", le.json.ledgers?.["Electricity Payable"], curA(30));
+    check("all months read", le.json.complete, true);
+    const leReq = vcoll(m4)[0] || "";
+    const monthStart = `${todayIso.slice(0, 7)}-01` < fyFrom ? fyFrom : `${todayIso.slice(0, 7)}-01`;
+    check("voucher request carries the month's dates", leReq.includes(`<SVFROMDATE TYPE="Date">${monthStart.replace(/-/g, "")}</SVFROMDATE>`), true);
+    check("voucher request filters cancelled/optional and the period", /NOT \$IsCancelled AND NOT \$IsOptional/.test(leReq) && leReq.includes("##SVFromDate"), true);
+    check("read newest month first", (/<SVTODATE TYPE="Date">(\d{8})</.exec(leReq) || [])[1], todayIso.replace(/-/g, ""));
+
+    group("Last entry dates — summary stops as soon as every KPI has a date (company C, this FY)");
+    const cFy = `${fyY}-04-01`;
+    // How many months (newest first) until cash, bank, debtors, creditors,
+    // sales, purchases and expenses all have a voucher.
+    const MONTH_ENDS = [];
+    {
+      let d = todayIso;
+      while (d >= cFy) {
+        const first = `${d.slice(0, 7)}-01`;
+        MONTH_ENDS.push([first < cFy ? cFy : first, d]);
+        const p = new Date(`${first}T00:00:00`);
+        p.setDate(p.getDate() - 1);
+        d = F.isoDate(p);
+      }
+    }
+    const needLedgers = ["Cash C", "Bank C", "Customer C", "Vendor C", "Sales C", "Purchase C", "Office Exp C"];
+    let needMonths = 0;
+    {
+      const seen = new Set();
+      for (const [f, t] of MONTH_ENDS) {
+        needMonths += 1;
+        Object.keys(F.expectedLastC(today, f, t)).forEach((n) => seen.add(n));
+        if (needLedgers.every((n) => seen.has(n))) break;
+      }
+    }
+    m4 = mock4.log.length;
+    const lec = await post("/api/tally/last-entries", { ...C4, fromDate: cFy, toDate: todayIso });
+    const lastC = F.expectedLastC(today, cFy, todayIso);
+    check("receivables last entry", lec.json.kpis?.receivables, lastC["Customer C"] ?? null);
+    check("sales last entry", lec.json.kpis?.sales, lastC["Sales C"] ?? null);
+    check("cash last entry", lec.json.kpis?.cashInHand, lastC["Cash C"] ?? null);
+    check("no OD / tax ledgers -> no date", [lec.json.kpis?.bankOverdraft, lec.json.kpis?.taxLiability], [null, null]);
+    check(`only ${needMonths} month(s) asked for`, vcoll(m4).length, needMonths);
+
+    group("Last entry dates — every ledger, Last FY (Ledgers page), cached when closed");
+    const lfFrom4 = `${fyY - 1}-04-01`;
+    const lfTo4 = `${fyY}-03-31`;
+    m4 = mock4.log.length;
+    const lel = await post("/api/tally/last-entries", { ...C4, fromDate: lfFrom4, toDate: lfTo4, scope: "ledgers" });
+    const sortObj = (o) => Object.fromEntries(Object.entries(o || {}).sort((a, b) => a[0].localeCompare(b[0])));
+    check("last date of every ledger", sortObj(lel.json.ledgers), sortObj(F.expectedLastC(today, lfFrom4, lfTo4)));
+    check("12 monthly pieces", [lel.json.chunks?.total, vcoll(m4).length], [12, 12]);
+    m4 = mock4.log.length;
+    const lel2 = await post("/api/tally/last-entries", { ...C4, fromDate: lfFrom4, toDate: lfTo4, scope: "ledgers" });
+    check("closed year from the cache (no voucher re-read)", [vcoll(m4).length, lel2.json.chunks?.cached], [0, 12]);
+    const deadLe = await post("/api/tally/last-entries", { host: "127.0.0.1", port: DEAD, company: F.COMPANY_A });
+    check("Tally not running -> error, no dates", [deadLe.status, deadLe.json.code, deadLe.json.kpis], [502, "unreachable", undefined]);
+
+    /* ---------------- Ledger statement ---------------- */
+    group("Ledger statement — Customer C, Last FY (Sales, Receipt, 3-line Journal)");
+    m4 = mock4.log.length;
+    const st = await post("/api/tally/ledger-statement", { ...C4, ledger: "Customer C", fromDate: lfFrom4, toDate: lfTo4 });
+    const Est = F.expectedStatementC(today, "Customer C", lfFrom4, lfTo4);
+    check("HTTP status", st.status, 200);
+    check("opening (as at 1 April, Dr negative)", st.json.opening, Est.opening);
+    check("total debit", st.json.totals?.debit, Est.debit);
+    check("total credit", st.json.totals?.credit, Est.credit);
+    check("voucher count", st.json.totals?.count, Est.rows.length);
+    check("closing", st.json.closing, Est.closing);
+    check("closing agrees with Tally's own", [st.json.tallyClosing, st.json.mismatch], [Est.closing, null]);
+    check(
+      "rows: date, type, no., Dr, Cr, particulars (+more)",
+      (st.json.rows || []).map((r) => [r.date, r.voucherType, r.voucherNumber, r.debit, r.credit, r.particulars, r.moreParticulars]),
+      Est.rows.map((r) => [r.date, r.type, r.no, r.debit, r.credit, r.particulars, r.more])
+    );
+    check("voucher types", [...new Set((st.json.rows || []).map((r) => r.voucherType))].sort(), ["Journal", "Receipt", "Sales"]);
+    const firstRow = (st.json.rows || [])[0] || {};
+    check("running balance after the first voucher", firstRow.balance, Est.opening - Est.rows[0].debit + Est.rows[0].credit);
+    check("running balance ends at closing", (st.json.rows || []).slice(-1)[0]?.balance, Est.closing);
+    const jv = (st.json.rows || []).find((r) => r.voucherType === "Journal") || {};
+    check("journal keeps all 3 lines for the expanded view", (jv.entries || []).length, 3);
+    check("group", [st.json.ledger?.group, st.json.ledger?.categoryLabel], ["Sundry Debtors", "Sundry Debtors"]);
+    const det = st.json.ledger?.details || {};
+    check("party details (TallyPrime 3 layout)", [det.gstin, det.state, det.pincode, (det.address || []).length, det.pan], ["27AAACN0255D1ZX", "Maharashtra", "441104", 2, "AAACN0255D"]);
+    check("company header from Tally", [st.json.companyProfile?.gstin, st.json.companyProfile?.state], ["06AAJCB1927H1ZS", "Haryana"]);
+    check("Tally filters the vouchers by the ledger", vcoll(m4).some((x) => x.includes("$LedgerName = &quot;Customer C&quot;")), true);
+    check("read month by month", [st.json.chunks?.total, vcoll(m4).length], [12, 12]);
+    m4 = mock4.log.length;
+    const stAgain = await post("/api/tally/ledger-statement", { ...C4, ledger: "customer c", fromDate: lfFrom4, toDate: lfTo4 });
+    check("name matched case-insensitively, closed months cached", [stAgain.json.ledger?.name, stAgain.json.closing, vcoll(m4).length], ["Customer C", Est.closing, 0]);
+
+    group("Ledger statement — Vendor C across 31 March (older ledger layout)");
+    const vFrom = `${fyY - 2}-11-15`;
+    const vTo = `${fyY - 1}-05-20`;
+    const Ev = F.expectedStatementC(today, "Vendor C", vFrom, vTo);
+    const sv4 = await post("/api/tally/ledger-statement", { ...C4, ledger: "Vendor C", fromDate: vFrom, toDate: vTo });
+    check("opening as at From (Cr positive)", sv4.json.opening, Ev.opening);
+    check("closing / Tally closing", [sv4.json.closing, sv4.json.tallyClosing, sv4.json.mismatch], [Ev.closing, Ev.closing, null]);
+    check("purchase vouchers only, contra Purchase C", [...new Set((sv4.json.rows || []).map((r) => `${r.voucherType}:${r.particulars}`))], ["Purchase:Purchase C"]);
+    check("party details (flat layout)", [sv4.json.ledger?.details?.gstin, sv4.json.ledger?.details?.state], ["06ABCDE1234F1Z5", "Haryana"]);
+
+    group("Ledger statement — Sales C mid-year (P&L ledger: opening = movement since 1 April)");
+    const pFrom = `${fyY - 1}-06-01`;
+    const pTo = `${fyY - 1}-09-30`;
+    const Ep = F.expectedStatementC(today, "Sales C", pFrom, pTo);
+    const sp = await post("/api/tally/ledger-statement", { ...C4, ledger: "Sales C", fromDate: pFrom, toDate: pTo });
+    check("opening = Apr+May sales (Cr)", sp.json.opening, Ep.opening);
+    check("closing agrees with Tally", [sp.json.closing, sp.json.tallyClosing, sp.json.mismatch], [Ep.closing, Ep.closing, null]);
+    check("P&L flag", sp.json.ledger?.profitAndLoss, true);
+
+    group("Ledger statement — picker list and errors");
+    const lst = await post("/api/tally/ledger-statement", { ...C4, list: true });
+    check("list has every ledger with its Tally group", (lst.json.ledgers || []).find((l) => l.name === "Customer C")?.categoryLabel, "Sundry Debtors");
+    const nf = await post("/api/tally/ledger-statement", { ...C4, ledger: "No Such Party" });
+    check("unknown ledger -> 404 with a clear message", [nf.status, /no ledger named/i.test(nf.json.error || "")], [404, true]);
+    const noLed = await post("/api/tally/ledger-statement", { ...C4 });
+    check("no ledger picked -> 400", noLed.status, 400);
+    const badMonth = await post("/api/tally/ledger-statement", { ...C4, ledger: "Bank C", fromDate: `${fyY - 2}-04-01`, toDate: `${fyY - 2}-09-30` });
+    check("a month Tally never answers -> error naming it, no rows", [badMonth.status >= 500, String(badMonth.json.error || "").includes(`Jul-${fyY - 2}`), badMonth.json.rows], [true, true, undefined]);
+    const deadSt = await post("/api/tally/ledger-statement", { host: "127.0.0.1", port: DEAD, company: F.COMPANY_C, ledger: "Customer C" });
+    check("Tally not running -> 502", [deadSt.status, deadSt.json.code], [502, "unreachable"]);
   } finally {
+    await mock4.close();
     await mock3.close();
     await mock1.close();
     await mock2.close();
