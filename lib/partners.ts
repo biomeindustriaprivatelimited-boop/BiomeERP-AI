@@ -301,6 +301,80 @@ export interface Partner {
   requirementsUpdatedBy?: string;
   /** Set once the old client-master entry was merged into this record. */
   clientMasterMerged?: boolean;
+
+  /* ---- Who handles this vendor / client (every kind) ---------------
+   * A person from the coordinator team, the boss himself, the plant
+   * manager, a procurement person… The responsible person is normally a
+   * user of the app (responsibleUserId); for someone without a login (the
+   * director) only responsibleName is filled. Changed only with
+   * "partners.assign" (developer, admin, accounts) — never through an
+   * ordinary save — and every change is kept in responsibilityHistory. */
+  responsibleUserId?: string;
+  responsibleName?: string;
+  backupUserId?: string;
+  backupName?: string;
+  team?: ResponsibleTeam | "";
+  responsibilityUpdatedAt?: string;
+  responsibilityUpdatedBy?: string;
+  responsibilityHistory?: ResponsibilityEvent[];
+  /** Set when the code came from the owner's vendor code list import. */
+  codeImportedAt?: string;
+}
+
+export type ResponsibleTeam = "coordination" | "management" | "plant" | "procurement" | "accounts";
+
+export const RESPONSIBLE_TEAMS: { id: ResponsibleTeam; label: string }[] = [
+  { id: "coordination", label: "Coordination" },
+  { id: "management", label: "Management" },
+  { id: "plant", label: "Plant" },
+  { id: "procurement", label: "Procurement" },
+  { id: "accounts", label: "Accounts" },
+];
+
+export interface ResponsibilityEvent {
+  at: string;
+  byName: string;
+  /** "Name (team)" before and after, as text — readable even after a user is renamed or removed. */
+  from: string;
+  to: string;
+}
+
+/** The team a role naturally belongs to (default when nobody chose one). */
+export function teamForRole(role: string): ResponsibleTeam | "" {
+  if (role === "coordinator") return "coordination";
+  if (role === "plant_manager") return "plant";
+  if (role === "procurement") return "procurement";
+  if (role === "accounts") return "accounts";
+  return "";
+}
+
+/** One line describing who handles a record, for history and notices. */
+export function responsibilityLabel(p: Pick<Partner, "responsibleName" | "backupName" | "team">): string {
+  const team = RESPONSIBLE_TEAMS.find((t) => t.id === p.team)?.label || "";
+  const main = p.responsibleName || "nobody";
+  return `${main}${team ? ` (${team})` : ""}${p.backupName ? `, backup ${p.backupName}` : ""}`;
+}
+
+/**
+ * Codes held by more than one record in the same code space — the
+ * owner's list gives "SGE" to three vendors. Imported as given and
+ * flagged so the screen says so loudly until someone fixes it.
+ * Returns one entry per clashing code with the records holding it.
+ */
+export function duplicateCodes(partners: Partner[]): { code: string; category: VendorCategory; holders: { id: string; name: string }[] }[] {
+  const out: { code: string; category: VendorCategory; holders: { id: string; name: string }[] }[] = [];
+  const seen = new Set<string>();
+  const withCode = partners.filter((p) => p.code);
+  for (const p of withCode) {
+    const code = normaliseCode(p.code);
+    const same = withCode.filter((q) => normaliseCode(q.code) === code && sameCodeSpace(p, q));
+    if (same.length < 2) continue;
+    const key = same.map((q) => q.id).sort().join("|");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ code, category: p.category, holders: same.map((q) => ({ id: q.id, name: q.name })) });
+  }
+  return out.sort((a, b) => a.code.localeCompare(b.code));
 }
 
 /** Same shape as lib/whatsapp.ts PurchaseOrder (kept local: no cycle). */
@@ -329,6 +403,7 @@ const STRING_FIELDS = [
   "addressLine", "city", "state", "pincode", "bankName", "accountNumber", "ifsc",
   "rateTerms", "paymentTerms", "agreementFrom", "agreementTo", "statusReason", "notes",
   "registeredBy", "registeredByName",
+  "responsibleUserId", "responsibleName", "backupUserId", "backupName", "team",
 ] as const;
 
 export function loadPartners(): Partner[] {
@@ -360,6 +435,7 @@ export function loadPartners(): Partner[] {
       lockedAt: p.lockedAt || (legacyFrozen ? submittedAt : ""),
       lockedByName: p.lockedByName || (legacyFrozen ? "Auto-frozen (old 7-day rule)" : ""),
       lockHistory: Array.isArray(p.lockHistory) ? p.lockHistory : [],
+      responsibilityHistory: Array.isArray(p.responsibilityHistory) ? p.responsibilityHistory : [],
       // Older records (and ones written by other tools) may lack these —
       // every screen can then rely on the arrays being there.
       documents: Array.isArray(p.documents) ? p.documents : [],

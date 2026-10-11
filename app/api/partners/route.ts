@@ -3,14 +3,14 @@ import fs from "fs";
 import path from "path";
 import { NextRequest, NextResponse } from "next/server";
 import { paths } from "@/lib/dataRoot";
-import { requirePermission, findById } from "@/lib/authServer";
+import { requirePermission, findById, loadUsers } from "@/lib/authServer";
 import { hasPermission } from "@/lib/permissions";
 import { plantOptions } from "@/lib/plants";
 import {
   loadPartners, savePartners, blankPartner, gapsFor, partnersDir,
   documentTypesFor, partnerDocAllowed, gstinLooksRight, panLooksRight, ifscLooksRight,
   PARTNER_KINDS, PARTNER_STATUS, PARTNER_DOCUMENT_TYPES, VENDOR_CATEGORIES, SUPPLY_CATEGORIES,
-  freezeInfoFor, partnersVisibleTo, codeClash, normaliseCode, codeLooksRight, codeLabelFor, suggestNextCode,
+  freezeInfoFor, partnersVisibleTo, codeClash, duplicateCodes, RESPONSIBLE_TEAMS, teamForRole, normaliseCode, codeLooksRight, codeLabelFor, suggestNextCode,
   Partner, PartnerKind, PartnerStatus, PartnerDocument, VendorCategory, SupplyCategory,
 } from "@/lib/partners";
 import { devStamp } from "@/lib/devEdit";
@@ -154,7 +154,7 @@ export async function GET(req: NextRequest) {
   if (status && status !== "all") list = list.filter((p) => p.status === status);
   if (search) {
     list = list.filter((p) =>
-      [p.name, p.legalName, p.code, p.gstin, p.pan, p.city, p.contactPerson, p.phone, p.shortName || "", ...(p.aliases || [])]
+      [p.name, p.legalName, p.code, p.gstin, p.pan, p.city, p.contactPerson, p.phone, p.shortName || "", ...(p.aliases || []), p.responsibleName || "", p.backupName || ""]
         .join(" ").toLowerCase().includes(search)
     );
   }
@@ -197,6 +197,18 @@ export async function GET(req: NextRequest) {
     supplyCategories: SUPPLY_CATEGORIES,
     canActivate: hasPermission(user.role, "users") || hasPermission(user.role, "finance"),
     canUnlock: canOverrideFreeze(user.role),
+    // Responsible person / team. Everyone sees who handles what; only
+    // "partners.manage" (developer, admin, accounts) changes it.
+    me: user.id,
+    canManage: effectivePermissions(user.role, user.access).includes("partners.manage"),
+    teams: RESPONSIBLE_TEAMS,
+    people: loadUsers()
+      .filter((u) => u.active && !u.deleted)
+      .map((u) => ({ id: u.id, name: u.name, role: u.role, team: teamForRole(u.role) }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    // Codes held by more than one record (the owner's list gives SGE to
+    // three vendors) — flagged until someone fixes them.
+    duplicateCodes: duplicateCodes(scope),
   });
 }
 
@@ -257,6 +269,11 @@ export async function POST(req: NextRequest) {
     ...readPartner(body, auth.session.plant, user.role),
     category,
     ...(kind === "client" ? { clientMasterMerged: true } : {}),
+    // Whoever registers it handles it, until accounts / admin decide
+    // otherwise (only they may change it afterwards).
+    ...(teamForRole(user.role)
+      ? { responsibleUserId: user.id, responsibleName: user.name, team: teamForRole(user.role), responsibilityUpdatedAt: new Date().toISOString(), responsibilityUpdatedBy: user.name }
+      : {}),
     ...(reqs && kind === "client" && canEditRequirementsFor(user)
       ? { ...reqs, requirementsUpdatedAt: new Date().toISOString(), requirementsUpdatedBy: user.name }
       : {}),

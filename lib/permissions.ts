@@ -68,6 +68,10 @@ export type Permission =
   // because a coordinator holds "vendors" and must NOT hold this: a signed
   // rate card is not something the person chasing weight slips reads.
   | "partners"
+  // Registration — manage: choose who is responsible for each vendor /
+  // client (and bulk-assign), import the owner's vendor code and client
+  // lists. Developer, admin, accounts by role.
+  | "partners.manage"
   | "imprest.entry"    // file my own imprest
   | "imprest.view"     // see my own float
   | "imprest.approve"  // accept or reject entries put in front of you
@@ -127,6 +131,7 @@ const ALL: Permission[] = [
   "customers",
   "customers.requirements",
   "partners",
+  "partners.manage",
   "imprest.entry",
   "imprest.view",
   "imprest.approve",
@@ -197,6 +202,7 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "customers",
     "customers.requirements",
     "partners",
+    "partners.manage",
     "imprest.entry",
     "imprest.view",
     "imprest.approve",
@@ -596,6 +602,7 @@ export const PERMISSION_INFO: Record<string, { label: string; what: string; why:
   vendors: { label: "Vendors", what: "Vendor master, codes, balances.", why: "Coordinators and accounts.", risk: "medium" },
   customers: { label: "Clients", what: "Client master — view each client's document requirements, add clients and POs from coordination.", why: "Coordinators and accounts.", risk: "medium" },
   "customers.requirements": { label: "Clients — edit document requirements", what: "Change which documents each client requires and which need a DSC. Without it the requirements are view-only.", why: "Accounts, admin, developer.", risk: "medium" },
+  "partners.manage": { label: "Registration — manage", what: "Choose (and bulk-assign) the responsible person and team for each vendor / client, and import the owner's vendor code and client lists.", why: "Accounts, admin, developer.", risk: "medium" },
   partners: { label: "Registration", what: "Register vendors/transporters with KYC (plant managers: own site, raw material; coordinators: trading).", why: "Whoever onboards suppliers.", risk: "medium" },
   "employee.view": { label: "Employees", what: "Employee master and KYC files.", why: "HR/accounts and plant managers.", risk: "high" },
   "attendance.entry": { label: "Attendance & Leave", what: "Mark attendance and apply/decide leave. (Holiday announcements are admin/developer only.)", why: "Plant managers and accounts.", risk: "medium" },
