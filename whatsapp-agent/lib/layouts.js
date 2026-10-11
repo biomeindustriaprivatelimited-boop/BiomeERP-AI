@@ -249,7 +249,7 @@ const BILTY_WORDS = [
   /lorry\s*receipt/i, /consignment\s*note/i, /\bL\.?\s?R\.?\s*No/i, /\bG\.?\s?R\.?\s*No/i, /road\s?ways/i, /road\s?lines/i,
   /transport\s*(co\b|company|contractor|operator)/i, /logistics/i, /booking\s*(clerk|office|from)/i, /said\s*to\s*contain/i,
   /\bconsignor\b/i, /\bconsignee\b/i, /freight/i, /commission\s*(agent|bases)/i, /truck\s*(no|driver)/i, /at\s*owner'?s\s*risk/i,
-  /to\s*pay/i, /\bbilty\b/i, /fleet\s*owner/i,
+  /to\s*pay/i, /\bbilty\b/i, /fleet\s*owner/i, /\badvance\b/i, /\bbalance\b/i,
 ];
 const SLIP_WORDS = [
   /dhar[a]?m\s*-?\s*ka[n]?ta/i, /weigh\s*-?\s*bridge/i, /weighment/i, /\bkanta\b/i, /gross\s*(wt|weight|:)/i, /tare\s*(wt|weight|:)/i,
@@ -567,7 +567,11 @@ function readBilty(text) {
 function readWeightSlip(text) {
   const t = String(text || "");
   if (/T\s?A\s?X\s*I\s?N\s?V\s?O\s?[IL]\s?C\s?E/i.test(head(t, 300)) || isEwayPage(t) || isConsignmentTag(t)) return null;
-  const hits = countHits(t, SLIP_WORDS);
+  // Every weighbridge prints a date and time for the gross and the tare
+  // weighing — two stamps like "30/07/26,23:23" survive even when the
+  // dot-matrix words do not.
+  const stamps = (t.match(/\d{1,2}\s?[\/.-]\s?\d{1,2}\s?[\/.-]\s?\d{2,4}\s*[, ]?\s*(?:time\s*[:s]?\s*)?\d{1,2}\s?[:.]\s?\d{2}/gi) || []).length;
+  const hits = countHits(t, SLIP_WORDS) + (stamps >= 2 && /veh|vehicle|weight|wt|gross|tare|net|kg|ky/i.test(t) ? 2 : 0);
   if (hits < 2) return null;
   const biltyHits = countHits(t, BILTY_WORDS);
   if (biltyHits >= 3 && hits < 4) return null;

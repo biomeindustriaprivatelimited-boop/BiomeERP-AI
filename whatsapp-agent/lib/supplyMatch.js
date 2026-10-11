@@ -104,6 +104,7 @@ function profile(set) {
     arrivals: [],
     chats: new Set(),
     has: new Set(),
+    count: {},
     vendorNames: [],
   };
   const docs = set.docs || [];
@@ -122,6 +123,7 @@ function profile(set) {
     const e = d.extracted || {};
     const t = e.documentType || "";
     p.has.add(t);
+    p.count[t] = (p.count[t] || 0) + 1;
     if (d.bundleId) p.bundles.add(d.bundleId);
     if (d.receivedAt) p.arrivals.push({ at: new Date(d.receivedAt).getTime(), chat: d.sender?.chatJid || null, our: /^biome_/.test(t) });
     if (d.sender?.chatJid) p.chats.add(d.sender.chatJid);
@@ -233,7 +235,7 @@ function evaluate(doc, p) {
     // garbled photo: look for the set's vehicle and weight inside the text
     const text = doc.transcription || e.transcription || "";
     if (text && anyVehicle) {
-      const vHit = containsApprox(text, anyVehicle, 2);
+      const vHit = containsApprox(text, anyVehicle, 2) || loosePlate(text, anyVehicle);
       const kgHit = p.kg ? containsNumber(text, Math.round(p.kg - (p.plantAdjustmentKg ? 450 : 0)), 1) || containsNumber(text, Math.round(p.kg), 1) : false;
       if (vHit && kgHit) return { level: "sure", reasons: [`vehicle ${anyVehicle} and weight ${p.kg} kg read on the slip`] };
       if ((vehicleSame || vehicleNear || vHit) && dateOk && fits === null) return { level: "check", reasons: [`vehicle ${anyVehicle} on the slip, weight unreadable`] };
@@ -241,6 +243,16 @@ function evaluate(doc, p) {
     return { level: null, reasons };
   }
   return { level: null, reasons };
+}
+
+/** Dot-matrix "HROST7460" for HR66C7460: same state letters and the same last four digits on one token. */
+function loosePlate(text, plateNo) {
+  const p = String(plateNo || "");
+  const st = p.slice(0, 2);
+  const tail = p.slice(-4);
+  if (!/^[A-Z]{2}$/.test(st) || !/^\d{4}$/.test(tail)) return false;
+  const tokens = String(text || "").toUpperCase().match(/[A-Z0-9]{8,11}/g) || [];
+  return tokens.some((tk) => tk.startsWith(st) && tk.endsWith(tail));
 }
 
 function codeMatchesName(code, name, vendors) {
@@ -254,6 +266,18 @@ function codeMatchesName(code, name, vendors) {
 }
 
 const BURST_MS = 30 * 60 * 1000;
+
+/**
+ * A plant supply carries one Bill T and one weight slip; a trading supply
+ * at most two of each (the vendor's and ours). A set that already has
+ * them cannot take another — the same LR number on a second Bill T means
+ * another trip (Shiv Logistics "317" on HR0789 and HR0810).
+ */
+function full(p, t) {
+  if (t !== "bilty_lr" && t !== "weight_slip") return false;
+  const cap = p.supplyType === "manufacturing" ? 1 : 2;
+  return (p.count[t] || 0) >= cap;
+}
 
 function proximity(doc, p) {
   const at = new Date(doc.receivedAt || 0).getTime();
@@ -277,7 +301,9 @@ function bestSetFor(doc, sets, opts = {}) {
   const profiles = sets.map((s) => ({ set: s, p: s.__profile || profile(s) }));
   doc.__vendors = opts.vendors || [];
   const scored = [];
+  const t0 = doc.extracted?.documentType || "other";
   for (const { set, p } of profiles) {
+    if (full(p, t0)) continue;
     const r = evaluate(doc, p);
     if (r.level) scored.push({ set, p, ...r, dist: proximity(doc, p) });
   }
@@ -301,7 +327,7 @@ function bestSetFor(doc, sets, opts = {}) {
   if (doc.bundleId && opts.bundleHome && opts.bundleHome.has(doc.bundleId)) {
     const key = opts.bundleHome.get(doc.bundleId);
     const home = profiles.find((x) => x.p.key === key);
-    if (home) {
+    if (home && !full(home.p, t)) {
       const r = evaluate(doc, home.p);
       if (!r.conflict && !(home.p.supplyType === "manufacturing" && /^vendor_/.test(t))) {
         return { set: home.set, key, level: "sure", reasons: [`arrived in the same merged PDF as this supply's other papers`, ...r.reasons] };
@@ -312,11 +338,21 @@ function bestSetFor(doc, sets, opts = {}) {
   const check = pick(scored, "check");
   if (check) return check.ambiguous ? check : { set: check.set, key: check.p.key, level: "check", reasons: check.reasons };
 
-  // Last resort for blank papers (Bill T, weight slip): the burst.
-  if (["bilty_lr", "weight_slip"].includes(t)) {
+  // Last resort for blank papers (Bill T, weight slip): the burst. The
+  // coordinator posts a supply's papers first and OUR invoice for them
+  // right after, so only an invoice that arrived AFTER this paper (in the
+  // same chat, within 30 minutes) can claim it. A page of a merged PDF
+  // never uses this — it follows its sibling pages.
+  if (["bilty_lr", "weight_slip"].includes(t) && !doc.bundleId) {
+    const docAt = new Date(doc.receivedAt || 0).getTime();
+    const chat = doc.sender?.chatJid || null;
     const wanting = profiles
-      .filter(({ p }) => !p.final && !p.has.has(t) && p.arrivals.some((a) => a.our))
-      .map((x) => ({ ...x, dist: proximity(doc, x.p), r: evaluate(doc, x.p) }))
+      .filter(({ p }) => !p.final && !full(p, t) && !(p.supplyType === "trading" && p.has.has(t)))
+      .map((x) => {
+        const ours = x.p.arrivals.filter((a) => a.our && a.at >= docAt - 60000 && (!chat || !a.chat || a.chat === chat));
+        const dist = ours.length ? Math.min(...ours.map((a) => a.at - docAt)) : Infinity;
+        return { ...x, dist, r: evaluate(doc, x.p) };
+      })
       .filter((x) => x.dist <= BURST_MS && !x.r.conflict)
       .sort((a, b) => a.dist - b.dist);
     if (wanting.length === 1 || (wanting.length > 1 && wanting[1].dist >= 2 * wanting[0].dist + 60000)) {
@@ -325,7 +361,7 @@ function bestSetFor(doc, sets, opts = {}) {
         set: w.set,
         key: w.p.key,
         level: "check",
-        reasons: [`nothing printed to match on — sent ${Math.round(w.dist / 60000)} min from this supply's invoice, which has no ${t === "bilty_lr" ? "Bill T" : "weight slip"} yet`],
+        reasons: [`nothing printed to match on — sent ${Math.max(0, Math.round(w.dist / 60000))} min before this supply's invoice, which has no ${t === "bilty_lr" ? "Bill T" : "weight slip"} yet`],
       };
     }
   }

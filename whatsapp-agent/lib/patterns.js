@@ -214,7 +214,10 @@ function suggest({ fileName, senderName, transcription, vendorName }) {
 
   // Filename shape is the strongest signal — the same sender producing
   // the same shape almost always means the same document.
-  if (fileName) {
+  // WhatsApp's own photo names (photo-<id>.jpg, IMG-2026…-WA0012.jpg)
+  // say nothing about the paper — every photo shares that shape.
+  const autoName = /^(photo-|img[-_]|whatsapp\s?(image|document)|image|docscanner|scan|cam\s?scanner)/i.test(String(fileName || "").trim()) || /\(page \d/i.test(String(fileName || ""));
+  if (fileName && !autoName) {
     const hit = best(p.fileNameShapes, fileNameShape(fileName));
     if (hit && hit.share >= 0.6) {
       addVote(hit.value, 40 * hit.share, `filenames shaped like this were ${hit.value.replace(/_/g, " ")} ${hit.count} time(s)`);
