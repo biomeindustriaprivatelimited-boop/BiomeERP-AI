@@ -656,6 +656,12 @@ function supplySets() {
     const ourDoc = set.documents.find((d) => /^biome_(tax_invoice|delivery_challan)$/.test(d.extracted?.documentType || ""));
     if (ourDoc?.extracted?.clientName) set.clientName = ourDoc.extracted.clientName;
     set.ourDocumentId = ourDoc ? ourDoc.id : null;
+    // The vendor is the one on the VENDOR's own papers; a plant supply has none.
+    if (/\/(REW|GKD)\//.test(set.reference)) set.vendorName = null;
+    else {
+      const vDoc = set.documents.find((d) => /^vendor_(tax_invoice|delivery_challan|eway_bill)$/.test(d.extracted?.documentType || "") && d.extracted?.vendorName);
+      if (vDoc) set.vendorName = vDoc.extracted.vendorName;
+    }
     const client = resolveClient(set.clientName, clients);
     set.clientMatched = Boolean(client);
     set.clientCanonicalName = client?.name || set.clientName || null;
