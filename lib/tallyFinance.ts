@@ -280,13 +280,13 @@ export function fromTallyDate(raw: string | null | undefined): string | null {
   return null;
 }
 
-interface StaticVars {
+export interface StaticVars {
   company?: string;
   from?: string;
   to?: string;
 }
 
-function staticVars(v: StaticVars): string {
+export function staticVars(v: StaticVars): string {
   return [
     `<SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>`,
     v.company ? `<SVCURRENTCOMPANY>${escapeXml(v.company)}</SVCURRENTCOMPANY>` : "",
@@ -775,7 +775,7 @@ export function monthChunks(from: string, to: string): { from: string; to: strin
   return out;
 }
 
-const monthName = (isoDate: string) => `${MON[Number(isoDate.slice(5, 7)) - 1]}-${isoDate.slice(0, 4)}`;
+export const monthName = (isoDate: string) => `${MON[Number(isoDate.slice(5, 7)) - 1]}-${isoDate.slice(0, 4)}`;
 
 /* ------------------------------------------------------------------ */
 /* Short-lived cache                                                   */
@@ -799,14 +799,14 @@ const tallyCache: Map<string, CacheEntry> =
   ((globalThis as any).__biomeTallyCache as Map<string, CacheEntry>) ||
   ((globalThis as any).__biomeTallyCache = new Map<string, CacheEntry>());
 
-function cacheKey(target: TallyRequestSettings, company: string, kind: string, from: string, to: string) {
+export function cacheKey(target: TallyRequestSettings, company: string, kind: string, from: string, to: string) {
   return [resolveTallyTarget(target).url, norm(company), kind, from, to].join("|");
 }
 /** True when `to` is before the first day of the current month. */
 export function isClosedPeriod(to: string, today: Date = new Date()): boolean {
   return to < `${iso(today).slice(0, 7)}-01`;
 }
-function cacheGet<T>(key: string, fresh?: boolean): T | undefined {
+export function cacheGet<T>(key: string, fresh?: boolean): T | undefined {
   if (fresh) return undefined;
   const hit = tallyCache.get(key);
   if (!hit) return undefined;
@@ -816,7 +816,7 @@ function cacheGet<T>(key: string, fresh?: boolean): T | undefined {
   }
   return hit.value as T;
 }
-function cachePut(key: string, value: unknown, ttl: number) {
+export function cachePut(key: string, value: unknown, ttl: number) {
   if (ttl <= 0) return;
   tallyCache.delete(key);
   tallyCache.set(key, { at: Date.now(), ttl, value });
@@ -827,7 +827,7 @@ function cachePut(key: string, value: unknown, ttl: number) {
   }
 }
 /** Cache time for a reading ending on `to` (0 = don't cache). */
-const ttlFor = (to: string, today?: Date) => (isClosedPeriod(to, today) ? TALLY_CLOSED_TTL_MS : 0);
+export const ttlFor = (to: string, today?: Date) => (isClosedPeriod(to, today) ? TALLY_CLOSED_TTL_MS : 0);
 /** For tests / "clear". */
 export function clearTallyCache() {
   tallyCache.clear();
@@ -841,7 +841,7 @@ export const TALLY_CHUNK_ATTEMPTS = 3;
 /** Time limit for ONE piece of a long read (a FY of balances, a month of
  *  vouchers) — generous, because a big month can take Tally a while.
  *  BIOME_TALLY_CHUNK_TIMEOUT_MS overrides it (tests, very slow servers). */
-function chunkTimeoutMs(fallback: number): number {
+export function chunkTimeoutMs(fallback: number): number {
   const env = Number(process.env.BIOME_TALLY_CHUNK_TIMEOUT_MS);
   return Number.isFinite(env) && env > 0 ? env : fallback;
 }
@@ -1061,7 +1061,7 @@ function chunkError(err: unknown, what: string, i: number, n: number): never {
 }
 
 /** One reading of every ledger's balance, SVFROMDATE..SVTODATE. */
-async function ledgerSnapshot(
+export async function ledgerSnapshot(
   target: TallyTargetOptions,
   company: string,
   svFrom: string,
@@ -1146,15 +1146,7 @@ export async function fetchTallyFinance(opts: TallyFinanceOptions): Promise<Tall
   progress({ phase: "balances", done: 0, total, label: "Reading the group list" });
   let groups: TallyGroupRow[] | null = null;
   try {
-    const gkey = cacheKey(opts, company.name, "groups", "", "");
-    groups = cacheGet<TallyGroupRow[]>(gkey, opts.fresh) ?? null;
-    if (!groups) {
-      const gxml = await postToTally(opts, buildGroupTreeRequest(company.name));
-      const err = tallyLineError(gxml);
-      if (err) throw new Error(err);
-      groups = parseGroups(gxml);
-      cachePut(gkey, groups, GROUPS_TTL_MS);
-    }
+    groups = await readGroupTree(opts, company.name, opts.fresh);
   } catch (e: any) {
     if (e instanceof TallyFetchError && (e.code === "unreachable" || e.code === "timeout")) throw e;
     warnings.push(
@@ -1250,6 +1242,25 @@ export async function fetchTallyFinance(opts: TallyFinanceOptions): Promise<Tall
     retried,
     fromCache: allCached,
   };
+}
+
+/** The company's group tree, kept for GROUPS_TTL_MS (structure, not
+ *  figures). Throws a TallyFetchError when Tally can't be reached and a
+ *  plain Error when Tally answers with an error line. */
+export async function readGroupTree(
+  target: TallyTargetOptions,
+  company: string,
+  fresh?: boolean
+): Promise<TallyGroupRow[]> {
+  const gkey = cacheKey(target, company, "groups", "", "");
+  const hit = cacheGet<TallyGroupRow[]>(gkey, fresh);
+  if (hit) return hit;
+  const gxml = await postToTally(target, buildGroupTreeRequest(company));
+  const err = tallyLineError(gxml);
+  if (err) throw new Error(err);
+  const groups = parseGroups(gxml);
+  cachePut(gkey, groups, GROUPS_TTL_MS);
+  return groups;
 }
 
 /** Which KPI groups the company has no ledgers in, for an honest "—". */
