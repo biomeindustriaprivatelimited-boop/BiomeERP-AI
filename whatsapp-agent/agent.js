@@ -3151,7 +3151,7 @@ const server = http.createServer(async (req, res) => {
             const c = settings();
             return c.watchAllChats
               ? ["(all chats)"]
-              : [...new Set([...c.allowedChats, ...c.receivingChats, ...c.labChats])].map((j) => knownChats.get(j)?.name || j);
+              : [...new Set([...c.allowedChats, ...c.receivingChats, ...c.labChats, ...Object.entries(effectivePurposes(c)).filter(([, p]) => p !== "ignore").map(([j]) => j)])].map((j) => knownChats.get(j)?.name || j);
           })(),
           autoProcess: settings().autoProcess,
           log: recentLog.slice(-60),
@@ -3251,6 +3251,8 @@ const server = http.createServer(async (req, res) => {
       const r = setState.reopen(ref, body.by || null, reason);
       if (!r.ok) return json(res, 409, { error: r.error });
       log(`supply set ${ref} REOPENED by ${body.by?.name || "?"}: ${reason}`);
+      // Frozen papers may now follow the current folder layout again.
+      try { const a = anchorDateFor(ref); if (a) reanchorReference(ref, a, log); } catch { /* stays where it is */ }
       return json(res, 200, { ok: true, state: r.state });
     }
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   CheckCircle2,
   CircleDashed,
@@ -138,6 +138,16 @@ export function VerifySection({ set, onChanged }: { set: SupplySet; onChanged?: 
   const fs = set.finalState;
   const problems = (set.checks || []).filter((c) => c.ok === false).length + set.missing.length + set.dscMissing.length + (set.clientMatched ? 0 : 1);
   const noteNeeded = open === "reopen" || status !== "ready";
+
+  // Escape closes the dialog.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !busy) setOpen(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, busy]);
 
   async function submit() {
     setBusy(true);

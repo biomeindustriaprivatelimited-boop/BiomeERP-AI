@@ -761,14 +761,27 @@ function consistencyChecks(set, ourDoc) {
   out.push({ key: "vehicle", label: "Same vehicle on every paper", ok: ourPlate ? badPlates.length === 0 : null, detail: badPlates.length ? `${ourPlate} on ours; ${badPlates.map((x) => `${x.p} on ${x.d.originalName}`).join(", ")}` : ourPlate || "Vehicle not readable on our document" });
   const ourKg = kgOf(o);
   const weighed = docs.filter((d) => ["vendor_tax_invoice", "weight_slip", "consignment_tag"].includes(d.extracted?.documentType) && kgOf(d.extracted));
-  const badKg = weighed.filter((d) => {
+  const strictBad = (d) => {
     const k = kgOf(d.extracted);
     const diff = ourKg - k;
-    if (photo(d) && (close1(ourKg, k) || (adj && (close1(ourKg - 400, k) || close1(ourKg - 500, k))))) return false;
     if (d.extracted.documentType === "weight_slip" && adj > 0) return !(diff >= -60 && diff <= adj + 150);
     return Math.abs(diff) > Math.max(60, ourKg * 0.01);
+  };
+  // A photo read one digit off (17765 read as 47765) is a likely misread, not a
+  // mismatch — but it is not a confirmed match either: shown as "check by eye".
+  const fuzzy = weighed.filter((d) => {
+    const k = kgOf(d.extracted);
+    return strictBad(d) && photo(d) && (close1(ourKg, k) || (adj && (close1(ourKg - 400, k) || close1(ourKg - 500, k))));
   });
-  out.push({ key: "weight", label: "Weights agree", ok: ourKg && weighed.length ? badKg.length === 0 : null, detail: ourKg ? `${ourKg} kg on ours${weighed.length ? "; " + weighed.map((d) => `${kgOf(d.extracted)} kg on ${d.originalName}`).join(", ") : ""}${adj ? ` (plant slip may be ${adj - 100}–${adj} kg lower)` : ""}` : "Weight not readable on our document" });
+  const badKg = weighed.filter((d) => strictBad(d) && !fuzzy.includes(d));
+  out.push({
+    key: "weight",
+    label: "Weights agree",
+    ok: ourKg && weighed.length ? (badKg.length ? false : fuzzy.length ? null : true) : null,
+    detail: ourKg
+      ? `${ourKg} kg on ours${weighed.length ? "; " + weighed.map((d) => `${kgOf(d.extracted)} kg on ${d.originalName}`).join(", ") : ""}${adj ? ` (plant slip may be ${adj - 100}–${adj} kg lower)` : ""}${fuzzy.length ? ` — ${fuzzy.map((d) => d.originalName).join(", ")}: photo read one digit off, probably a misread; check by eye` : ""}`
+      : "Weight not readable on our document",
+  });
   const day = (v) => { const x = new Date(String(v || "").slice(0, 10)); return isNaN(x) ? null : x.getTime() / 86400000; };
   const ourDay = day(o.documentDate);
   const dated = docs.filter((d) => !photo(d) && day(d.extracted?.documentDate) != null && /^(vendor_|weight_slip|consignment_tag|biome_eway)/.test(d.extracted?.documentType || ""));
